@@ -109,9 +109,10 @@ targets:
       - path: MacosWidgetsStatsFromWebsite/Apps/WidgetExtension
       - path: MacosWidgetsStatsFromWebsite/Shared
         excludes:
-          - Scraping/ChromeBrowserProfile.swift
-          - Scraping/ChromeCDPClient.swift
-          - Scraping/ChromeCDPScraper.swift
+          - MCP
+          - Scraping
+          - SelectorPacks
+          - SignIn
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.ethansk.macos-widgets-stats-from-website.widget

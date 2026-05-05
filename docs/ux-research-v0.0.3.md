@@ -85,7 +85,7 @@ This is the closest analog to `macos-widgets-stats-from-website` because the dat
 - **MeterBar** ([meterbar.app](https://meterbar.app/)) — tiered UI: menu-bar icon → notification-center widget (medium / large) → full dashboard. **Traffic-light status** (green/yellow/red). Insight: **progressive disclosure across surfaces; color-coded health is enough for the 90% glance case.**
 - **TokenTracker** ([github.com/mm7894215/TokenTracker](https://github.com/mm7894215/TokenTracker)) — explicitly ships **4 desktop widgets**: Usage, Activity Heatmap, Top Models, Usage Limits. This is the strongest signal that **a curated set of 4–10 templates is the right product shape**, not infinite customization.
 - **ccseva** ([github.com/Iamshankhadeep/ccseva](https://github.com/Iamshankhadeep/ccseva)) — gradient + glassmorphism aesthetic, percentage indicator with color thresholds, 7-day chart. Insight: **historical sparkline matters for "is this trending up or down" glance.**
-- **ClaudeBar / Claude-Usage-Tracker / Claude-Monitor** — all converge on the same pattern: percentage + reset-time + small sparkline. ([tddworks/ClaudeBar](https://github.com/tddworks/ClaudeBar), [hamed-elfayome](https://github.com/hamed-elfayome/Claude-Usage-Tracker))
+- **Provider-specific usage trackers** — all converge on the same pattern: percentage + reset-time + small sparkline.
 
 **Takeaway:** the consensus design vocabulary in this cohort is: **percentage / value + tiny sparkline + color-coded health + reset/refresh timestamp.** Our catalog should bake this into multiple templates explicitly.
 
@@ -113,7 +113,7 @@ Each entry: name, size, mode, tracker count, layout, accent / background, ideal 
 - **Size:** small  •  **Mode:** Text  •  **Trackers:** 1 (with min/max)
 - **Layout:** circular `Gauge` (Apple's `.accessoryCircular`-style ring), 90×90pt centered, current value in the center, label below in 11pt, threshold tinting (green < 70% / amber 70–90% / red > 90%).
 - **Accent:** gauge tint = threshold color.
-- **Use case:** "Show me how close I am to the Claude weekly cap."
+- **Use case:** "Show me how close I am to the weekly usage cap."
 
 #### 3.4 Live Snapshot Tile
 - **Size:** small  •  **Mode:** Snapshot  •  **Trackers:** 1
@@ -133,7 +133,7 @@ Each entry: name, size, mode, tracker count, layout, accent / background, ideal 
 - **Size:** medium  •  **Mode:** Text  •  **Trackers:** 2
 - **Layout:** vertical divider down the middle; each side gets title + value (32pt) + delta arrow + tiny sparkline.
 - **Accent:** each side's sparkline tinted with its own accent (set per tracker).
-- **Use case:** "I want Codex spend vs Claude spend side-by-side."
+- **Use case:** "I want two service spends side-by-side."
 
 #### 3.7 Dashboard 3-Up
 - **Size:** medium  •  **Mode:** Text  •  **Trackers:** 3
@@ -216,7 +216,7 @@ title 11pt + hero 56pt      hero 40pt + spark 60×30     ring 90×90 thresh-tint
 3.9 Stats List                                       3.10 Hero + Detail               3.11 Live Snapshot Hero
 ┌───────────────────────────────────────────┐       ┌──────────────────────────┐    ┌──────────────────────────┐
 │ ● Codex Weekly    $42.30  ╱╲╱  ↑12%      │       │ CODEX WEEKLY             │    │█ full-bleed snapshot █████│
-│ ● Claude Weekly   $18.10  ╲╱─  ↓7%       │       │   $42.30                 │    │█ of chosen cropped page ██│
+│ ● Service B       $18.10  ╲╱─  ↓7%       │       │   $42.30                 │    │█ of chosen cropped page ██│
 │ ● OpenAI MTD     $231.00  ╱─╱  ↑6%       │       │   ↑ $5.20 vs yesterday   │    │█ region (no margins) █████│
 │ ● Cursor Mon      $20.00  ────  →         │       │  ╱╲╱╲╱╲       ╱─╲        │    │██████████████████████████│
 │ ● AWS Daily        $3.40  ╱╱╲  ↑18%      │       │       ╲╱╲╱╲╱╲╱   ╲╱──    │    │██████████████████████████│
@@ -230,7 +230,7 @@ title 11pt + hero 56pt      hero 40pt + spark 60×30     ring 90×90 thresh-tint
 ### Extra-Large (3.12)
 ```
 ┌──────────────────────────────────────────────────────────────────────────┐
-│ ● Codex     $42.30 ╱╲╱ │ ● Claude   $18.10 ╲╱─ │ ● OpenAI    $231     │
+│ ● Service A $42.30 ╱╲╱ │ ● Service B $18.10 ╲╱─ │ ● OpenAI    $231     │
 │ ● Cursor    $20.00 ─── │ ● AWS       $3.40 ╱╱╲ │ ● Bank     £4120     │
 │ ● Stripe MRR $2.4k ╱── │ [SNAPSHOT TILE — chart]│ ● Cloudflare $7.10   │
 └──────────────────────────────────────────────────────────────────────────┘
@@ -346,8 +346,6 @@ Sources: [Keeping a widget up to date](https://developer.apple.com/documentation
 - [MeterBar](https://meterbar.app/)
 - [TokenTracker (mm7894215)](https://github.com/mm7894215/TokenTracker)
 - [ccseva (Iamshankhadeep)](https://github.com/Iamshankhadeep/ccseva)
-- [ClaudeBar (tddworks)](https://github.com/tddworks/ClaudeBar)
-- [Claude Usage Tracker (hamed-elfayome)](https://github.com/hamed-elfayome/Claude-Usage-Tracker)
 - [Stats — exelban](https://github.com/exelban/stats)
 - [iStat Menus — Bjango](https://bjango.com/mac/istatmenus/)
 - [Widgy — App Store](https://apps.apple.com/us/app/widgy-widgets-home-lock-watch/id1524540481)

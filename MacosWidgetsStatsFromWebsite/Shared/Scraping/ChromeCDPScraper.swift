@@ -37,7 +37,7 @@ final class ChromeCDPScraper {
 
     private func start() {
         guard validatedURL(from: tracker.url) != nil else {
-            finish(.failure(WKWebViewScraperError.invalidURL))
+            finish(.failure(ScraperError.invalidURL))
             return
         }
 
@@ -54,7 +54,7 @@ final class ChromeCDPScraper {
         case .success(let configuration):
             self.configuration = configuration
             guard let url = validatedURL(from: tracker.url) else {
-                finish(.failure(WKWebViewScraperError.invalidURL))
+                finish(.failure(ScraperError.invalidURL))
                 return
             }
 
@@ -102,12 +102,12 @@ final class ChromeCDPScraper {
         switch result {
         case .success(let value):
             guard let status = SelectorExtractionJS.dictionary(from: value) else {
-                finish(.failure(SelectorRunnerError.invalidEvaluationResult))
+                finish(.failure(SelectorExtractionError.invalidEvaluationResult))
                 return
             }
 
             if let scriptError = status["error"] as? String, !scriptError.isEmpty {
-                finish(.failure(SelectorRunnerError.invalidSelector(scriptError)))
+                finish(.failure(SelectorExtractionError.invalidSelector(scriptError)))
                 return
             }
 
@@ -125,9 +125,9 @@ final class ChromeCDPScraper {
             guard Date() < deadline else {
                 let finalStatus = lastStatus ?? status
                 if SelectorExtractionJS.boolValue(finalStatus["loginLikely"]) == true {
-                    finish(.failure(SelectorRunnerError.loginRequired))
+                    finish(.failure(SelectorExtractionError.loginRequired))
                 } else {
-                    finish(.failure(SelectorRunnerError.selectorDidNotMatch))
+                    finish(.failure(SelectorExtractionError.selectorDidNotMatch))
                 }
                 return
             }
@@ -150,7 +150,7 @@ final class ChromeCDPScraper {
     private func scrapeText(from status: [String: Any]) {
         let value = (status["text"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         guard !value.isEmpty else {
-            finish(.failure(WKWebViewScraperError.selectedElementHasNoText))
+            finish(.failure(ScraperError.selectedElementHasNoText))
             return
         }
 
@@ -186,7 +186,7 @@ final class ChromeCDPScraper {
             guard let rect = resolvedRect ?? fallbackRect,
                   rect.width > 0,
                   rect.height > 0 else {
-                finish(.failure(WKWebViewScraperError.selectedElementHasNoVisibleRect))
+                finish(.failure(ScraperError.selectedElementHasNoVisibleRect))
                 return
             }
 
@@ -296,7 +296,7 @@ final class ChromeCDPScraper {
     private func armTimeout() {
         let item = DispatchWorkItem { [weak self] in
             guard let self else { return }
-            self.finish(.failure(WKWebViewScraperError.navigationFailed("Timed out loading \(self.tracker.url).")))
+            self.finish(.failure(ScraperError.navigationFailed("Timed out loading \(self.tracker.url).")))
         }
         timeout = item
         DispatchQueue.main.asyncAfter(deadline: .now() + 30, execute: item)

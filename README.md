@@ -20,7 +20,7 @@ refreshing in the background.
 > **Status:** v0.12.2 implements the local app, widget extension, CLI, scraping,
 > snapshot rendering, widget template catalog, selector packs, MCP server,
 > first-launch flow, and polish pass. Read
-> [PLAN.md](PLAN.md) for the canonical architecture and roadmap.
+> [PLAN.md](PLAN.md) for detailed architecture notes and the roadmap.
 
 ---
 
@@ -151,7 +151,7 @@ Useful setup flow for an assistant:
 ## Caveats
 
 - **Browser profile reality.** The app's user-facing browser path is the
-  persistent Chrome/Chromium CDP profile. This avoids embedded-WebView OAuth
+  persistent Chrome/Chromium CDP profile. This avoids embedded-browser OAuth
   dead ends and keeps setup, re-identify, MCP identify, and scraping on the same
   local browser session. See [docs/google-auth-cdp-path.md](docs/google-auth-cdp-path.md).
 - **Local-only scraping.** The app signs in *as you* on this Mac. Cookies stay
@@ -171,7 +171,7 @@ Useful setup flow for an assistant:
 
 Issues and PRs welcome at
 [github.com/EthanSK/macos-widgets-stats-from-website](https://github.com/EthanSK/macos-widgets-stats-from-website).
-Read [PLAN.md](PLAN.md) before opening a structural PR — that's the canonical
+Read [PLAN.md](PLAN.md) before opening a structural PR — that's the detailed
 architecture document and the place where intent gets argued out before code
 gets written. Bug reports and template suggestions can go straight to
 [Issues](https://github.com/EthanSK/macos-widgets-stats-from-website/issues).

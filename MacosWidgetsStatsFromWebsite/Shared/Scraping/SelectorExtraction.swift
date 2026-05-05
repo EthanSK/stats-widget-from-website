@@ -1,15 +1,37 @@
 //
-//  SelectorRunner.swift
+//  SelectorExtraction.swift
 //  MacosWidgetsStatsFromWebsiteShared
 //
-//  Shared CSS-selector extraction and polling for app-owned WKWebView scraping.
+//  Shared CSS-selector extraction helpers for Chrome/CDP scraping.
 //
 
 import CoreGraphics
 import Foundation
-import WebKit
 
-enum SelectorRunnerError: LocalizedError {
+enum ScraperError: LocalizedError {
+    case invalidURL
+    case navigationFailed(String)
+    case selectedElementHasNoText
+    case selectedElementHasNoVisibleRect
+    case snapshotEncodingFailed
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidURL:
+            return "Tracker URL is not a valid http or https URL."
+        case .navigationFailed(let message):
+            return message
+        case .selectedElementHasNoText:
+            return "Selected element has no text."
+        case .selectedElementHasNoVisibleRect:
+            return "Selected element has no visible rect."
+        case .snapshotEncodingFailed:
+            return "Snapshot image could not be encoded as PNG."
+        }
+    }
+}
+
+enum SelectorExtractionError: LocalizedError {
     case selectorDidNotMatch
     case loginRequired
     case invalidSelector(String)
@@ -20,126 +42,12 @@ enum SelectorRunnerError: LocalizedError {
         case .selectorDidNotMatch:
             return "Selector did not match any element."
         case .loginRequired:
-            return "Login appears to be required in the app browser before this selector can be scraped."
+            return "Login appears to be required in the app's Chrome profile before this selector can be scraped."
         case .invalidSelector(let message):
             return "Selector is invalid: \(message)"
         case .invalidEvaluationResult:
             return "Selector evaluation returned an unreadable result."
         }
-    }
-}
-
-enum SelectorRunner {
-    static func waitForSelector(
-        in webView: WKWebView,
-        selector: String,
-        timeout: TimeInterval = 8,
-        interval: TimeInterval = 0.25,
-        completion: @escaping (Result<[String: Any], Error>) -> Void
-    ) {
-        DispatchQueue.main.async {
-            let poller = SelectorWaitPoller(
-                webView: webView,
-                selector: selector,
-                timeout: timeout,
-                interval: interval,
-                completion: completion
-            )
-            SelectorWaitPoller.retain(poller)
-            poller.poll()
-        }
-    }
-}
-
-private final class SelectorWaitPoller {
-    private static var activePollers: [UUID: SelectorWaitPoller] = [:]
-
-    private let id = UUID()
-    private weak var webView: WKWebView?
-    private let selector: String
-    private let deadline: Date
-    private let interval: TimeInterval
-    private let completion: (Result<[String: Any], Error>) -> Void
-    private var lastStatus: [String: Any]?
-    private var didComplete = false
-
-    init(
-        webView: WKWebView,
-        selector: String,
-        timeout: TimeInterval,
-        interval: TimeInterval,
-        completion: @escaping (Result<[String: Any], Error>) -> Void
-    ) {
-        self.webView = webView
-        self.selector = selector
-        self.deadline = Date().addingTimeInterval(timeout)
-        self.interval = interval
-        self.completion = completion
-    }
-
-    static func retain(_ poller: SelectorWaitPoller) {
-        activePollers[poller.id] = poller
-    }
-
-    func poll() {
-        guard let webView else {
-            finish(.failure(SelectorRunnerError.invalidEvaluationResult))
-            return
-        }
-
-        webView.evaluateJavaScript(SelectorExtractionJS.validationScript(for: selector)) { [weak self] result, error in
-            DispatchQueue.main.async {
-                self?.handle(result: result, error: error)
-            }
-        }
-    }
-
-    private func handle(result: Any?, error: Error?) {
-        if let error {
-            finish(.failure(error))
-            return
-        }
-
-        guard let status = SelectorExtractionJS.dictionary(from: result) else {
-            finish(.failure(SelectorRunnerError.invalidEvaluationResult))
-            return
-        }
-
-        lastStatus = status
-
-        if let scriptError = status["error"] as? String, !scriptError.isEmpty {
-            finish(.failure(SelectorRunnerError.invalidSelector(scriptError)))
-            return
-        }
-
-        let count = SelectorExtractionJS.intValue(status["count"]) ?? 0
-        if count > 0 {
-            finish(.success(status))
-            return
-        }
-
-        guard Date() < deadline else {
-            if let lastStatus, SelectorExtractionJS.boolValue(lastStatus["loginLikely"]) == true {
-                finish(.failure(SelectorRunnerError.loginRequired))
-            } else {
-                finish(.failure(SelectorRunnerError.selectorDidNotMatch))
-            }
-            return
-        }
-
-        DispatchQueue.main.asyncAfter(deadline: .now() + interval) { [weak self] in
-            self?.poll()
-        }
-    }
-
-    private func finish(_ result: Result<[String: Any], Error>) {
-        guard !didComplete else {
-            return
-        }
-
-        didComplete = true
-        completion(result)
-        Self.activePollers[id] = nil
     }
 }
 

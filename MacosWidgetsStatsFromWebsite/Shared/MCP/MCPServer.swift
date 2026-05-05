@@ -7,7 +7,6 @@
 
 import Darwin
 import Foundation
-import WebKit
 
 extension Notification.Name {
     static let mcpIdentifyElementRequested = Notification.Name("MacosWidgetsStatsFromWebsite.MCP.identifyElementRequested")
@@ -1139,15 +1138,9 @@ private enum MCPToolDispatcher {
 
     private static func blockingScrape(_ tracker: Tracker) -> Result<TrackerReading, Error> {
         var result: Result<TrackerReading, Error>?
-        #if WIDGET_EXTENSION
-        WKWebViewScraper.scrape(tracker: tracker) { scrapeResult in
-            result = scrapeResult
-        }
-        #else
         ChromeCDPScraper.scrape(tracker: tracker) { scrapeResult in
             result = scrapeResult
         }
-        #endif
 
         if Thread.isMainThread {
             while result == nil {

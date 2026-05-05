@@ -8,7 +8,7 @@ Use a real Chrome/Chromium profile controlled over the Chrome DevTools Protocol
 as the app's user-facing browser path for setup, re-identify, MCP-driven
 `identify_element`, and app-owned scraping.
 
-Embedded WebView/WKWebView sign-in and element-picking flows are no longer part
+The former embedded-browser sign-in and element-picking flows are no longer part
 of the product UX. OAuth, passkeys, Google sign-in, and modern dashboard auth are
 more reliable in a real browser profile, and keeping one browser path avoids the
 old mismatch where setup used one cookie store and scraping used another.
@@ -23,7 +23,7 @@ old mismatch where setup used one cookie store and scraping used another.
 - `ChromeCDPClient` intentionally avoids `Runtime.enable` and uses bounded
   `Runtime.evaluate` calls for selector extraction, matching the safer
   Google-login-compatible control style.
-- `InspectOverlayJS` works outside WebKit by storing successful picks on
+- `InspectOverlayJS` works through Chrome/CDP by storing successful picks on
   `window.__statsWidgetPicked` and errors on
   `window.__statsWidgetInspectError`; the CDP coordinator polls those globals,
   validates the selector, and returns the same preview/save payload.
@@ -44,5 +44,5 @@ old mismatch where setup used one cookie store and scraping used another.
 - Chrome for Testing / installed Chrome / Chromium resolution remains handled by
   `ChromeBrowserProfile`; distribution policy is documented separately in the
   release notes.
-- The old WebKit implementation can remain as legacy code until deleted, but it
-  should not be presented as the setup or authentication path.
+- The legacy embedded-browser implementation has been deleted; Chrome/CDP is the
+  only setup, authentication, identify, and scraping path.

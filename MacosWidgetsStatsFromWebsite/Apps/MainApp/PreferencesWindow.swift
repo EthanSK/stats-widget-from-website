@@ -188,7 +188,7 @@ struct PreferencesWindow: View {
         updated.renderMode = presentation.renderMode
         updated.url = presentation.url.absoluteString
         store.updateTracker(updated)
-        try? AppGroupStore.resetFailureState(
+        _ = try? AppGroupStore.resetFailureState(
             for: presentation.trackerID,
             reason: "Element was re-identified; waiting for the next scrape to verify it."
         )

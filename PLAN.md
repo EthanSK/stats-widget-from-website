@@ -1,15 +1,11 @@
 # macOS Widgets Stats from Website — Plan
 
-> Living design document. **v0.0.4 is the canonical pre-implementation state.**
-> Implementation begins at v0.1 once this is signed off. v0.0.4 consolidates
-> every clarification raised across the v0.0.1–v0.0.3 voice notes plus the UX
-> research pass dated 2026-04-28: keep the embedded MCP server (now the only
-> agent surface), drop Quick-Setup-Skill installers and CLI auto-detection,
-> drop internal AI-CLI invocation by the app, integrate the verified WidgetKit
-> facts (no macOS reload budget; verified widget dimensions; 12-template
-> catalog), and lock terminology — "tracker" everywhere, never "metric"; "Text"
-> and "Snapshot" everywhere, never "Number" / "Screenshot". Concrete >
-> comprehensive.
+> Living design document. **Current implementation state: v0.12.2.** The app now
+> uses a persistent Chrome/Chromium profile controlled through CDP for setup,
+> identify, authentication, scraping, and snapshots. The old embedded-browser
+> implementation has been removed from source. Widget instance configuration is
+> AppIntent-backed and requires macOS 14+; the main app and CLI still build for
+> macOS 13 where supported. MCP remains the only local agent surface.
 
 ---
 
@@ -56,7 +52,7 @@ exposes the data plane to local AI agents:
 
 | Component | Type | Responsibility | Ships via |
 |---|---|---|---|
-| **Main app** | `.app` (AppKit shell + SwiftUI) | Preferences UI, in-app browser, element-capture flow, login persistence, **scheduled scraping via NSBackgroundActivityScheduler**, **embedded MCP server**, manual scrape trigger | Mac App Store |
+| **Main app** | `.app` (AppKit shell + SwiftUI) | Preferences UI, Chrome/CDP browser, element-capture flow, login persistence, **scheduled scraping via NSBackgroundActivityScheduler**, **embedded MCP server**, manual scrape trigger | Mac App Store |
 | **Widget extension** | WidgetKit extension inside the `.app` | Reads tracker readings from App Group on each timeline tick, renders Text or Snapshot mode | Mac App Store (bundled) |
 | **CLI scraper** (optional) | Standalone executable | Power-user adjunct: custom schedules, headless server use, automation, scriptable bulk operations. Connects to the main app's MCP server. | Homebrew tap |
 
@@ -64,10 +60,10 @@ exposes the data plane to local AI agents:
    ┌──────────────────────────────────────────────────────────┐
    │  Main App (sandbox)                                      │
    │  - Preferences UI                                        │
-   │  - In-app browser (visible WKWebView)                    │
+   │  - Chrome/Chromium CDP browser profile                  │
    │  - Element-capture flow (Identify Element overlay)       │
    │  - Background scrape (NSBackgroundActivityScheduler)     │
-   │  - Long-lived snapshot sessions (headless WKWebView)     │
+   │  - Chrome/CDP snapshot sessions (Chrome/CDP scraper)     │
    │  - Embedded MCP server (stdio + UNIX socket)             │
    │  - Manual "scrape now"                                   │
    └────────────┬─────────────────────────────┬───────────────┘
@@ -77,10 +73,10 @@ exposes the data plane to local AI agents:
                 ▼                             ▼
         ┌────────────────────────┐    ┌──────────────────────────┐
         │  App Group container   │    │  External AI agents       │
-        │  ~/Library/Group       │    │  (user's Codex CLI,       │
-        │  Containers/<group-id>/│    │   Claude Code CLI,        │
-        │  ├─ trackers.json      │    │   Homebrew CLI, anything  │
-        │  ├─ readings.json      │    │   that speaks MCP)        │
+        │  ~/Library/Group       │    │  (local MCP clients,      │
+        │  Containers/<group-id>/│    │   optional Homebrew CLI,  │
+        │  ├─ trackers.json      │    │   anything MCP-speaking)  │
+        │  ├─ readings.json      │    │                            │
         │  ├─ snapshots/<id>.png │    └──────────────────────────┘
         │  ├─ widget-configs.json│
         │  └─ schema-version     │
@@ -106,10 +102,10 @@ it. There is one source of truth.
 - The widget extension is sandboxed and has *no* network entitlement. It
   reads local files in the App Group container only. Critical for App Store
   acceptance.
-- The main app has the network-client entitlement (in-app browser, headless
+- The main app has the network-client entitlement (Chrome/CDP browser, headless
   scraping, webhook POSTs, MCP socket) but **never spawns external CLIs**.
-  AI involvement, if any, happens outside the app: the user's own Codex /
-  Claude Code session connects to MCP and calls ordinary tracker/config tools.
+  AI involvement, if any, happens outside the app: the user's own local MCP
+  client session connects to MCP and calls ordinary tracker/config tools.
   The app never invokes any AI binary itself.
 - The main app's *scheduled scraping* runs through
   `NSBackgroundActivityScheduler` — sandbox-safe, the canonical Apple-blessed
@@ -122,45 +118,40 @@ it. There is one source of truth.
 
 ## 3. Tech stack & rationale
 
-- **Swift 5.9+**, targeting macOS 14+ (Sonoma). WidgetKit on macOS got
-  significantly better in 14, and 14+ covers ~95% of active Macs by ship.
+- **Swift 5.9+**. The main app and CLI still target macOS 13 where supported;
+  the WidgetKit extension targets macOS 14+ because AppIntent-backed per-widget
+  configuration requires it.
 - **SwiftUI** for Preferences UI and the widget itself. **AppKit** shell for
   the main app window where SwiftUI is still weak (hidden-when-closed dock
   icon, window restoration, menu-bar niceties).
-- **WidgetKit** with `IntentTimelineProvider` so each placed widget instance
+- **WidgetKit** with `AppIntentTimelineProvider / AppIntentConfiguration` so each placed widget instance
   picks a *widget configuration* (see §9.3).
 - **NSBackgroundActivityScheduler** for in-app scheduled scraping.
   Sandbox-safe; runs while the app is alive or wakes it from suspended state.
   No LaunchAgent required for the standalone path; the optional CLI keeps a
   LaunchAgent for headless / power-user setups.
-- **WKWebView** as the scraping engine in *both* visible (in-app browser) and
-  headless (background scrape) modes — same class, just no window. Reasons:
-  - Size: WKWebView is the system framework, zero added MB.
-  - App Store risk: bundling Chromium in a sandboxed app is a non-starter.
-  - Updates: WebKit is patched by the OS; we never ship a stale browser.
-  - Cookie persistence: `WKWebsiteDataStore(forIdentifier:)` gives us a named
-    persistent profile out of the box.
-- **`WKWebsiteDataStore(forIdentifier: "macos-widgets-stats-from-website")`** — single
-  named persistent profile shared between the in-app browser and the headless
-  scraper. Cookies, IndexedDB, localStorage, service worker registrations all
-  persist across launches, so a site stays logged in after the user signs in
-  once.
-- **Keychain Services API** — for any user-entered credentials. In practice
-  rare: most tracked sites use OAuth / SSO, so cookies in
-  `WKWebsiteDataStore` cover the case. Keychain entries are scoped to the
-  app's bundle ID with `kSecAttrAccessGroup` set to the App Group so the
-  widget can read tokens if it ever needs to (it currently doesn't).
-- **AuthenticationServices framework** — passkey + `ASWebAuthenticationSession`
-  support for sites that publish a passkey-friendly sign-in path. The in-app
-  browser falls back to standard form login when passkeys aren't offered.
+- **Chrome/Chromium controlled through CDP** as the scraping engine for setup,
+  manual re-identify, scheduled text scrapes, and snapshot captures. Reasons:
+  - Auth reliability: OAuth, passkeys, Google consent, and dashboard sessions
+    behave like they do in a real browser.
+  - One session model: setup, identify, MCP identify, and scraping all use the
+    same app-owned Chrome/Chromium user-data directory.
+  - Clear fallback: use installed Chrome/Chromium or managed Chrome for Testing
+    where distribution policy allows it.
+- **Chrome/Chromium user-data directory for the app profile** — a single named
+  persistent profile shared between setup and scraping. Cookies, IndexedDB,
+  localStorage, and service worker registrations persist across launches, so a
+  site stays logged in after the user signs in once.
+- **Keychain Services API** — stores the MCP launch/shared token; page auth state
+  lives in the app-owned Chrome/Chromium profile, not app-managed passwords.
 - **App Group** over UserDefaults / iCloud / Keychain for the data plane:
   - UserDefaults: scoped to a single bundle ID by default; cross-process
     sharing requires `suiteName`, but we want JSON + PNG too.
   - iCloud: latency, conflict resolution, and offline behaviour are wrong for
     a refresh-every-30-min widget.
   - Keychain: only for credentials, not for readings.
-- **xcodegen** (`project.yml`) so we never commit `.xcodeproj` to git — it's a
-  regenerated artefact. Keeps diffs sane.
+- **xcodegen** (`project.yml`) keeps project settings regeneratable and reduces
+  hand-edited `.xcodeproj` drift.
 - **Embedded MCP server in the main app** — see §13. Stdio transport when
   invoked as a child process by an MCP client; UNIX domain socket at
   `~/Library/Group Containers/<group-id>/mcp.sock` for the always-on case.
@@ -182,10 +173,10 @@ MacosWidgetsStatsFromWebsite/
       WidgetConfigsView.swift         — list of widget configurations
       WidgetConfigEditorView.swift    — add/edit a widget composition
       WidgetTemplatesGalleryView.swift— curated template gallery (12 cards)
-      InAppBrowserView.swift          — WKWebView host with Identify Element
+      ChromeIdentifyElementCoordinator.swift — Chrome/CDP Identify Element flow
       InspectOverlayJS.swift          — JS string for hover/click overlay
-      OnboardingView.swift            — first-launch flow (sign-in → identify → widget)
-      SignInPrefsView.swift           — Sign in / Re-sign in / Reset Browser
+      FirstLaunchWizardView.swift     — first-launch flow (URL → identify → widget)
+      SignInPrefsView.swift           — Chrome profile controls
       MCPPrefsView.swift              — socket path, token reveal/copy, MCP notes
       SelectorPackImportView.swift    — drag-drop / open-with handler
       BackgroundScheduler.swift       — NSBackgroundActivityScheduler wrapper
@@ -206,7 +197,7 @@ MacosWidgetsStatsFromWebsite/
         LiveSnapshotHero.swift        — large / Snapshot
         MegaDashboardGrid.swift       — extraLarge / Mixed
       SparklineView.swift             — last-N reading sparkline
-      WidgetIntent.swift              — IntentDefinition for picking a widget config
+      StatsWidget.swift               — AppIntent configuration picker + widget UI
     CLI/                              — optional Homebrew adjunct
       main.swift                      — argument parsing
       MCPClient.swift                 — connects to main app's MCP server
@@ -247,11 +238,10 @@ MacosWidgetsStatsFromWebsite/
       AppGroupStore.swift             — atomic JSON read/write helpers
       SchemaVersion.swift             — current version + migrators
     Scraping/
-      HeadlessScraper.swift           — WKWebView wrapper (text mode)
-      LongLivedScrapeSession.swift    — kept-alive page for snapshot polling
-      ProfileManager.swift            — WKWebsiteDataStore identifier mgmt
-      SelectorRunner.swift            — runs a CSS selector, returns innerText
-      ElementSnapshotter.swift        — element bbox -> PNG via takeSnapshot(of:rect)
+      ChromeBrowserProfile.swift      — app-owned Chrome/Chromium profile launcher
+      ChromeCDPClient.swift           — bounded Chrome DevTools Protocol client
+      ChromeCDPScraper.swift          — Chrome/CDP text + snapshot scraper
+      SelectorExtraction.swift        — selector validation JS and parsing helpers
     Notifications/
       TrackerAttentionNotifier.swift  — macOS native notification when a tracker breaks
       UNUserNotificationCenterClient.swift — macOS native notifications
@@ -283,7 +273,7 @@ widget reads, written atomically by the main app):
       "id": "8c1b2e6e-…",                 // UUID, immutable — the tracker ID
       "name": "Codex weekly spend",
       "url": "https://platform.openai.com/usage",
-      "browserProfile": "macos-widgets-stats-from-website", // WKWebsiteDataStore identifier
+      "browserProfile": "macos-widgets-stats-from-website", // Chrome/Chromium profile storage identifier
       "renderMode": "text",               // "text" | "snapshot"
       "selector": "div[data-testid=\"weekly-cost\"] span",
       "elementBoundingBox": {              // captured at Identify Element time
@@ -398,8 +388,8 @@ rotating backups.
    ├─ user clicks "+ Add tracker"
    ▼
 [New Tracker — Step 1: Browse]
-   ├─ embedded WKWebView, full chrome (back/forward/reload/url-bar)
-   ├─ user signs in (cookies persisted via WKWebsiteDataStore identifier
+   ├─ embedded Chrome/CDP, full chrome (back/forward/reload/url-bar)
+   ├─ user signs in (cookies persisted via Chrome/Chromium profile storage identifier
    │  "macos-widgets-stats-from-website"; passkey path used when site supports it)
    ├─ user navigates to the page that has the value/region they want
    ▼
@@ -431,9 +421,9 @@ flow:
 
 ```
 ┌─ Browser & Sign-in ─────────────────────────────────────────┐
-│  Profile: macos-widgets-stats-from-website (WKWebsiteDataStore)           │
+│  Profile: macos-widgets-stats-from-website (Chrome/Chromium profile storage)           │
 │                                                              │
-│  [ Sign in to a site ]   opens the in-app browser            │
+│  [ Sign in to a site ]   opens the Chrome/CDP browser            │
 │  [ Re-sign in to … ▾  ]   pick a site we have cookies for    │
 │  [ Reset browser data ]   wipes cookies, IndexedDB, caches   │
 │                                                              │
@@ -494,7 +484,7 @@ Two render modes, two scrape strategies — same captured selector either way.
 
 ### 7.1 Text mode
 
-- **Headless WKWebView per scrape.** Open page, wait for `selector` to
+- **Chrome/CDP scrape per tracker.** Open page, wait for `selector` to
   match, run `document.querySelector(selector)?.innerText`, write result,
   tear down.
 - **Schedule.** Per-tracker `refreshIntervalSec`. Default **30 min**, min 5
@@ -514,7 +504,7 @@ the target site (hammers their CDN, racks up 429s, looks like a bot) and
 slower than the polling interval. Instead:
 
 - **Long-lived page session.** When a snapshot tracker is added, the scrape
-  engine opens the URL in a hidden WKWebView and *keeps it open*. The page
+  engine opens the URL in a hidden Chrome/CDP and *keeps it open*. The page
   stays loaded; cookies, JS state, and auth tokens stay live.
 - **Re-snapshot only.** Every 2 s the scheduler calls
   `webView.takeSnapshot(of: cachedRect, into: …)`, where `cachedRect` is the
@@ -537,8 +527,8 @@ slower than the polling interval. Instead:
 
 ### 7.3 Shared knobs
 
-- **Browser profile.** `WKWebViewConfiguration` with
-  `websiteDataStore = WKWebsiteDataStore(forIdentifier: "macos-widgets-stats-from-website")`.
+- **Browser profile.** `Chrome/CDPConfiguration` with
+  `websiteDataStore = Chrome/Chromium user-data directory for the app profile`.
   Same identifier in app and headless scraper. Cookies, IndexedDB,
   localStorage, service worker registrations, passkey state — all
   persistent.
@@ -549,9 +539,9 @@ slower than the polling interval. Instead:
   each tracker has its own long-lived session.
 - **Backoff.** Exponential on HTTP 429 / 503: 5 min → 15 → 45 → 2h, cap at
   2h. Reset on next success.
-- **Login flow.** User signs in via the in-app browser; we never touch
+- **Login flow.** User signs in via the Chrome/CDP browser; we never touch
   credentials directly. Cookies persist via
-  `WKWebsiteDataStore(forIdentifier:)`. Where the site offers passkeys we
+  `the app Chrome/Chromium profile directory`. Where the site offers passkeys we
   use `ASWebAuthenticationSession`.
 
 ## 8. Tracker failure and re-identify flow
@@ -814,7 +804,7 @@ Accessibility:
 | Entitlement | Value | Why |
 |---|---|---|
 | `com.apple.security.app-sandbox` | `true` | Required for App Store. |
-| `com.apple.security.network.client` | `true` | In-app browser, headless scraper, MCP socket, webhook POSTs all need outbound. |
+| `com.apple.security.network.client` | `true` | Chrome/CDP browser, headless scraper, MCP socket, webhook POSTs all need outbound. |
 | `com.apple.security.files.user-selected.read-write` | `true` | Export / import selector packs from a Finder picker. |
 | `com.apple.security.application-groups` | `group.com.ethansk.macos-widgets-stats-from-website` | Shared container with widget extension. |
 | `com.apple.security.network.server` | *unset* | The MCP server uses stdio or a UNIX socket — neither needs the server entitlement. |
@@ -825,11 +815,11 @@ The widget extension's entitlements are a **subset**: only `app-sandbox` and
 
 **Review risks (and mitigations):**
 
-1. *In-app browser scraping third-party sites.* App Store has accepted this
+1. *Chrome/CDP browser scraping third-party sites.* App Store has accepted this
    pattern for password managers, Read Later apps, archive tools, and so on.
    Framing: "the widget acts on your behalf, with your credentials, on
    pages you can already see in your own browser."
-2. *Persistent third-party cookies via `WKWebsiteDataStore`.* Standard API,
+2. *Persistent third-party cookies via `Chrome/Chromium profile storage`.* Standard API,
    well-precedented. No extra disclosure beyond a privacy-policy line.
 3. *Embedded MCP server.* Uses stdio (no network listener) or a UNIX socket
    inside the App Group container (sandbox-permitted). No
@@ -859,7 +849,7 @@ install the CLI get a complete product.
 | **v0.0.x** | Scaffold (PLAN.md, README, LICENSE, .gitignore). v0.0.4 = canonical pre-implementation state. No code. |
 | **v0.1** | `project.yml` → xcodegen → Xcode project → empty app + empty widget extension + empty CLI all build green. CI smoke. |
 | **v0.2** | Main app with Preferences UI; trackers list, add/edit form, no scraping yet. Local persistence to `trackers.json`. |
-| **v0.3** | Element-capture flow working in the in-app browser. JS overlay, selector synthesis, preview pane, save round-trip. Sign-in / Re-sign-in / Reset Browser panel. |
+| **v0.3** | Element-capture flow working in the Chrome/CDP browser. JS overlay, selector synthesis, preview pane, save round-trip. Sign-in / Re-sign-in / Reset Browser panel. |
 | **v0.4** | App-internal scraping: `NSBackgroundActivityScheduler` firing per-tracker scrapes; Text mode write-out. App Group `readings.json` round-trip. |
 | **v0.5** | Widget reads from App Group; Text mode renders with sparkline; configurable per-instance via Intent. First few of the 12 templates implemented. |
 | **v0.6** | Snapshot mode rendering on all sizes. Long-lived session pattern, 2 s polling, `takeSnapshot(of:rect)`. Cropper validated against fixture pages. |
@@ -872,7 +862,7 @@ install the CLI get a complete product.
 | **v1.0** | Polish, screenshots, GitHub Pages site, README setup walkthrough filled in. Mac App Store submission (app + widget extension only). |
 | **v1.1** | Homebrew tap published (`homebrew-macos-widgets-stats-from-website`). |
 | **v1.2** | Public selector pack gallery (community contributions, separate public repo). |
-| **v2.x** | Cross-browser support: Chrome via CDP, Firefox via Marionette. Same selector / capture flow, different transport. Optional, only if WKWebView proves limiting. |
+| **v2.x** | Cross-browser support: Chrome via CDP, Firefox via Marionette. Same selector / capture flow, different transport. Optional, only if Chrome/CDP proves limiting. |
 
 Each minor version is a working, demoable build. We ship dogfood builds
 between every two minors.
@@ -974,7 +964,7 @@ everyone's mental model later. "Tracker" is generic and honest.
 *Requirement:* Drop "Number mode" / "Screenshot mode" framing.
 *Resolution:* Use **"Text mode"** (extracts `element.innerText` via JS,
 renders as SwiftUI Gauge / Text in widget) and **"Snapshot mode"** (captures
-the element's bounding rect via `WKWebView.takeSnapshot(of:rect)`, renders
+the element's bounding rect via `Chrome/CDP.takeSnapshot(of:rect)`, renders
 as `Image()` in widget). Both modes use the **same captured selector** —
 mode is render-time behaviour, not capture-time behaviour.
 *Reason:* "Number" was a lie because text-mode handles non-numeric text
@@ -984,7 +974,7 @@ element rect.
 ### 12.10 Snapshot polling cadence
 *Requirement:* Snapshot mode = **every 2 seconds** for live updates.
 *Resolution:* Default 2 s for Snapshot mode; mechanism is a long-lived
-WKWebView session that keeps the page loaded and only re-snapshots the
+Chrome/CDP page session that keeps the page loaded and only re-snapshots the
 element rect each tick. Old snapshots overwritten in memory; **no file
 persistence** for snapshot history. 30-min reload heartbeat keeps the
 session fresh. 8-tracker concurrency cap, LRU recycle past that. Text mode
@@ -996,7 +986,7 @@ tracker, capped) and gives near-real-time visuals.
 ### 12.11 Sign-in persistence APIs
 *Requirement:* Use the proper macOS APIs for session persistence.
 *Resolution:*
-- `WKWebsiteDataStore(forIdentifier: "macos-widgets-stats-from-website")` for the named
+- `Chrome/Chromium user-data directory for the app profile` for the named
   persistent cookie / IndexedDB / localStorage profile.
 - **Keychain Services API** for any user-entered credentials (rare, since
   most tracked sites are OAuth/SSO).
@@ -1012,7 +1002,7 @@ than rolling our own.
 its own composition.
 *Resolution:* `widgetConfigurations` array in `trackers.json` with shape
 `{id, name, templateID, size, [trackerIDs], layout, showSparklines,
-showLabels}`. The `IntentTimelineProvider` exposes `configurationID` as the
+showLabels}`. The `AppIntentTimelineProvider / AppIntentConfiguration` exposes `configurationID` as the
 configurable parameter so each placed widget binds to a saved configuration.
 *Reason:* Different parts of the desktop want different views (small "just
 Codex spend" near the menu bar, large "AI Spend Dashboard" on a secondary
@@ -1021,7 +1011,7 @@ monitor). One config per widget instance is the right granularity.
 ### 12.13 Embedded MCP server (kept and expanded)
 *Requirement:* The main `.app` exposes an MCP server that **fully controls
 the app and does everything** — every app feature is reachable as a tool.
-External clients (user's Codex CLI, Claude Code CLI, optional Homebrew CLI,
+External clients (user's MCP client, local MCP client, optional Homebrew CLI,
 anything else that speaks MCP) connect via the same server. This is the
 **single agent surface**.
 *Resolution:* §13 specifies the full tool set (CRUD, scrape, identify,
@@ -1048,7 +1038,7 @@ design. The user's notification preferences are personal.
 *Requirement:* Confirm there is **no in-app chat surface** for talking to an
 AI agent.
 *Resolution:* Confirmed. The MCP server (§13) is the agent surface; the
-agent runs in the user's existing CLI session (Codex / Claude Code /
+agent runs in the user's existing CLI session (local MCP clients /
 anything else MCP-speaking), not inside our app. We render no chat UI.
 *Reason:* Building a chat surface is a huge product decision and well
 outside the "quiet number on the desktop" scope. The MCP integration covers
@@ -1061,18 +1051,18 @@ external CLI; agents that want to talk to it connect via MCP separately.
 *Resolution:* §14 specifies a three-step flow: custom URL → render/config +
 Identify Element → first widget. The previously-planned "Detect AI CLIs" step
 is deleted.
-*Reason:* Detecting `codex` / `claude` would couple the app to a specific
+*Reason:* Detecting specific agent binaries would couple the app to one
 agent ecosystem, suggest the app *needs* one, and leak the user's installed
 agents into our preferences file. The MCP server is opt-in plumbing, not a
 first-launch concern.
 
 ### 12.17 Quick-Setup Skill installer (DROPPED)
-*Requirement (canonical state):* No buttons in Preferences that write
-`SKILL.md` into `~/.claude/skills/...` or Codex global instructions.
-*Resolution:* The Quick-Setup pane and its Claude / Codex skill installers
-are removed entirely. Documentation explaining how to wire an external
-Codex / Claude Code session into our MCP server lives in the README and
-project website only — never as an in-app installer.
+*Requirement (canonical state):* No buttons in Preferences that write agent
+skills, prompts, or global instructions into user dotfiles.
+*Resolution:* The Quick-Setup pane and its agent-specific skill installers are
+removed entirely. Documentation explaining how to wire an external local MCP
+client session into our MCP server lives in the README and project website only
+— never as an in-app installer.
 *Reason:* Writing into the user's home directory from a sandboxed App Store
 app is a review risk and a trust risk. A README pointer plus a Keychain
 secret the user can copy by hand is the right level of help.
@@ -1114,7 +1104,7 @@ us.
 ## 13. MCP Server
 
 The main `.app` ships an embedded MCP server. **It is the only agent
-surface.** External MCP clients (the user's Codex CLI, Claude Code CLI, the
+surface.** External MCP clients (the user's MCP client, local MCP client, the
 optional Homebrew CLI, anything else that speaks MCP) connect to it and
 operate the tracker fleet. The server "fully controls the app" — every
 user-facing feature is reachable as a tool.
@@ -1153,7 +1143,7 @@ The MCP server exposes the entire app feature set as tools. Initial set:
 | `delete_tracker` | `(id) → {ok}` | Remove a tracker (also unlinks from any `widgetConfigurations`). |
 | `trigger_scrape` | `(id) → TrackerResult` | Force-refresh one tracker now. |
 | `reset_tracker_failure_state` | `(id, reason?) → Tracker` | Clear stale/broken failure metadata after a manual repair and mark the tracker stale until the next scrape proves it works. |
-| `identify_element` | `(trackerId?, url?) → {trackerId, status: "awaiting_user"}` | **Human-in-the-loop.** Socket-only. Open the in-app browser, prompt the user for sign-in + Identify Element, then update the existing or pending tracker. |
+| `identify_element` | `(trackerId?, url?) → {trackerId, status: "awaiting_user"}` | **Human-in-the-loop.** Socket-only. Open the Chrome/CDP browser, prompt the user for sign-in + Identify Element, then update the existing or pending tracker. |
 | `list_widget_configurations` | `() → [WidgetConfiguration]` | All widget compositions. |
 | `get_widget_configuration` | `(id) → WidgetConfiguration` | One widget composition. |
 | `update_widget_configuration` | `(id, fields…) → WidgetConfiguration` | Rename, change template, change size, reorder trackers, change layout. |
@@ -1205,7 +1195,7 @@ This is documentation, not code, and lives in the README and project site —
 **not** as in-app installer buttons. Sketch:
 
 ```
-# Claude Code (~/.claude/skills/your-name-here/SKILL.md)
+# local MCP client (~/.claude/skills/your-name-here/SKILL.md)
 This MCP server is at /Applications/macOS Widgets Stats from Website.app/Contents/MacOS/MacosWidgetsStatsFromWebsite --mcp-stdio
 Socket path/token: see Preferences → MCP in the running app
 
@@ -1231,18 +1221,17 @@ experience but never blocks the install. **There is no CLI-detection step**
 │                                                                 │
 │   [ https://example.com/dashboard                         ]     │
 │                                                                 │
-│  You can sign in and move around inside the in-app browser      │
+│  You can sign in and move around inside the Chrome/CDP browser      │
 │  before choosing the exact value or region.                     │
 │                                                                 │
 │              [ Skip ]                         [ Continue ]       │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-There are no Codex / Claude / AI-spend starters in the first-run path. The
+There are no vendor-specific or AI-spend starters in the first-run path. The
 user enters any http/https URL (scheme may be omitted for normal domains).
-We never store credentials; cookies persist via
-`WKWebsiteDataStore(forIdentifier: "macos-widgets-stats-from-website")`. Passkey flows
-route through `ASWebAuthenticationSession`.
+We never store credentials; cookies persist via the app-owned Chrome/Chromium
+profile, including passkey-capable browser flows.
 
 ### Step 2 — Configure and Identify Element
 
@@ -1284,10 +1273,9 @@ through Codex review:
 codex review PLAN.md
 ```
 
-…or, if running inside Claude Code, invoke the `pre-commit-codex-review`
-skill against the staged plan diff. Codex reads the plan, flags
-ambiguities, missing-piece risks, and contradictions. Claude applies the
-fixes / clarifications. Loop until LGTM.
+…or use any repo-review agent workflow against the staged plan diff. The review
+should flag ambiguities, missing-piece risks, and contradictions; the maintainer
+then applies fixes / clarifications and loops until LGTM.
 
 If the review surfaces material changes — new sections, schema bumps, flow
 rewrites — bump the tag (v0.0.5, v0.0.6, …) before implementation starts.
@@ -1297,8 +1285,8 @@ Specific things to validate in that review:
 - Are the schema migrations (1 → 2 → 3 → 4) actually safe / lossless?
 - Is `NSBackgroundActivityScheduler` the right surface, or should we also
   consider `BGAppRefreshTask`-style alternatives on macOS 14+?
-- Does the long-lived snapshot session interact poorly with `WKProcessPool`
-  reuse?
+- Does Chrome/CDP snapshot capture stay reliable across logged-in dashboards,
+  page reloads, and repeated scheduled scrapes?
 - Are the MCP tool signatures stable enough to not break agents on v1.0?
 - Is the MCP shared-secret rotation good UX, or a footgun? (Acceptable
   alternative: a launchd-survivable token, or "trust this client" toggle
