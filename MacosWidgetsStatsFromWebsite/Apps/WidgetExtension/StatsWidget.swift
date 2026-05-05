@@ -125,11 +125,23 @@ struct StatsWidgetConfigurationSelection: AppEntity {
     let name: String
     let details: String
 
+    static let fallback = StatsWidgetConfigurationSelection(
+        id: "",
+        name: "Default configuration",
+        details: "Uses the first saved widget configuration"
+    )
+
     var displayRepresentation: DisplayRepresentation {
         DisplayRepresentation(
             title: LocalizedStringResource(stringLiteral: name),
             subtitle: details.isEmpty ? nil : LocalizedStringResource(stringLiteral: details)
         )
+    }
+
+    init(id: String, name: String, details: String) {
+        self.id = id
+        self.name = name
+        self.details = details
     }
 
     init(configuration: WidgetConfiguration, trackers: [Tracker]) {
@@ -138,9 +150,11 @@ struct StatsWidgetConfigurationSelection: AppEntity {
         }.count
         let trackerLabel = selectedTrackerCount == 1 ? "1 tracker" : "\(selectedTrackerCount) trackers"
 
-        id = configuration.id.uuidString
-        name = configuration.name.isEmpty ? "Untitled Widget" : configuration.name
-        details = "\(configuration.templateID.displayName) · \(configuration.size.displayName) · \(trackerLabel)"
+        self.init(
+            id: configuration.id.uuidString,
+            name: configuration.name.isEmpty ? "Untitled Widget" : configuration.name,
+            details: "\(configuration.templateID.displayName) · \(configuration.size.displayName) · \(trackerLabel)"
+        )
     }
 }
 
@@ -150,7 +164,11 @@ struct StatsWidgetConfigurationSelectionQuery: EntityStringQuery {
 
     func entities(for identifiers: [StatsWidgetConfigurationSelection.ID]) async throws -> [StatsWidgetConfigurationSelection] {
         let wanted = Set(identifiers.map { $0.uppercased() })
-        return Self.allSelections().filter { wanted.contains($0.id.uppercased()) }
+        var selections = Self.allSelections().filter { wanted.contains($0.id.uppercased()) }
+        if wanted.contains(StatsWidgetConfigurationSelection.fallback.id.uppercased()) {
+            selections.append(StatsWidgetConfigurationSelection.fallback)
+        }
+        return selections
     }
 
     func suggestedEntities() async throws -> [StatsWidgetConfigurationSelection] {
@@ -158,7 +176,7 @@ struct StatsWidgetConfigurationSelectionQuery: EntityStringQuery {
     }
 
     func defaultResult() async -> StatsWidgetConfigurationSelection? {
-        Self.allSelections().first
+        Self.defaultSelection()
     }
 
     func entities(matching string: String) async throws -> [StatsWidgetConfigurationSelection] {
@@ -170,6 +188,10 @@ struct StatsWidgetConfigurationSelectionQuery: EntityStringQuery {
         return Self.allSelections().filter { selection in
             selection.name.lowercased().contains(query) || selection.details.lowercased().contains(query)
         }
+    }
+
+    static func defaultSelection() -> StatsWidgetConfigurationSelection {
+        allSelections().first ?? StatsWidgetConfigurationSelection.fallback
     }
 
     static func allSelections() -> [StatsWidgetConfigurationSelection] {
@@ -185,11 +207,17 @@ struct StatsWidgetConfigurationAppIntent: WidgetConfigurationIntent {
     static var description = IntentDescription("Choose which saved widget configuration this desktop widget should show.")
 
     @Parameter(title: "Configuration")
-    var configuration: StatsWidgetConfigurationSelection?
+    var configuration: StatsWidgetConfigurationSelection
 
-    init() {}
+    static var parameterSummary: some ParameterSummary {
+        Summary("Show \(\.$configuration)")
+    }
 
-    init(configuration: StatsWidgetConfigurationSelection?) {
+    init() {
+        self.configuration = StatsWidgetConfigurationSelectionQuery.defaultSelection()
+    }
+
+    init(configuration: StatsWidgetConfigurationSelection) {
         self.configuration = configuration
     }
 }
@@ -200,11 +228,11 @@ struct AppIntentStatsWidgetProvider: AppIntentTimelineProvider {
     }
 
     func snapshot(for configuration: StatsWidgetConfigurationAppIntent, in context: Context) async -> StatsWidgetEntry {
-        StatsWidgetEntryFactory.makeEntry(configurationID: configuration.configuration?.id)
+        StatsWidgetEntryFactory.makeEntry(configurationID: configuration.configuration.id.isEmpty ? nil : configuration.configuration.id)
     }
 
     func timeline(for configuration: StatsWidgetConfigurationAppIntent, in context: Context) async -> Timeline<StatsWidgetEntry> {
-        let entry = StatsWidgetEntryFactory.makeEntry(configurationID: configuration.configuration?.id)
+        let entry = StatsWidgetEntryFactory.makeEntry(configurationID: configuration.configuration.id.isEmpty ? nil : configuration.configuration.id)
         let nextDate = Calendar.current.date(byAdding: .minute, value: 5, to: Date()) ?? Date().addingTimeInterval(300)
         return Timeline(entries: [entry], policy: .after(nextDate))
     }
