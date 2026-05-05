@@ -93,17 +93,13 @@ shape and migration strategy.
    configuration.
 6. Add the widget from macOS: right-click the desktop or Notification Centre,
    choose **Edit Widgets**, search for **macOS Widgets Stats from Website**,
-   and drag the widget onto the desktop. To bind a saved configuration,
-   Control-click the placed widget and choose **Edit “macOS Widgets Stats from
-   Website”** (Apple phrases configurable widgets as **Edit [widget name]**),
-   then pick the configuration from the **Configuration** field. If the menu
-   only says **Edit Widgets**, remove that widget and add it again from the
-   current build; macOS is not showing a configurable widget instance yet.
-   Native per-widget configuration requires macOS 14 or later.
+   and drag the widget onto the desktop. The placed widget automatically reads
+   the first saved widget configuration from the main app; no per-widget Edit
+   menu is required. Desktop widgets require macOS 14 or later.
 
-You can also open **Preferences → Widgets** later to create, duplicate, edit, or
-rename widget configurations; the placed widget's **Edit [widget name]** sheet
-reads from those saved configurations.
+Open **Preferences → Widgets** later to create, duplicate, edit, or rename widget
+configurations. The desktop widget refreshes from the app-owned configuration
+store instead of asking macOS to show a separate per-widget picker.
 
 ## Wiring up an AI agent (optional)
 

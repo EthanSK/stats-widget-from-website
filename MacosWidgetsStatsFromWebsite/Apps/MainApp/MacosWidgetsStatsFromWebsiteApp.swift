@@ -9,6 +9,7 @@ import Darwin
 import Foundation
 import AppKit
 import SwiftUI
+import WidgetKit
 
 @main
 struct MacosWidgetsStatsFromWebsiteApp: App {
@@ -31,6 +32,10 @@ struct MacosWidgetsStatsFromWebsiteApp: App {
         _showsFirstLaunchFlow = State(initialValue: !AppGroupStore.hasExistingConfigurationFile())
     }
 
+    private func reloadWidgets() {
+        WidgetCenter.shared.reloadTimelines(ofKind: "MacosWidgetsStatsFromWebsite")
+    }
+
     var body: some Scene {
         WindowGroup {
             ContentView()
@@ -40,14 +45,20 @@ struct MacosWidgetsStatsFromWebsiteApp: App {
                     ActivityLogger.log("app", "main window appeared")
                     backgroundScheduler.sync()
                     DockBadgeUpdater.update()
+                    reloadWidgets()
                 }
                 .onReceive(store.$trackers) { _ in
                     backgroundScheduler.sync()
+                    reloadWidgets()
+                }
+                .onReceive(store.$widgetConfigurations) { _ in
+                    reloadWidgets()
                 }
                 .onReceive(NotificationCenter.default.publisher(for: .mcpConfigurationChanged)) { _ in
                     store.reloadFromDisk()
                     backgroundScheduler.sync()
                     DockBadgeUpdater.update()
+                    reloadWidgets()
                 }
                 .sheet(isPresented: $showsFirstLaunchFlow) {
                     FirstLaunchWizardView(isPresented: $showsFirstLaunchFlow)

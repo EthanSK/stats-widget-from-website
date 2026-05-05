@@ -119,13 +119,11 @@ it. There is one source of truth.
 ## 3. Tech stack & rationale
 
 - **Swift 5.9+**. The main app and CLI still target macOS 13 where supported;
-  the WidgetKit extension targets macOS 14+ because AppIntent-backed per-widget
-  configuration requires it.
+  the WidgetKit extension targets macOS 14+ for desktop widgets.
 - **SwiftUI** for Preferences UI and the widget itself. **AppKit** shell for
   the main app window where SwiftUI is still weak (hidden-when-closed dock
   icon, window restoration, menu-bar niceties).
-- **WidgetKit** with `AppIntentTimelineProvider / AppIntentConfiguration` so each placed widget instance
-  picks a *widget configuration* (see §9.3).
+- **WidgetKit** with `StaticConfiguration`; the placed widget reads the app's saved widget configuration from the App Group store instead of requiring a separate per-widget edit sheet.
 - **NSBackgroundActivityScheduler** for in-app scheduled scraping.
   Sandbox-safe; runs while the app is alive or wakes it from suspended state.
   No LaunchAgent required for the standalone path; the optional CLI keeps a
@@ -731,7 +729,7 @@ Apple's own **Stocks** (watchlist + single-ticker), **Calendar**
 (same-data-different-rows) are the system-app reference points each
 template aligns with.
 
-### 9.5 Composition + Edit Widget UX
+### 9.5 Composition + widget gallery UX
 
 **Surface 1 — Built-in template gallery in the main app's Preferences.**
 
@@ -754,18 +752,17 @@ populated from the user's tracker library. Save writes a row into
 `widgetConfigurations` (template ID + tracker bindings + per-tracker accent
 overrides).
 
-**Surface 2 — Native Edit [widget name] sheet (Control-click on the placed widget).**
+**Surface 2 — macOS widget gallery / placed widget.**
 
-The widget extension exposes `IntentConfiguration` with one parameter:
-`Configuration` (an `AppEntityQuery` resolving to the user's saved
-`widgetConfigurations` rows). Control-click the placed widget → Edit [widget
-name] → pick a configuration from the dropdown. If macOS only shows Edit
-Widgets, remove/re-add the widget from the current build because that instance
-is not exposing the WidgetKit configuration sheet.
+The widget extension now uses `StaticConfiguration` and reads the first saved
+`widgetConfigurations` row from the App Group store. macOS only needs to place
+the widget from Edit Widgets; the app remains the configuration UI. This avoids
+depending on a per-widget Edit sheet, which is not consistently exposed in the
+macOS desktop widget menu during development.
 
-This split — **rich gallery in the app, simple binding in the system Edit [widget name] sheet** —
-mirrors how Stocks works (build a watchlist in the app, point the widget at
-it via the system widget-configuration sheet).
+This split — **rich configuration in the app, automatic rendering in the widget gallery/desktop widget** —
+mirrors simple stock/weather-style widgets: the widget is already set up when
+it is placed, and edits happen in the app.
 
 ### 9.6 Empty state (first run)
 
@@ -1000,15 +997,17 @@ tracker, capped) and gives near-real-time visuals.
 than rolling our own.
 
 ### 12.12 Multiple widget configurations
-*Requirement:* A user can have **many distinct widget instances**, each with
-its own composition.
+*Requirement:* A user can define widget compositions in the app and have the
+macOS widget show the current saved composition without extra setup.
 *Resolution:* `widgetConfigurations` array in `trackers.json` with shape
 `{id, name, templateID, size, [trackerIDs], layout, showSparklines,
-showLabels}`. The `AppIntentTimelineProvider / AppIntentConfiguration` exposes `configurationID` as the
-configurable parameter so each placed widget binds to a saved configuration.
-*Reason:* Different parts of the desktop want different views (small "just
-Codex spend" near the menu bar, large "AI Spend Dashboard" on a secondary
-monitor). One config per widget instance is the right granularity.
+showLabels}`. The WidgetKit extension uses `StaticConfiguration` and picks the
+first saved configuration, falling back to the first tracker if no explicit
+widget configuration exists.
+*Reason:* During desktop-widget testing, macOS did not expose a reliable
+per-widget Edit sheet for this development build. The app is now the source of
+truth: configure in the app, then the widget gallery/desktop widget is already
+set up when placed.
 
 ### 12.13 Embedded MCP server (kept and expanded)
 *Requirement:* The main `.app` exposes an MCP server that **fully controls
@@ -1256,7 +1255,7 @@ to commit to `trackers.json`.
 │   1. Right-click the desktop ➜ Edit Widgets                     │
 │   2. Search "macOS Widgets Stats from Website"                  │
 │   3. Drag the matching size onto your desktop                   │
-│   4. Control-click placed widget → Edit [widget name] → pick it │
+│   4. Widget uses the app's saved configuration automatically    │
 │                                                                 │
 │              [ I'll do this later ]    [ Done ]                  │
 └─────────────────────────────────────────────────────────────────┘
