@@ -1,6 +1,6 @@
 # macOS Widgets Stats from Website — Plan
 
-> Living design document. **Current implementation state: v0.12.2.** The app now
+> Living design document. **Current implementation state: v0.12.4.** The app now
 > uses a persistent Chrome/Chromium profile controlled through CDP for setup,
 > identify, authentication, scraping, and snapshots. The old embedded-browser
 > implementation has been removed from source. Widget instance configuration is

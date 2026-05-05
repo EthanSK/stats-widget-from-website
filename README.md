@@ -2,7 +2,7 @@
 
 **See any number on any logged-in webpage at a glance — without opening another tab.**
 
-[![Status](https://img.shields.io/badge/status-v0.12.2-orange.svg)](PLAN.md)
+[![Status](https://img.shields.io/badge/status-v0.12.4-orange.svg)](PLAN.md)
 [![Release](https://github.com/EthanSK/macos-widgets-stats-from-website/actions/workflows/release.yml/badge.svg)](https://github.com/EthanSK/macos-widgets-stats-from-website/actions/workflows/release.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Platform: macOS](https://img.shields.io/badge/platform-macOS%2013%2B-blue.svg)](#)
@@ -17,7 +17,7 @@ refreshing in the background.
 
 [Website](https://ethansk.github.io/macos-widgets-stats-from-website/) · [Direct download](https://github.com/EthanSK/macos-widgets-stats-from-website/releases/latest/download/MacosWidgetsStatsFromWebsite-latest.zip) · [Architecture (PLAN.md)](PLAN.md) · [Issues](https://github.com/EthanSK/macos-widgets-stats-from-website/issues) · [Releases](https://github.com/EthanSK/macos-widgets-stats-from-website/releases)
 
-> **Status:** v0.12.2 implements the local app, widget extension, CLI, scraping,
+> **Status:** v0.12.4 implements the local app, widget extension, CLI, scraping,
 > snapshot rendering, widget template catalog, selector packs, MCP server,
 > first-launch flow, and polish pass. Read
 > [PLAN.md](PLAN.md) for detailed architecture notes and the roadmap.

@@ -351,11 +351,52 @@ private struct AboutPrefsView: View {
         VStack(alignment: .leading, spacing: 12) {
             Text("macOS Widgets Stats from Website")
                 .font(.title2.weight(.semibold))
-            Text("Preferences shell for v0.2.")
+
+            VStack(alignment: .leading, spacing: 6) {
+                LabeledContent("App version", value: appVersion.displayText)
+                LabeledContent("Widget extension", value: widgetVersion.displayText)
+            }
+            .textSelection(.enabled)
+            .foregroundStyle(.secondary)
+
+            Text("Use these version/build numbers to confirm macOS is loading the latest app and widget extension.")
+                .font(.caption)
                 .foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .padding(28)
         .navigationTitle("About")
+    }
+
+    private var appVersion: BundleVersion {
+        BundleVersion(bundle: .main)
+    }
+
+    private var widgetVersion: BundleVersion {
+        guard let widgetURL = Bundle.main.builtInPlugInsURL?.appendingPathComponent("MacosWidgetsStatsFromWebsiteWidget.appex"),
+              let widgetBundle = Bundle(url: widgetURL) else {
+            return BundleVersion(version: "Not found", build: "-")
+        }
+
+        return BundleVersion(bundle: widgetBundle)
+    }
+}
+
+private struct BundleVersion {
+    let version: String
+    let build: String
+
+    init(bundle: Bundle) {
+        version = bundle.infoDictionary?["CFBundleShortVersionString"] as? String ?? "Unknown"
+        build = bundle.infoDictionary?["CFBundleVersion"] as? String ?? "Unknown"
+    }
+
+    init(version: String, build: String) {
+        self.version = version
+        self.build = build
+    }
+
+    var displayText: String {
+        "v\(version) (build \(build))"
     }
 }
