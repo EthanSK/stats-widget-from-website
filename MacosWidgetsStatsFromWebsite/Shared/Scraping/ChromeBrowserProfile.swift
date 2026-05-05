@@ -63,6 +63,8 @@ final class ChromeBrowserProfile {
     private let queue = DispatchQueue(label: "ChromeBrowserProfile")
     private var backgroundLaunchedApplications: [Int: NSRunningApplication] = [:]
     private var backgroundLaunchedProcesses: [Int: Process] = [:]
+    private var foregroundLaunchedApplications: [Int: NSRunningApplication] = [:]
+    private var foregroundLaunchedProcesses: [Int: Process] = [:]
     private var backgroundUseCounts: [Int: Int] = [:]
     private var userVisiblePorts: Set<Int> = []
 
@@ -191,6 +193,35 @@ final class ChromeBrowserProfile {
         }
     }
 
+    func terminateAppOwnedBrowsersOnAppExit() {
+        let tracked: (applications: [NSRunningApplication], processes: [Process]) = queue.sync {
+            let applications = Array(backgroundLaunchedApplications.values) + Array(foregroundLaunchedApplications.values)
+            let processes = Array(backgroundLaunchedProcesses.values) + Array(foregroundLaunchedProcesses.values)
+            backgroundLaunchedApplications.removeAll()
+            foregroundLaunchedApplications.removeAll()
+            backgroundLaunchedProcesses.removeAll()
+            foregroundLaunchedProcesses.removeAll()
+            backgroundUseCounts.removeAll()
+            userVisiblePorts.removeAll()
+            return (applications, processes)
+        }
+
+        for process in tracked.processes where process.isRunning {
+            process.terminate()
+        }
+
+        for application in tracked.applications where !application.isTerminated {
+            application.terminate()
+        }
+
+        if !tracked.applications.isEmpty || !tracked.processes.isEmpty {
+            ActivityLogger.log("browser", "closed app-owned Chrome profiles on app termination", metadata: [
+                "applications": "\(tracked.applications.count)",
+                "processes": "\(tracked.processes.count)"
+            ])
+        }
+    }
+
     func openTab(
         url: URL,
         configuration: ChromeBrowserLaunchConfiguration,
@@ -292,7 +323,7 @@ final class ChromeBrowserProfile {
                     return
                 }
 
-                guard !foreground, let application else {
+                guard let application else {
                     return
                 }
 
@@ -300,6 +331,11 @@ final class ChromeBrowserProfile {
                     guard let self else { return }
 
                     let port = configuration.cdpPort
+                    if foreground {
+                        self.foregroundLaunchedApplications[port] = application
+                        return
+                    }
+
                     guard (self.backgroundUseCounts[port] ?? 0) > 0, !self.userVisiblePorts.contains(port) else {
                         DispatchQueue.main.async {
                             application.terminate()
@@ -323,6 +359,7 @@ final class ChromeBrowserProfile {
             try process.run()
             if foreground {
                 markUserVisible(configuration: configuration)
+                foregroundLaunchedProcesses[configuration.cdpPort] = process
             } else {
                 backgroundLaunchedProcesses[configuration.cdpPort] = process
             }

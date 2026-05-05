@@ -247,7 +247,8 @@ struct FirstLaunchWizardView: View {
                 Text("1. Right-click the desktop and choose Edit Widgets")
                 Text("2. Search for macOS Widgets Stats from Website")
                 Text("3. Drag a \(createdWidgetConfiguration?.size.displayName.lowercased() ?? "small") widget onto the desktop")
-                Text("4. Right-click the placed widget, choose Edit Widget, then pick \"\(createdWidgetConfiguration?.name ?? "your new configuration")\" from Configuration")
+                Text("4. Control-click the placed widget. If macOS shows Edit “macOS Widgets Stats from Website”, open it and pick \"\(createdWidgetConfiguration?.name ?? "your new configuration")\" from Configuration")
+                Text("   If the menu only says Edit Widgets, remove that widget and add it again from this build; macOS is not showing the configurable widget instance yet.")
                 Text("   Widget configuration requires macOS 14 or later.")
             }
             .foregroundStyle(.secondary)

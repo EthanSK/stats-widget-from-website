@@ -754,16 +754,18 @@ populated from the user's tracker library. Save writes a row into
 `widgetConfigurations` (template ID + tracker bindings + per-tracker accent
 overrides).
 
-**Surface 2 — Native Edit Widget (right-click on the placed widget).**
+**Surface 2 — Native Edit [widget name] sheet (Control-click on the placed widget).**
 
 The widget extension exposes `IntentConfiguration` with one parameter:
 `Configuration` (an `AppEntityQuery` resolving to the user's saved
-`widgetConfigurations` rows). Right-click → Edit Widget → pick a
-configuration from the dropdown.
+`widgetConfigurations` rows). Control-click the placed widget → Edit [widget
+name] → pick a configuration from the dropdown. If macOS only shows Edit
+Widgets, remove/re-add the widget from the current build because that instance
+is not exposing the WidgetKit configuration sheet.
 
-This split — **rich gallery in the app, simple binding in Edit Widget** —
+This split — **rich gallery in the app, simple binding in the system Edit [widget name] sheet** —
 mirrors how Stocks works (build a watchlist in the app, point the widget at
-it via Edit Widget).
+it via the system widget-configuration sheet).
 
 ### 9.6 Empty state (first run)
 
@@ -1254,7 +1256,7 @@ to commit to `trackers.json`.
 │   1. Right-click the desktop ➜ Edit Widgets                     │
 │   2. Search "macOS Widgets Stats from Website"                  │
 │   3. Drag the matching size onto your desktop                   │
-│   4. Pick the new configuration from the configuration picker   │
+│   4. Control-click placed widget → Edit [widget name] → pick it │
 │                                                                 │
 │              [ I'll do this later ]    [ Done ]                  │
 └─────────────────────────────────────────────────────────────────┘

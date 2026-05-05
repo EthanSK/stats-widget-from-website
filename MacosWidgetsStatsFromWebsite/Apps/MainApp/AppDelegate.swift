@@ -18,6 +18,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        ChromeBrowserProfile.shared.terminateAppOwnedBrowsersOnAppExit()
         MCPServer.shared.stopSocketServer()
     }
 

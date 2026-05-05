@@ -38,7 +38,7 @@ struct WidgetConfigurationsView: View {
                         Label("Create Widget Configuration", systemImage: "plus")
                     }
                     .disabled(store.trackers.isEmpty)
-                    Text("After you create a configuration, add the desktop widget from macOS Edit Widgets. Right-click the placed widget, choose Edit Widget, and select the configuration. Widget configuration requires macOS 14 or later.")
+                    Text("After you create a configuration, add the desktop widget from macOS Edit Widgets. Control-click the placed widget and choose Edit “macOS Widgets Stats from Website” if that item appears, then select the configuration. If the menu only says Edit Widgets, remove and add the widget again from this build. Widget configuration requires macOS 14 or later.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)
@@ -180,7 +180,7 @@ private struct WidgetSetupInstructionsFooter: View {
     let configurationName: String?
 
     var body: some View {
-        Text("Add the widget from macOS Edit Widgets. Right-click the placed widget, choose Edit Widget, and select \(quotedConfigurationName) from Configuration. Widget configuration requires macOS 14 or later.")
+        Text("Add the widget from macOS Edit Widgets. To bind a saved configuration, Control-click the placed widget and choose Edit “macOS Widgets Stats from Website”, then select \(quotedConfigurationName) from Configuration. If the menu only says Edit Widgets, remove and add the widget again from this build. Widget configuration requires macOS 14 or later.")
             .font(.caption)
             .foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)
