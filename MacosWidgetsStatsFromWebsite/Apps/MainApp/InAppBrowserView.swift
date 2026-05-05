@@ -2,7 +2,7 @@
 //  InAppBrowserView.swift
 //  MacosWidgetsStatsFromWebsite
 //
-//  Visible WKWebView browser used for sign-in and element capture.
+//  Legacy embedded browser host. New user-facing capture flows use Chrome/CDP.
 //
 
 import AppKit
@@ -640,7 +640,7 @@ private struct WebViewHost: NSViewRepresentable {
     func updateNSView(_ nsView: WKWebView, context: Context) {}
 }
 
-private struct ElementCapturePreviewSheet: View {
+struct ElementCapturePreviewSheet: View {
     let preview: ElementCapturePreview
     let onUse: () -> Void
     let onRetry: () -> Void
@@ -705,7 +705,7 @@ private struct ElementCapturePreviewSheet: View {
     }
 }
 
-private final class ChromeIdentifyElementCoordinator {
+final class ChromeIdentifyElementCoordinator {
     private let renderMode: RenderMode
     private let onPreviewReady: (ElementCapturePreview) -> Void
     private let onError: (String, Bool) -> Void

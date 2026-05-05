@@ -2,59 +2,75 @@
 //  SignInPrefsView.swift
 //  MacosWidgetsStatsFromWebsite
 //
-//  Sign in, re-sign in, and reset browser controls.
+//  Chrome/CDP profile controls.
 //
 
+import AppKit
 import SwiftUI
-import WebKit
 
 struct SignInPrefsView: View {
-    @State private var browserPresentation: SignInBrowserPresentation?
-    @State private var cookieDomains: [String] = []
-    @State private var isLoadingDomains = false
+    @State private var urlText = ""
     @State private var statusMessage: String?
     @State private var showsResetConfirmation = false
+
+    private var browserConfiguration: ChromeBrowserLaunchConfiguration {
+        ChromeBrowserProfile.shared.configuration()
+    }
 
     var body: some View {
         Form {
             Section {
+                LabeledContent("Engine") {
+                    Text("Chrome/Chromium via CDP")
+                }
                 LabeledContent("Profile") {
-                    Text(WebViewProfile.name)
+                    Text(browserConfiguration.profileName)
                         .monospaced()
                 }
-                LabeledContent("Persistent") {
-                    Text(WebViewProfile.shared.websiteDataStore.isPersistent ? "Yes" : "No")
-                        .foregroundColor(WebViewProfile.shared.websiteDataStore.isPersistent ? .secondary : .red)
+                LabeledContent("CDP endpoint") {
+                    Text(browserConfiguration.cdpURL.absoluteString)
+                        .monospaced()
+                        .textSelection(.enabled)
                 }
-                Text("WKWebsiteDataStore profile name: \(WebViewProfile.name). Cookies, local storage, IndexedDB, service workers, and caches are shared by the visible browser and scraper sessions.")
+                LabeledContent("User data") {
+                    Text(browserConfiguration.userDataDirectory.path)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .textSelection(.enabled)
+                }
+                Text("Trackers, first launch, MCP identify requests, and manual re-identify all use this same local Chrome/Chromium profile. Cookies and page state stay on this Mac.")
                     .foregroundStyle(.secondary)
+            } header: {
+                Text("Browser profile")
             }
 
             Section {
                 HStack(spacing: 12) {
-                    Button("Sign in to a site") {
-                        browserPresentation = SignInBrowserPresentation(url: nil)
+                    Button("Open Chrome Profile") {
+                        openProfileBrowser(url: nil)
                     }
 
-                    Button("Open Claude") {
-                        browserPresentation = SignInBrowserPresentation(url: URL(string: "https://claude.ai/login"))
+                    Button("Reveal Profile Folder") {
+                        revealProfileFolder()
                     }
 
-                    Menu("Re-sign in to...") {
-                        ForEach(cookieDomains, id: \.self) { domain in
-                            Button(domain) {
-                                openBrowser(forDomain: domain)
-                            }
-                        }
-                    }
-                    .disabled(cookieDomains.isEmpty)
-
-                    Button("Reset browser data", role: .destructive) {
+                    Button("Reset Chrome Profile", role: .destructive) {
                         showsResetConfirmation = true
                     }
                 }
 
-                Text(domainStatusText)
+                HStack(spacing: 8) {
+                    TextField("https://example.com/dashboard", text: $urlText)
+                        .textFieldStyle(.roundedBorder)
+                        .onSubmit {
+                            openEnteredURL()
+                        }
+                    Button("Open URL") {
+                        openEnteredURL()
+                    }
+                }
+
+                Text("To track any signed-in dashboard, paste that service's URL here or in a tracker. The app no longer ships vendor-specific shortcut buttons.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
@@ -62,78 +78,79 @@ struct SignInPrefsView: View {
                     Text(statusMessage)
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
                 }
-            }
-
-            Section {
-                Text("Stored credentials (Keychain): 0 entries")
-                Text("Passkeys available: AuthenticationServices framework")
-                    .foregroundStyle(.secondary)
+            } header: {
+                Text("Actions")
             }
         }
         .formStyle(.grouped)
         .padding(20)
-        .navigationTitle("Browser & Sign-in")
-        .onAppear {
-            loadCookieDomains()
-        }
-        .sheet(item: $browserPresentation, onDismiss: loadCookieDomains) { presentation in
-            InAppBrowserView(initialURL: presentation.url, allowsElementIdentification: false)
-                .frame(width: 1100, height: 760)
-        }
-        .alert("Reset browser data?", isPresented: $showsResetConfirmation) {
-            Button("Reset Browser Data", role: .destructive) {
+        .navigationTitle("Chrome Profile")
+        .alert("Reset Chrome profile?", isPresented: $showsResetConfirmation) {
+            Button("Reset Chrome Profile", role: .destructive) {
                 resetBrowserData()
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("This removes cookies, local storage, IndexedDB, service workers, and caches for the shared browser profile.")
+            Text("This moves the app's Chrome/Chromium user-data folder to the Trash. Close any Chrome window opened by this app first if reset fails.")
         }
     }
 
-    private var domainStatusText: String {
-        if isLoadingDomains {
-            return "Loading signed-in domains..."
+    private func openEnteredURL() {
+        let trimmed = urlText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            openProfileBrowser(url: nil)
+            return
         }
 
-        if cookieDomains.isEmpty {
-            return "No cookie-backed sites found for this profile."
+        let normalized = trimmed.contains("://") ? trimmed : "https://\(trimmed)"
+        guard let url = URL(string: normalized),
+              let scheme = url.scheme?.lowercased(),
+              scheme == "http" || scheme == "https",
+              url.host?.isEmpty == false else {
+            statusMessage = "Enter a valid http or https URL."
+            return
         }
 
-        return "\(cookieDomains.count) cookie-backed site\(cookieDomains.count == 1 ? "" : "s") found."
+        urlText = url.absoluteString
+        openProfileBrowser(url: url)
     }
 
-    private func openBrowser(forDomain domain: String) {
-        let url = URL(string: "https://\(domain)")
-        browserPresentation = SignInBrowserPresentation(url: url)
-    }
-
-    private func loadCookieDomains() {
-        isLoadingDomains = true
-        WebViewProfile.shared.websiteDataStore.fetchDataRecords(ofTypes: Set([WKWebsiteDataTypeCookies])) { records in
+    private func openProfileBrowser(url: URL?) {
+        statusMessage = "Opening Chrome profile…"
+        ChromeBrowserProfile.shared.openVisibleBrowserTarget(url: url.map(ChromeBrowserProfile.safeInitialURL(for:))) { result in
             DispatchQueue.main.async {
-                cookieDomains = records
-                    .map(\.displayName)
-                    .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-                    .sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
-                isLoadingDomains = false
+                switch result {
+                case .success:
+                    statusMessage = url == nil ? "Chrome profile opened." : "Opened \(url?.host ?? "URL") in the Chrome profile."
+                case .failure(let error):
+                    statusMessage = error.localizedDescription
+                }
             }
         }
+    }
+
+    private func revealProfileFolder() {
+        let url = browserConfiguration.userDataDirectory
+        try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        NSWorkspace.shared.activateFileViewerSelecting([url])
+        statusMessage = "Revealed Chrome profile folder."
     }
 
     private func resetBrowserData() {
-        statusMessage = "Resetting browser data..."
-        let dataTypes = WKWebsiteDataStore.allWebsiteDataTypes()
-        WebViewProfile.shared.websiteDataStore.removeData(ofTypes: dataTypes, modifiedSince: .distantPast) {
-            DispatchQueue.main.async {
-                statusMessage = "Browser data reset."
-                loadCookieDomains()
+        let url = browserConfiguration.userDataDirectory
+        do {
+            guard FileManager.default.fileExists(atPath: url.path) else {
+                statusMessage = "Chrome profile is already empty."
+                return
             }
+
+            var trashedURL: NSURL?
+            try FileManager.default.trashItem(at: url, resultingItemURL: &trashedURL)
+            statusMessage = "Chrome profile moved to Trash. It will be recreated next time Chrome opens."
+        } catch {
+            statusMessage = "Could not reset Chrome profile: \(error.localizedDescription)"
         }
     }
-}
-
-private struct SignInBrowserPresentation: Identifiable {
-    let id = UUID()
-    let url: URL?
 }

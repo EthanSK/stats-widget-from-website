@@ -19,10 +19,26 @@ struct TrackersListView: View {
     var body: some View {
         ZStack {
             if store.trackers.isEmpty {
-                Text("No trackers yet — click + to add one")
-                    .font(.headline)
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                VStack(spacing: 12) {
+                    Image(systemName: "target")
+                        .font(.system(size: 40))
+                        .foregroundStyle(.secondary)
+                    Text("No trackers yet")
+                        .font(.headline)
+                    Text("Add a tracker, paste a page URL, then identify the value or page region in the app's Chrome profile.")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                        .frame(maxWidth: 420)
+                    Button {
+                        add()
+                    } label: {
+                        Label("Add Tracker", systemImage: "plus")
+                    }
+                    .keyboardShortcut("n", modifiers: .command)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .padding()
             } else {
                 List(selection: $selectedTrackerID) {
                     ForEach(store.trackers) { tracker in
@@ -93,7 +109,7 @@ struct TrackersListView: View {
                 store.upsertTracker(savedTracker)
                 selectedTrackerID = savedTracker.id
             }
-            .frame(width: 500)
+            .frame(width: 620, height: 680)
         }
         .onAppear {
             if let trackerID = AppNavigationEvents.consumePendingTrackerID() {

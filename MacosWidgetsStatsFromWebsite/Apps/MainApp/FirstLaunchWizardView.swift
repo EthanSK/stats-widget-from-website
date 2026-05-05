@@ -43,10 +43,9 @@ struct FirstLaunchWizardView: View {
         .frame(width: 640)
         .frame(minHeight: 470)
         .sheet(item: $identifyBrowser) { presentation in
-            InAppBrowserView(initialURL: presentation.url, renderMode: renderMode, allowsElementIdentification: true) { pick in
+            ChromeElementCaptureView(url: presentation.url, renderMode: renderMode) { pick in
                 applyCapturedElement(pick)
             }
-            .frame(width: 1100, height: 760)
         }
     }
 
@@ -64,7 +63,7 @@ struct FirstLaunchWizardView: View {
             VStack(alignment: .leading, spacing: 8) {
                 Text("Start with any website")
                     .font(.headline)
-                Text("Paste the page you want to track. You can sign in and move around inside the browser before choosing the exact value or region.")
+                Text("Paste the page you want to track. The app opens its persistent Chrome/Chromium profile when it is time to choose the exact value or region.")
                     .foregroundStyle(.secondary)
             }
 
@@ -86,7 +85,7 @@ struct FirstLaunchWizardView: View {
                 }
             }
 
-            Text("Cookies stay in the app's shared macos-widgets-stats-from-website WebKit profile. Nothing is sent to a third-party server.")
+            Text("Cookies stay in the app's local Chrome/Chromium profile. Nothing is sent to a third-party server.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
 
@@ -143,7 +142,7 @@ struct FirstLaunchWizardView: View {
                         Button {
                             openIdentifyBrowser()
                         } label: {
-                            Label(capturedPick == nil ? "Open Page and Identify Element" : "Re-identify Element", systemImage: "viewfinder")
+                            Label(capturedPick == nil ? "Open Chrome and Identify Element" : "Re-identify in Chrome", systemImage: "viewfinder")
                         }
                         .disabled(selectedURL == nil)
 
@@ -168,7 +167,7 @@ struct FirstLaunchWizardView: View {
                             }
                             .padding(.top, 4)
                         } else {
-                            Text("Required before saving: in the browser, sign in if needed, click Identify Element, hover the value or region, then click to preview and use it.")
+                            Text("Required before saving: Chrome opens with the app profile. Sign in or navigate if needed, hover the value or region, then click to preview and use it.")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
@@ -305,7 +304,7 @@ struct FirstLaunchWizardView: View {
         }
 
         if capturedPick == nil {
-            return "Open the page and identify the value or region before saving the tracker."
+            return "Open Chrome and identify the value or region before saving the tracker."
         }
 
         return nil

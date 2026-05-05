@@ -732,6 +732,20 @@ private enum MCPToolDispatcher {
         let configuration = AppGroupStore.loadSharedConfiguration()
         let readings = AppGroupStore.loadReadings().readings
         let health = trackerHealthPayload(trackers: configuration.trackers, readings: readings)
+        #if WIDGET_EXTENSION
+        let browserProfilePayload: [String: Any] = [
+            "engine": "chrome_cdp",
+            "name": Tracker.defaultBrowserProfile
+        ]
+        #else
+        let browserConfiguration = ChromeBrowserProfile.shared.configuration()
+        let browserProfilePayload: [String: Any] = [
+            "engine": "chrome_cdp",
+            "name": browserConfiguration.profileName,
+            "cdpURL": browserConfiguration.cdpURL.absoluteString,
+            "userDataDirectory": browserConfiguration.userDataDirectory.path
+        ]
+        #endif
         return [
             "serverInfo": [
                 "name": "macos-widgets-stats-from-website",
@@ -740,10 +754,7 @@ private enum MCPToolDispatcher {
             "transport": context.transport == .unixSocket ? "unixSocket" : "stdio",
             "interactiveElementIdentification": context.supportsInteractiveBrowser ? "available" : "requires_app_socket",
             "socketPath": AppGroupPaths.mcpSocketURL().path,
-            "browserProfile": [
-                "name": WebViewProfile.name,
-                "persistent": WebViewProfile.shared.websiteDataStore.isPersistent
-            ],
+            "browserProfile": browserProfilePayload,
             "counts": [
                 "trackers": configuration.trackers.count,
                 "widgetConfigurations": configuration.widgetConfigurations.count

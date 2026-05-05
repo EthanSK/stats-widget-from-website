@@ -86,7 +86,7 @@ struct TrackerEditorView: View {
                             Button {
                                 openIdentifyBrowser()
                             } label: {
-                                Label(draft.selector.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Identify Element" : "Re-identify", systemImage: "viewfinder")
+                                Label(draft.selector.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Identify in Chrome" : "Re-identify in Chrome", systemImage: "viewfinder")
                             }
                             .disabled(validatedURL == nil)
                         }
@@ -138,10 +138,9 @@ struct TrackerEditorView: View {
             draft.refreshIntervalSec = newMode.defaultRefreshIntervalSec
         }
         .sheet(item: $browserPresentation) { presentation in
-            InAppBrowserView(initialURL: presentation.url, renderMode: draft.renderMode, allowsElementIdentification: true) { pick in
+            ChromeElementCaptureView(url: presentation.url, renderMode: draft.renderMode) { pick in
                 applyCapturedElement(pick)
             }
-            .frame(width: 1100, height: 760)
         }
     }
 
@@ -188,11 +187,11 @@ struct TrackerEditorView: View {
 
     private var captureValidationMessage: String {
         if validatedURL == nil {
-            return "Enter a valid URL before identifying an element."
+            return "Enter a valid URL before opening Chrome to identify an element."
         }
 
         if trimmedSelector.isEmpty {
-            return "Use Identify Element to capture a CSS selector before saving."
+            return "Use Identify in Chrome to capture a CSS selector before saving."
         }
 
         if draft.elementBoundingBox == nil {

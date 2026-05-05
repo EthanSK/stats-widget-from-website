@@ -67,10 +67,9 @@ struct PreferencesWindow: View {
             openMCPIdentifyRequest(notification)
         }
         .sheet(item: $mcpIdentifyPresentation) { presentation in
-            InAppBrowserView(initialURL: presentation.url, renderMode: presentation.renderMode, allowsElementIdentification: true) { pick in
+            ChromeElementCaptureView(url: presentation.url, renderMode: presentation.renderMode) { pick in
                 completeMCPIdentifyRequest(presentation, pick: pick)
             }
-            .frame(width: 1100, height: 760)
         }
     }
 
@@ -170,7 +169,7 @@ struct PreferencesWindow: View {
             store.addTracker(Tracker(id: trackerID, name: "Pending \(url.host ?? "Tracker")", url: url.absoluteString, renderMode: renderMode, selector: ""))
         }
 
-        selection = .browser
+        selection = .trackers
         mcpIdentifyPresentation = MCPIdentifyPresentation(trackerID: trackerID, url: url, renderMode: renderMode)
     }
 
@@ -223,7 +222,7 @@ private enum PreferencesSection: String, CaseIterable, Hashable, Identifiable {
         case .widgets:
             return "Widgets"
         case .browser:
-            return "Browser & Sign-in"
+            return "Chrome Profile"
         case .mcp:
             return "MCP"
         case .about:

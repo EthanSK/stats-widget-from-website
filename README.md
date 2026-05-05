@@ -54,10 +54,9 @@ See [docs/release.md](docs/release.md) for release setup and validation gates.
 
 ## Features
 
-- Text and snapshot trackers for any page visible in the in-app WKWebView.
-- Shared website data store between visible and headless browser sessions.
-- Snapshot mode with long-lived page sessions, 2-second re-snapshotting, and a
-  30-minute full reload heartbeat.
+- Text and snapshot trackers for pages opened through the app's local Chrome/Chromium CDP profile.
+- Shared browser profile between setup, manual re-identify, MCP identify requests, and app-owned scraping.
+- Snapshot mode that captures the selected page region through Chrome/CDP and refreshes from the app scheduler.
 - Twelve WidgetKit templates for small, medium, large, and macOS 14 extra-large
   families, with separate widget configurations per widget instance.
 - Clear broken-tracker status and a re-identify flow when a page layout changes.
@@ -65,7 +64,7 @@ See [docs/release.md](docs/release.md) for release setup and validation gates.
   shared-token auth.
 - Selector packs for importing and exporting trusted, script-free tracker
   definitions.
-- First-launch wizard for signing in, identifying the first element, and adding
+- First-launch wizard for opening Chrome, identifying the first element, and adding
   the first widget.
 - Widget polish: animated value changes, attention states, VoiceOver labels,
   Dynamic Type support, Reduce Motion respect, keyboard shortcuts, Dock badge,
@@ -86,10 +85,10 @@ shape and migration strategy.
 1. Open **macOS Widgets Stats from Website.app**.
 2. On first launch, paste any page URL and click **Continue**, or skip the
    wizard and open Preferences directly.
-3. Pick **Text** or **Snapshot** mode, choose the first widget template, then
-   open the page in the in-app browser.
-4. Sign in or navigate if needed, click **Identify Element**, hover the value or
-   page region until it lights up, then click to capture and preview it.
+3. Pick **Text** or **Snapshot** mode and choose the first widget template.
+4. Click **Open Chrome and Identify Element**. Sign in or navigate in Chrome if
+   needed, hover the value or page region until it lights up, then click to
+   capture and preview it.
 5. Click **Save Tracker** to create the tracker and its first widget
    configuration.
 6. Add the widget to your desktop or notification centre and select the new
@@ -97,12 +96,12 @@ shape and migration strategy.
 
 ## Wiring up an AI agent (optional)
 
-The app embeds an MCP server. Any external MCP client — your Codex CLI, Claude
-Code session, or anything else that speaks MCP — can connect to it and manage
-trackers, trigger scrapes, request the visible element-identification flow,
-repair stale/broken tracker state after a manual fix, attach a generic broken-
-tracker webhook, and manage widget configurations. The app itself never spawns
-AI binaries; agent involvement always runs in your own agent's session. See
+The app embeds an MCP server. Any external MCP client or local automation can
+connect to it and manage trackers, trigger scrapes, request the visible
+element-identification flow, repair stale/broken tracker state after a manual
+fix, attach a generic broken-tracker webhook, and manage widget configurations.
+The app itself never spawns AI binaries; agent involvement always runs in your
+own agent's session. See
 [PLAN.md §13 MCP Server](PLAN.md#13-mcp-server) for transport, auth, and the
 complete tool catalog.
 
@@ -112,7 +111,7 @@ running. Preferences → MCP shows the exact socket path and current launch toke
 Socket clients authenticate with either an `X-Auth: <token>` header line before
 the first JSON-RPC request or a `token` field in `initialize.params`. Stdio is
 suitable for headless tracker/configuration operations; the socket transport is
-required when an agent needs the live app to open its visible browser for
+required when an agent needs the live app to open the Chrome/CDP element picker for
 `identify_element`.
 
 Minimal stdio MCP config shape:
@@ -133,7 +132,7 @@ Useful setup flow for an assistant:
 1. Call `get_status` and `tools/list`.
 2. If a selector is already known, call `add_tracker`; otherwise call
    `identify_element` over the app socket and have the user pick the element in
-   the visible browser.
+   the Chrome/CDP picker.
 3. Call `trigger_scrape` to verify the reading.
 4. Call `update_widget_configuration` to create the widget layout.
 5. If a tracker later becomes stale/broken, inspect it with `list_trackers` /
@@ -143,11 +142,10 @@ Useful setup flow for an assistant:
 
 ## Caveats
 
-- **Browser profile reality.** Google-authenticated pages should use the
-  app's persistent Chrome/Chromium CDP profile; embedded `WKWebView` Google
-  OAuth is intentionally blocked/brittle. WKWebView remains useful for
-  non-Google/local pages, while CDP is the safer primary path for signed-in
-  Google dashboards. See [docs/google-auth-cdp-path.md](docs/google-auth-cdp-path.md).
+- **Browser profile reality.** The app's user-facing browser path is the
+  persistent Chrome/Chromium CDP profile. This avoids embedded-WebView OAuth
+  dead ends and keeps setup, re-identify, MCP identify, and scraping on the same
+  local browser session. See [docs/google-auth-cdp-path.md](docs/google-auth-cdp-path.md).
 - **Local-only scraping.** The app signs in *as you* on this Mac. Cookies stay
   on your machine. No third-party server is involved. If a site changes its
   layout the app marks the tracker stale or broken after repeated failures and

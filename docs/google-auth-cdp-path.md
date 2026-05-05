@@ -1,55 +1,48 @@
-# Google-authenticated pages: Chrome/CDP path
+# Chrome/CDP browser path
 
-_Last assessed on 2026-05-04 from the Mac Mini implementation state._
+_Last assessed on 2026-05-05 from the MacBook implementation state._
 
 ## Decision
 
 Use a real Chrome/Chromium profile controlled over the Chrome DevTools Protocol
-for Google-authenticated pages. Keep the embedded `WKWebView` browser as a
-secondary path for non-Google pages, simple local pages, and fallback browsing.
+as the app's user-facing browser path for setup, re-identify, MCP-driven
+`identify_element`, and app-owned scraping.
 
-Google sign-in inside embedded macOS `WKWebView` is intentionally unsupported
-for OAuth/sign-in flows and remains brittle even with Safari user-agent,
-process-pool, data-store, FedCM, or passkey tweaks. Do not spend more product
-time trying to make Google OAuth reliable inside `WKWebView`.
+Embedded WebView/WKWebView sign-in and element-picking flows are no longer part
+of the product UX. OAuth, passkeys, Google sign-in, and modern dashboard auth are
+more reliable in a real browser profile, and keeping one browser path avoids the
+old mismatch where setup used one cookie store and scraping used another.
 
 ## Current implementation inventory
 
-- Background/app-owned scraping already uses `ChromeCDPScraper` from
-  `BackgroundScheduler`, and MCP `trigger_scrape` uses `ChromeCDPScraper` in
-  the main app target.
 - `ChromeBrowserProfile` launches a persistent Chrome/Chromium profile with a
   local CDP port and per-profile user-data directory.
-- `ChromeCDPClient` intentionally avoids `Runtime.enable` and uses
-  `Runtime.evaluate` directly for selector extraction, matching the safer
+- `ChromeCDPScraper` performs app-owned scraping through that profile.
+- The first-launch wizard, tracker editor, and MCP identify requests open the
+  same Chrome/CDP picker directly.
+- `ChromeCDPClient` intentionally avoids `Runtime.enable` and uses bounded
+  `Runtime.evaluate` calls for selector extraction, matching the safer
   Google-login-compatible control style.
-- Element selection now has a bounded Chrome/CDP path from the visible browser:
-  `Identify in CDP Browser` opens the page in the persistent profile, injects
-  the existing picker into that CDP target, polls `window.__statsWidgetPicked`,
-  validates the selector over CDP, and returns the same preview/save payload as
-  the `WKWebView` picker.
+- `InspectOverlayJS` works outside WebKit by storing successful picks on
+  `window.__statsWidgetPicked` and errors on
+  `window.__statsWidgetInspectError`; the CDP coordinator polls those globals,
+  validates the selector, and returns the same preview/save payload.
 
-## Safest next implementation path
+## User flow
 
-1. Make Chrome/CDP the primary sign-in and scraping path for Google-authenticated
-   trackers. Avoid new `WKWebView` OAuth workarounds.
-2. Keep the current CDP Identify path intentionally small: inject the picker
-   script, store the clicked payload on `window`, and poll it with
-   `Runtime.evaluate` so no full `Runtime.enable` event stream is required.
-3. For a deeper native inspector later, use CDP DOM/Overlay calls such as
-   `DOM.getNodeForLocation`, `Overlay.highlightNode`, and
-   `DOM.describeNode`/attributes. That needs event handling in
-   `ChromeCDPClient`, so keep it as a later iteration.
-4. Route Google-account pages through the Chrome profile: open/sign in in CDP
-   browser → use `Identify in CDP Browser` → validate selector via CDP → save
-   tracker with the existing `browserProfile`.
-5. Keep `WKWebView` available for non-Google/local pages where a bundled system
-   browser is valuable and App Store constraints matter.
+1. Paste the target page URL.
+2. Click **Open Chrome and Identify Element** / **Identify in Chrome**.
+3. Sign in or navigate in the app's Chrome profile if needed.
+4. Hover and click the value or page region.
+5. Confirm the preview; the tracker stores the selector, bounding box, render
+   mode, and Chrome profile name.
 
-## Small groundwork already applied
+## Notes
 
-`InspectOverlayJS` now has a non-WebKit fallback: when no
-`webkit.messageHandlers` bridge exists, successful picks are stored on
-`window.__statsWidgetPicked` and errors on `window.__statsWidgetInspectError`.
-The script clears those fallback globals at startup so CDP polling cannot read a
-stale pick from a previous identify session.
+- Vendor-specific shortcuts are intentionally absent. To track any signed-in
+  dashboard, paste that service's URL manually.
+- Chrome for Testing / installed Chrome / Chromium resolution remains handled by
+  `ChromeBrowserProfile`; distribution policy is documented separately in the
+  release notes.
+- The old WebKit implementation can remain as legacy code until deleted, but it
+  should not be presented as the setup or authentication path.

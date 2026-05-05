@@ -27,10 +27,22 @@ struct WidgetConfigurationsView: View {
                         .foregroundStyle(.secondary)
                     Text("No widget configurations yet")
                         .font(.headline)
-                    Text("Create a configuration for each widget instance you want on the desktop.")
+                    Text(store.trackers.isEmpty ? "Add a tracker first, then create a widget configuration for the desktop widget picker." : "Create a configuration for each widget instance you want on the desktop.")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)
+                        .frame(maxWidth: 430)
+                    Button {
+                        add()
+                    } label: {
+                        Label("Create Widget Configuration", systemImage: "plus")
+                    }
+                    .disabled(store.trackers.isEmpty)
+                    if store.trackers.isEmpty {
+                        Text("Tip: the first-launch wizard creates one tracker and one widget configuration together.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .padding()
@@ -291,7 +303,7 @@ private struct WidgetConfigurationEditorView: View {
                 } header: {
                     Text("Tracker Slots")
                 } footer: {
-                    Text("Selected \(draft.trackerIDs.count). \(slotDescription)")
+                    Text(slotFooterDescription)
                 }
             }
             .formStyle(.grouped)
@@ -334,6 +346,18 @@ private struct WidgetConfigurationEditorView: View {
         }
 
         return "Requires \(range.lowerBound)-\(range.upperBound) trackers."
+    }
+
+    private var slotFooterDescription: String {
+        let selected = draft.trackerIDs.count
+        let range = draft.templateID.slotCount
+        if selected < range.lowerBound {
+            return "Selected \(selected). Add \(range.lowerBound - selected) more tracker\((range.lowerBound - selected) == 1 ? "" : "s") to save. \(slotDescription)"
+        }
+        if selected > range.upperBound {
+            return "Selected \(selected). Remove \(selected - range.upperBound) tracker\((selected - range.upperBound) == 1 ? "" : "s") to save. \(slotDescription)"
+        }
+        return "Selected \(selected). Ready to save. \(slotDescription)"
     }
 
     private func binding(for trackerID: UUID) -> Binding<Bool> {
