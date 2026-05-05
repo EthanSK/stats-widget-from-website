@@ -64,8 +64,8 @@ targets:
         CFBundleInfoDictionaryVersion: "6.0"
         CFBundleName: $(PRODUCT_NAME)
         CFBundlePackageType: $(PRODUCT_BUNDLE_PACKAGE_TYPE)
-        CFBundleShortVersionString: "0.12.2"
-        CFBundleVersion: "1202"
+        CFBundleShortVersionString: "0.12.3"
+        CFBundleVersion: "1203"
         CFBundleDocumentTypes:
           - CFBundleTypeName: macOS Widgets Stats from Website Selector Pack
             CFBundleTypeRole: Editor
@@ -131,8 +131,8 @@ targets:
         CFBundleInfoDictionaryVersion: "6.0"
         CFBundleName: $(PRODUCT_NAME)
         CFBundlePackageType: $(PRODUCT_BUNDLE_PACKAGE_TYPE)
-        CFBundleShortVersionString: "0.12.2"
-        CFBundleVersion: "1202"
+        CFBundleShortVersionString: "0.12.3"
+        CFBundleVersion: "1203"
         NSExtension:
           NSExtensionPointIdentifier: com.apple.widgetkit-extension
     entitlements:
@@ -165,8 +165,8 @@ targets:
         CFBundleInfoDictionaryVersion: "6.0"
         CFBundleName: $(PRODUCT_NAME)
         CFBundlePackageType: $(PRODUCT_BUNDLE_PACKAGE_TYPE)
-        CFBundleShortVersionString: "0.12.2"
-        CFBundleVersion: "1202"
+        CFBundleShortVersionString: "0.12.3"
+        CFBundleVersion: "1203"
         LSMinimumSystemVersion: $(MACOSX_DEPLOYMENT_TARGET)
     entitlements:
       path: MacosWidgetsStatsFromWebsite/Apps/CLI/MacosWidgetsStatsFromWebsiteCLI.entitlements
