@@ -352,7 +352,7 @@ private final class MCPConnectionSession {
                 "protocolVersion": "2024-11-05",
                 "serverInfo": [
                     "name": "macos-widgets-stats-from-website",
-                    "version": "0.12.5"
+                    "version": "0.12.6"
                 ],
                 "capabilities": [
                     "tools": [:]
@@ -748,7 +748,7 @@ private enum MCPToolDispatcher {
         return [
             "serverInfo": [
                 "name": "macos-widgets-stats-from-website",
-                "version": "0.12.5"
+                "version": "0.12.6"
             ],
             "transport": context.transport == .unixSocket ? "unixSocket" : "stdio",
             "interactiveElementIdentification": context.supportsInteractiveBrowser ? "available" : "requires_app_socket",
