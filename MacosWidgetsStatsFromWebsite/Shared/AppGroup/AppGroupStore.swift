@@ -261,10 +261,16 @@ final class AppGroupStore: ObservableObject {
 
     static func loadAppGroupConfiguration() -> AppConfiguration {
         guard let url = AppGroupPaths.appGroupTrackersURL() else {
-            return .empty
+            return loadConfiguration(from: AppGroupPaths.canonicalTrackersURL())
         }
 
-        return loadConfiguration(from: url)
+        let appGroupConfiguration = loadConfiguration(from: url)
+        if hasUserConfigurationData(appGroupConfiguration) {
+            return appGroupConfiguration
+        }
+
+        let canonicalConfiguration = loadConfiguration(from: AppGroupPaths.canonicalTrackersURL())
+        return hasUserConfigurationData(canonicalConfiguration) ? canonicalConfiguration : appGroupConfiguration
     }
 
     static func loadSharedConfiguration() -> AppConfiguration {

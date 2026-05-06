@@ -76,16 +76,31 @@ private enum StatsWidgetEntryFactory {
     }
 
     static func makeEntry(configurationID: String? = nil) -> StatsWidgetEntry {
-        let appConfiguration = AppGroupStore.loadAppGroupConfiguration()
+        let appConfiguration = AppGroupStore.loadSharedConfiguration()
         let readingsFile = AppGroupStore.loadReadings()
         let selectedConfiguration = selectConfiguration(from: appConfiguration, configurationID: configurationID)
-        let trackerIDs = selectedConfiguration?.trackerIDs ?? appConfiguration.trackers.prefix(1).map(\.id)
-        let trackers = trackerIDs.compactMap { id in
+        let configuredTrackerIDs = selectedConfiguration?.trackerIDs ?? []
+        let trackerIDs = configuredTrackerIDs.isEmpty
+            ? appConfiguration.trackers.prefix(1).map(\.id)
+            : configuredTrackerIDs
+        var trackers = trackerIDs.compactMap { id in
             appConfiguration.trackers.first { $0.id == id }
         }
+
+        if trackers.isEmpty, let firstTracker = appConfiguration.trackers.first {
+            trackers = [firstTracker]
+        }
+
         let readings = Dictionary(uniqueKeysWithValues: readingsFile.readings.compactMap { key, value in
             UUID(uuidString: key).map { ($0, value) }
         })
+
+        ActivityLogger.log("widget", "loaded timeline entry", metadata: [
+            "trackers": "\(appConfiguration.trackers.count)",
+            "widgets": "\(appConfiguration.widgetConfigurations.count)",
+            "selectedTrackers": "\(trackers.count)",
+            "configurationID": selectedConfiguration?.id.uuidString ?? "none"
+        ])
 
         return StatsWidgetEntry(
             date: Date(),
