@@ -287,8 +287,8 @@ final class ChromeBrowserProfile {
         }
     }
 
-    private func buildChromeLaunchArguments(configuration: ChromeBrowserLaunchConfiguration) -> [String] {
-        [
+    private func buildChromeLaunchArguments(configuration: ChromeBrowserLaunchConfiguration, headless: Bool) -> [String] {
+        var arguments = [
             "--remote-debugging-address=127.0.0.1",
             "--remote-debugging-port=\(configuration.cdpPort)",
             "--user-data-dir=\(configuration.userDataDirectory.path)",
@@ -302,20 +302,36 @@ final class ChromeBrowserProfile {
             "--hide-crash-restore-bubble",
             "--no-proxy-server"
         ]
+
+        if headless {
+            arguments.append(contentsOf: [
+                "--headless=new",
+                "--disable-gpu"
+            ])
+        }
+
+        return arguments
     }
 
     private func launch(browser: ResolvedBrowser, configuration: ChromeBrowserLaunchConfiguration, foreground: Bool) throws {
-        let arguments = buildChromeLaunchArguments(configuration: configuration) + ["about:blank"]
+        let arguments = buildChromeLaunchArguments(configuration: configuration, headless: !foreground) + ["about:blank"]
 
         switch browser.kind {
         case .appBundle(let appURL):
+            guard foreground else {
+                try launchHeadlessProcess(
+                    executableURL: try Self.executableURL(forAppBundle: appURL),
+                    arguments: arguments,
+                    configuration: configuration
+                )
+                break
+            }
+
             let openConfiguration = NSWorkspace.OpenConfiguration()
             openConfiguration.arguments = arguments
             openConfiguration.activates = foreground
             openConfiguration.createsNewApplicationInstance = true
-            if foreground {
-                markUserVisible(configuration: configuration)
-            }
+            markUserVisible(configuration: configuration)
 
             NSWorkspace.shared.openApplication(at: appURL, configuration: openConfiguration) { [weak self] application, error in
                 if let error {
@@ -329,46 +345,58 @@ final class ChromeBrowserProfile {
 
                 self?.queue.async { [weak self] in
                     guard let self else { return }
-
-                    let port = configuration.cdpPort
-                    if foreground {
-                        self.foregroundLaunchedApplications[port] = application
-                        return
-                    }
-
-                    guard (self.backgroundUseCounts[port] ?? 0) > 0, !self.userVisiblePorts.contains(port) else {
-                        DispatchQueue.main.async {
-                            application.terminate()
-                        }
-                        ActivityLogger.log("browser", "closed late app-owned background Chrome after scrape", metadata: [
-                            "profile": configuration.profileName,
-                            "port": "\(port)"
-                        ])
-                        return
-                    }
-
-                    self.backgroundLaunchedApplications[port] = application
+                    self.foregroundLaunchedApplications[configuration.cdpPort] = application
                 }
             }
         case .executable(let executableURL):
-            let process = Process()
-            process.executableURL = executableURL
-            process.arguments = arguments
-            process.standardOutput = FileHandle.nullDevice
-            process.standardError = FileHandle.nullDevice
-            try process.run()
             if foreground {
+                let process = Process()
+                process.executableURL = executableURL
+                process.arguments = arguments
+                process.standardOutput = FileHandle.nullDevice
+                process.standardError = FileHandle.nullDevice
+                try process.run()
                 markUserVisible(configuration: configuration)
                 foregroundLaunchedProcesses[configuration.cdpPort] = process
             } else {
-                backgroundLaunchedProcesses[configuration.cdpPort] = process
+                try launchHeadlessProcess(executableURL: executableURL, arguments: arguments, configuration: configuration)
             }
         }
 
-        ActivityLogger.log("browser", foreground ? "opened visible Chrome profile" : "launched app-owned background Chrome", metadata: [
+        ActivityLogger.log("browser", foreground ? "opened visible Chrome profile" : "launched headless app-owned Chrome", metadata: [
             "profile": configuration.profileName,
             "port": "\(configuration.cdpPort)"
         ])
+    }
+
+    private func launchHeadlessProcess(
+        executableURL: URL,
+        arguments: [String],
+        configuration: ChromeBrowserLaunchConfiguration
+    ) throws {
+        let process = Process()
+        process.executableURL = executableURL
+        process.arguments = arguments
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        try process.run()
+        backgroundLaunchedProcesses[configuration.cdpPort] = process
+    }
+
+    private static func executableURL(forAppBundle appURL: URL) throws -> URL {
+        let bundle = Bundle(url: appURL)
+        let executableName = bundle?.object(forInfoDictionaryKey: "CFBundleExecutable") as? String
+            ?? appURL.deletingPathExtension().lastPathComponent
+        let executableURL = appURL
+            .appendingPathComponent("Contents", isDirectory: true)
+            .appendingPathComponent("MacOS", isDirectory: true)
+            .appendingPathComponent(executableName, isDirectory: false)
+
+        guard FileManager.default.isExecutableFile(atPath: executableURL.path) else {
+            throw ChromeBrowserProfileError.launchFailed("The browser app bundle did not contain a launchable executable.")
+        }
+
+        return executableURL
     }
 
     private func markUserVisible(configuration: ChromeBrowserLaunchConfiguration) {
