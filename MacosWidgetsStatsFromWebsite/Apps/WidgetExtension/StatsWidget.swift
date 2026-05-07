@@ -146,9 +146,14 @@ private enum StatsWidgetEntryFactory {
 
     private static func selectConfiguration(from appConfiguration: AppConfiguration, configurationID: String?) -> WidgetConfiguration? {
         if let configurationID,
-           let id = UUID(uuidString: configurationID.trimmingCharacters(in: .whitespacesAndNewlines)),
-           let match = appConfiguration.widgetConfigurations.first(where: { $0.id == id }) {
-            return match
+           let id = UUID(uuidString: configurationID.trimmingCharacters(in: .whitespacesAndNewlines)) {
+            if let match = appConfiguration.widgetConfigurations.first(where: { $0.id == id }) {
+                return match
+            }
+
+            if let tracker = appConfiguration.trackers.first(where: { $0.id == id }) {
+                return singleTrackerConfiguration(for: tracker)
+            }
         }
 
         if let first = appConfiguration.widgetConfigurations.first {
@@ -159,7 +164,11 @@ private enum StatsWidgetEntryFactory {
             return nil
         }
 
-        return WidgetConfiguration(
+        return singleTrackerConfiguration(for: tracker)
+    }
+
+    private static func singleTrackerConfiguration(for tracker: Tracker) -> WidgetConfiguration {
+        WidgetConfiguration(
             name: tracker.label ?? tracker.name,
             templateID: .singleBigNumber,
             size: .small,
@@ -187,6 +196,13 @@ struct StatsWidgetProvider: AppIntentTimelineProvider {
         let nextDate = Calendar.current.date(byAdding: .minute, value: 5, to: Date()) ?? Date().addingTimeInterval(300)
         return Timeline(entries: [entry], policy: .after(nextDate))
     }
+
+    func recommendations() -> [AppIntentRecommendation<StatsWidgetConfigurationIntent>] {
+        WidgetConfigurationQuery.allEntities().map { entity in
+            let intent = StatsWidgetConfigurationIntent(configuration: entity)
+            return AppIntentRecommendation(intent: intent, description: entity.recommendationDescription)
+        }
+    }
 }
 
 struct StatsWidgetConfigurationIntent: WidgetConfigurationIntent {
@@ -199,6 +215,14 @@ struct StatsWidgetConfigurationIntent: WidgetConfigurationIntent {
     static var parameterSummary: some ParameterSummary {
         Summary("Show \(\.$configuration)")
     }
+
+    init() {
+        self.configuration = WidgetConfigurationQuery.defaultEntity()
+    }
+
+    init(configuration: WidgetConfigurationEntity) {
+        self.configuration = configuration
+    }
 }
 
 struct WidgetConfigurationEntity: AppEntity, Identifiable {
@@ -207,15 +231,63 @@ struct WidgetConfigurationEntity: AppEntity, Identifiable {
 
     let id: String
     let displayName: String
+    let details: String
 
     var displayRepresentation: DisplayRepresentation {
-        DisplayRepresentation(title: "\(displayName)")
+        DisplayRepresentation(
+            title: LocalizedStringResource(stringLiteral: displayName),
+            subtitle: details.isEmpty ? nil : LocalizedStringResource(stringLiteral: details)
+        )
+    }
+
+    var recommendationDescription: String {
+        details.isEmpty ? displayName : "\(displayName) — \(details)"
+    }
+
+    static let fallback = WidgetConfigurationEntity(
+        id: "",
+        displayName: "Default configuration",
+        details: "Uses the first saved tracker"
+    )
+
+    init(id: String, displayName: String, details: String = "") {
+        self.id = id
+        self.displayName = displayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Untitled widget" : displayName
+        self.details = details
+    }
+
+    init(configuration: WidgetConfiguration, trackers: [Tracker]) {
+        let selectedTrackerCount = configuration.trackerIDs.filter { trackerID in
+            trackers.contains { $0.id == trackerID }
+        }.count
+        let trackerLabel = selectedTrackerCount == 1 ? "1 tracker" : "\(selectedTrackerCount) trackers"
+
+        self.init(
+            id: configuration.id.uuidString,
+            displayName: configuration.name,
+            details: "\(configuration.templateID.displayName) · \(configuration.size.displayName) · \(trackerLabel)"
+        )
+    }
+
+    init(tracker: Tracker) {
+        self.init(
+            id: tracker.id.uuidString,
+            displayName: tracker.label?.isEmpty == false ? tracker.label! : tracker.name,
+            details: "Single tracker"
+        )
     }
 }
 
-struct WidgetConfigurationQuery: EntityQuery {
+struct WidgetConfigurationQuery: EntityStringQuery {
+    init() {}
+
     func entities(for identifiers: [WidgetConfigurationEntity.ID]) async throws -> [WidgetConfigurationEntity] {
-        Self.allEntities().filter { identifiers.contains($0.id) }
+        let wanted = Set(identifiers.map { $0.uppercased() })
+        var matches = Self.allEntities().filter { wanted.contains($0.id.uppercased()) }
+        if wanted.contains(WidgetConfigurationEntity.fallback.id.uppercased()) {
+            matches.append(WidgetConfigurationEntity.fallback)
+        }
+        return matches
     }
 
     func suggestedEntities() async throws -> [WidgetConfigurationEntity] {
@@ -223,28 +295,35 @@ struct WidgetConfigurationQuery: EntityQuery {
     }
 
     func defaultResult() async -> WidgetConfigurationEntity? {
-        Self.allEntities().first
+        Self.defaultEntity()
+    }
+
+    func entities(matching string: String) async throws -> [WidgetConfigurationEntity] {
+        let query = string.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !query.isEmpty else {
+            return Self.allEntities()
+        }
+
+        return Self.allEntities().filter { entity in
+            entity.displayName.lowercased().contains(query) || entity.details.lowercased().contains(query)
+        }
+    }
+
+    static func defaultEntity() -> WidgetConfigurationEntity {
+        allEntities().first ?? .fallback
     }
 
     static func allEntities() -> [WidgetConfigurationEntity] {
         let appConfiguration = AppGroupStore.loadSharedConfiguration()
         let widgetEntities = appConfiguration.widgetConfigurations.map { configuration in
-            WidgetConfigurationEntity(
-                id: configuration.id.uuidString,
-                displayName: configuration.name
-            )
+            WidgetConfigurationEntity(configuration: configuration, trackers: appConfiguration.trackers)
         }
 
-        if !widgetEntities.isEmpty {
-            return widgetEntities
+        if widgetEntities.isEmpty {
+            return appConfiguration.trackers.map(WidgetConfigurationEntity.init(tracker:))
         }
 
-        return appConfiguration.trackers.map { tracker in
-            WidgetConfigurationEntity(
-                id: tracker.id.uuidString,
-                displayName: tracker.label?.isEmpty == false ? tracker.label! : tracker.name
-            )
-        }
+        return widgetEntities
     }
 }
 
@@ -509,9 +588,9 @@ struct ErrorStateBadge: View {
 struct EmptyWidgetView: View {
     var body: some View {
         VStack(spacing: 6) {
-            Text("macOS Widgets Stats from Website")
+            Text("Click to configure tracker")
                 .font(.headline)
-            Text("No trackers configured")
+            Text("Choose a tracker in widget configuration.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }

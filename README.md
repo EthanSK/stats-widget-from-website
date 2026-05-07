@@ -93,13 +93,13 @@ shape and migration strategy.
    configuration.
 6. Add the widget from macOS: right-click the desktop or Notification Centre,
    choose **Edit Widgets**, search for **macOS Widgets Stats from Website**,
-   and drag the widget onto the desktop. The placed widget automatically reads
-   the first saved widget configuration from the main app; no per-widget Edit
-   menu is required. Desktop widgets require macOS 14 or later.
+   and drag the widget onto the desktop. Then click/right-click the placed
+   widget, choose **Edit “macOS Widgets Stats from Website”**, and pick the
+   saved configuration to show. Desktop widgets require macOS 14 or later.
 
 Open **Preferences → Widgets** later to create, duplicate, edit, or rename widget
-configurations. The desktop widget refreshes from the app-owned configuration
-store instead of asking macOS to show a separate per-widget picker.
+configurations. The desktop widget configuration picker reads from the shared
+app-owned configuration store.
 
 ## Wiring up an AI agent (optional)
 
