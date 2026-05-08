@@ -278,7 +278,7 @@ struct WidgetConfigurationEntity: AppEntity, Identifiable {
     }
 }
 
-struct WidgetConfigurationQuery: EntityStringQuery {
+struct WidgetConfigurationQuery: EntityQuery {
     init() {}
 
     func entities(for identifiers: [WidgetConfigurationEntity.ID]) async throws -> [WidgetConfigurationEntity] {
@@ -296,17 +296,6 @@ struct WidgetConfigurationQuery: EntityStringQuery {
 
     func defaultResult() async -> WidgetConfigurationEntity? {
         Self.defaultEntity()
-    }
-
-    func entities(matching string: String) async throws -> [WidgetConfigurationEntity] {
-        let query = string.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard !query.isEmpty else {
-            return Self.allEntities()
-        }
-
-        return Self.allEntities().filter { entity in
-            entity.displayName.lowercased().contains(query) || entity.details.lowercased().contains(query)
-        }
     }
 
     static func defaultEntity() -> WidgetConfigurationEntity {
