@@ -22,6 +22,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         MCPServer.shared.stopSocketServer()
     }
 
+    /// Single-window app behaviour: when the user (re)launches the app while
+    /// another instance is already running, focus the existing window instead
+    /// of opening a second one. macOS calls `applicationShouldHandleReopen`
+    /// when the dock icon is clicked or the app is reopened with no visible
+    /// windows; returning `true` lets AppKit run its default reopen logic
+    /// (which makes the main window key and ordered front).
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        if !flag {
+            for window in sender.windows where window.canBecomeKey {
+                window.makeKeyAndOrderFront(nil)
+            }
+        }
+        sender.activate(ignoringOtherApps: true)
+        return true
+    }
+
     func application(_ application: NSApplication, open urls: [URL]) {
         for url in urls {
             if url.scheme == "macos-widgets-stats-from-website" {
