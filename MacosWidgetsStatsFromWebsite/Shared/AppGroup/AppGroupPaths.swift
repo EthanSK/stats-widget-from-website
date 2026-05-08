@@ -8,7 +8,7 @@
 import Foundation
 
 enum AppGroupPaths {
-    static let identifier = "group.com.ethansk.macos-widgets-stats-from-website"
+    static let identifier = "T34G959ZG8.group.com.ethansk.macos-widgets-stats-from-website"
     static let applicationSupportDirectoryName = "macOS Widgets Stats from Website"
     static let trackersFileName = "trackers.json"
     static let readingsFileName = "readings.json"

@@ -3,6 +3,7 @@ name: MacosWidgetsStatsFromWebsite
 options:
   minimumXcodeGenVersion: 2.39.0
   createIntermediateGroups: true
+  postGenCommand: python3 scripts/ensure-xcode-app-groups-capability.py
   deploymentTarget:
     macOS: "13.0"
 
@@ -26,6 +27,10 @@ targets:
     platform: macOS
     deploymentTarget: "13.0"
     productName: MacosWidgetsStatsFromWebsite
+    attributes:
+      SystemCapabilities:
+        com.apple.ApplicationGroups:
+          enabled: 1
     sources:
       - path: MacosWidgetsStatsFromWebsite/Apps/MainApp
       - path: MacosWidgetsStatsFromWebsite/Shared
@@ -64,8 +69,8 @@ targets:
         CFBundleInfoDictionaryVersion: "6.0"
         CFBundleName: $(PRODUCT_NAME)
         CFBundlePackageType: $(PRODUCT_BUNDLE_PACKAGE_TYPE)
-        CFBundleShortVersionString: "0.12.6"
-        CFBundleVersion: "1206"
+        CFBundleShortVersionString: "0.12.7"
+        CFBundleVersion: "1207"
         CFBundleDocumentTypes:
           - CFBundleTypeName: macOS Widgets Stats from Website Selector Pack
             CFBundleTypeRole: Editor
@@ -105,6 +110,10 @@ targets:
     platform: macOS
     deploymentTarget: "14.0"
     productName: MacosWidgetsStatsFromWebsiteWidget
+    attributes:
+      SystemCapabilities:
+        com.apple.ApplicationGroups:
+          enabled: 1
     sources:
       - path: MacosWidgetsStatsFromWebsite/Apps/WidgetExtension
       - path: MacosWidgetsStatsFromWebsite/Shared
@@ -131,8 +140,8 @@ targets:
         CFBundleInfoDictionaryVersion: "6.0"
         CFBundleName: $(PRODUCT_NAME)
         CFBundlePackageType: $(PRODUCT_BUNDLE_PACKAGE_TYPE)
-        CFBundleShortVersionString: "0.12.6"
-        CFBundleVersion: "1206"
+        CFBundleShortVersionString: "0.12.7"
+        CFBundleVersion: "1207"
         NSExtension:
           NSExtensionPointIdentifier: com.apple.widgetkit-extension
     entitlements:
@@ -140,13 +149,17 @@ targets:
       properties:
         com.apple.security.app-sandbox: true
         com.apple.security.application-groups:
-          - group.com.ethansk.macos-widgets-stats-from-website
+          - T34G959ZG8.group.com.ethansk.macos-widgets-stats-from-website
 
   MacosWidgetsStatsFromWebsiteCLI:
     type: tool
     platform: macOS
     deploymentTarget: "13.0"
     productName: macos-widgets-stats-from-website
+    attributes:
+      SystemCapabilities:
+        com.apple.ApplicationGroups:
+          enabled: 1
     sources:
       - path: MacosWidgetsStatsFromWebsite/Apps/CLI
       - path: MacosWidgetsStatsFromWebsite/Shared
@@ -165,8 +178,8 @@ targets:
         CFBundleInfoDictionaryVersion: "6.0"
         CFBundleName: $(PRODUCT_NAME)
         CFBundlePackageType: $(PRODUCT_BUNDLE_PACKAGE_TYPE)
-        CFBundleShortVersionString: "0.12.6"
-        CFBundleVersion: "1206"
+        CFBundleShortVersionString: "0.12.7"
+        CFBundleVersion: "1207"
         LSMinimumSystemVersion: $(MACOSX_DEPLOYMENT_TARGET)
     entitlements:
       path: MacosWidgetsStatsFromWebsite/Apps/CLI/MacosWidgetsStatsFromWebsiteCLI.entitlements
@@ -174,7 +187,7 @@ targets:
         com.apple.security.app-sandbox: true
         com.apple.security.network.client: true
         com.apple.security.application-groups:
-          - group.com.ethansk.macos-widgets-stats-from-website
+          - T34G959ZG8.group.com.ethansk.macos-widgets-stats-from-website
         keychain-access-groups:
           - "$(AppIdentifierPrefix)com.ethansk.macos-widgets-stats-from-website"
 
