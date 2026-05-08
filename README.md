@@ -42,6 +42,26 @@ agent checks on machines without signing assets, pass `CODE_SIGNING_ALLOWED=NO`
 on the command line. The app and widget targets are sandboxed and share data
 through the App Group container.
 
+### Local widget visibility (chronod-resign workaround)
+
+`scripts/build.sh` accepts an opt-in `--dev-resign` flag (or `DEV_RESIGN=1`
+env var) that runs a post-build resign step on the widget extension:
+
+```bash
+DEV_RESIGN=1 ./scripts/build.sh
+# or
+./scripts/build.sh --dev-resign
+```
+
+This removes the appex's `embedded.provisionprofile`, adhoc-resigns the appex
+with its own `.xcent` entitlements, then re-signs the parent app with the same
+Apple Development cert that xcodebuild used. Why: macOS chronod refuses to
+register Apple-Development-signed widget extensions that carry an embedded
+provisioning profile (logs `Ignoring restricted or unknown extension <id>`),
+which leaves the **Edit Widget** configuration dropdown silently empty during
+local development. The flag is opt-in so production / CI release builds (which
+need a real provisioning profile) are unaffected.
+
 ## Updates
 
 macOS Widgets Stats from Website uses Sparkle for automatic updates. Signed releases publish a
