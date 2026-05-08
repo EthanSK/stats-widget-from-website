@@ -32,7 +32,7 @@ struct SingleBigNumberTemplate: View {
 
             HStack(spacing: 4) {
                 Image(systemName: item?.status == .ok ? "arrow.clockwise" : "exclamationmark.triangle.fill")
-                Text(item?.updatedText ?? "not updated")
+                Text(footerText)
                     .lineLimit(1)
             }
             .font(.caption2)
@@ -52,5 +52,15 @@ struct SingleBigNumberTemplate: View {
         case .ok:
             return .primary
         }
+    }
+
+    private var footerText: String {
+        // Surface a short, actionable hint when the tracker is broken so users
+        // know to re-identify the element rather than wondering why the value
+        // is missing. Falls back to the relative-update timestamp otherwise.
+        if item?.status == .broken {
+            return "Selector needs re-identifying"
+        }
+        return item?.updatedText ?? "not updated"
     }
 }

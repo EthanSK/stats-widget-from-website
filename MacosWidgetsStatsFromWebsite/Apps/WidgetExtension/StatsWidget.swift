@@ -338,9 +338,42 @@ struct StatsWidgetEntryView: View {
                     .padding(8)
             }
         }
+        .overlay(alignment: .topLeading) {
+            if let configurationName = visibleConfigurationName {
+                Text(configurationName)
+                    .font(.system(size: 9, weight: .semibold, design: .rounded))
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 3)
+                    .background(.regularMaterial, in: Capsule())
+                    .padding(6)
+            }
+        }
         .animation(NumberAnimation.spring(reduceMotion: reduceMotion), value: entry.valueFingerprint)
         .accessibilityElement(children: .combine)
         .accessibilityLabel(entry.accessibilitySummary)
+    }
+
+    /// Name of the selected widget configuration, when distinct from the
+    /// tracker's own title. Surfaced as a small chip so the user can confirm
+    /// which configuration the system picked from the Edit Widget panel.
+    private var visibleConfigurationName: String? {
+        guard let configurationName = entry.configuration?.name.trimmingCharacters(in: .whitespacesAndNewlines),
+              !configurationName.isEmpty else {
+            return nil
+        }
+
+        let firstTrackerTitle = entry.trackers.first.map { tracker -> String in
+            tracker.label?.isEmpty == false ? tracker.label! : tracker.name
+        }
+        if let firstTrackerTitle, firstTrackerTitle.caseInsensitiveCompare(configurationName) == .orderedSame {
+            // Don't show a redundant chip when the widget config name and the
+            // tracker title are identical.
+            return nil
+        }
+        return configurationName
     }
 
     @ViewBuilder
@@ -482,9 +515,11 @@ struct WidgetTrackerItem: Identifiable {
 
         switch reading?.status {
         case .broken:
-            return "?"
+            // Avoid the bare "?" placeholder; surface a short status hint instead.
+            // The widget overlay also renders an attention badge for broken trackers.
+            return "—"
         default:
-            return "--"
+            return "—"
         }
     }
 
