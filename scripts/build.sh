@@ -155,8 +155,14 @@ tccutil reset SystemPolicyAppData com.ethansk.macos-widgets-stats-from-website >
 # The workaround is to:
 #   1. Remove the appex's embedded.provisionprofile (chronod treats provisioned
 #      Apple Dev appexes as restricted on personal/dev machines).
-#   2. Adhoc-resign the appex with its .xcent entitlements (preserves the
-#      app-group entitlement so the appex can still read shared data).
+#   2. Re-sign the appex with the SAME Apple Development cert as the parent
+#      app, preserving its .xcent entitlements. Earlier revisions adhoc-signed
+#      the appex here, but that left it with no TeamIdentifier — at runtime
+#      taskgated rejects the bundle with "Invalid Signature" SIGKILL because
+#      the parent's TeamIdentifier (T34...) doesn't match the appex's empty
+#      one (codesign --verify passes statically; the check is dynamic). Same
+#      cert on parent + appex keeps the TeamIdentifier consistent across the
+#      bundle and still satisfies chronod once the embedded profile is gone.
 #   3. Re-sign the parent .app with the Apple Development cert (NOT adhoc —
 #      adhoc-signing the parent triggers launchd POSIX 163 because the
 #      Debug.entitlements file references a team-prefixed
@@ -183,6 +189,16 @@ if [[ "$DEV_RESIGN_FLAG" == "1" ]]; then
     -path "*/MacosWidgetsStatsFromWebsiteWidget.build/*.xcent" \
     -type f 2>/dev/null | head -n1)
 
+  # Locate the parent app's .xcent file too. Re-signing the parent with the
+  # source $DEBUG_ENTITLEMENTS file leaves application-identifier missing and
+  # keychain-access-groups holding the literal $(AppIdentifierPrefix)
+  # placeholder — launchd then refuses spawn with POSIX 163. Xcode's emitted
+  # .app.xcent has the team-prefixed values resolved, which launchd accepts.
+  APP_XCENT=$(find "$DERIVED_DATA_PATH/Build/Intermediates.noindex" \
+    -path "*/MacosWidgetsStatsFromWebsite.build/*.xcent" \
+    -name "*.app.xcent" \
+    -type f 2>/dev/null | head -n1)
+
   # Detect the Apple Development cert currently signing the parent .app so we
   # can re-sign with the same identity after touching the appex. Falls back to
   # any "Apple Development" identity in the keychain if the running build
@@ -198,10 +214,13 @@ if [[ "$DEV_RESIGN_FLAG" == "1" ]]; then
 
   if [[ -z "$WIDGET_XCENT" ]]; then
     echo "build.sh: WARN — could not locate widget .xcent under $DERIVED_DATA_PATH/Build/Intermediates.noindex; skipping dev-resign" >&2
+  elif [[ -z "$APP_XCENT" ]]; then
+    echo "build.sh: WARN — could not locate parent app .xcent under $DERIVED_DATA_PATH/Build/Intermediates.noindex; skipping dev-resign" >&2
   elif [[ -z "$APP_DEV_AUTHORITY" ]]; then
     echo "build.sh: WARN — could not detect an 'Apple Development' signing identity; skipping dev-resign" >&2
   else
-    echo "build.sh: dev-resign — using xcent: $WIDGET_XCENT"
+    echo "build.sh: dev-resign — widget xcent: $WIDGET_XCENT"
+    echo "build.sh: dev-resign — parent xcent: $APP_XCENT"
     echo "build.sh: dev-resign — parent app authority: $APP_DEV_AUTHORITY"
 
     WIDGET_PROFILE="$WIDGET_PATH/Contents/embedded.provisionprofile"
@@ -213,13 +232,13 @@ if [[ "$DEV_RESIGN_FLAG" == "1" ]]; then
       echo "build.sh: dev-resign — no embedded.provisionprofile present on appex (already cleared)"
     fi
 
-    echo "build.sh: dev-resign — adhoc-resigning appex"
-    if ! codesign --force --sign - --entitlements "$WIDGET_XCENT" "$WIDGET_PATH"; then
-      echo "build.sh: WARN — adhoc resign of appex failed (continuing)" >&2
+    echo "build.sh: dev-resign — re-signing appex with $APP_DEV_AUTHORITY (preserves TeamIdentifier match with parent)"
+    if ! codesign --force --sign "$APP_DEV_AUTHORITY" --entitlements "$WIDGET_XCENT" "$WIDGET_PATH"; then
+      echo "build.sh: WARN — appex re-sign with Apple Development cert failed (continuing)" >&2
     fi
 
-    echo "build.sh: dev-resign — re-signing parent app with $APP_DEV_AUTHORITY"
-    if ! codesign --force --sign "$APP_DEV_AUTHORITY" --entitlements "$DEBUG_ENTITLEMENTS" "$APP_PATH"; then
+    echo "build.sh: dev-resign — re-signing parent app with $APP_DEV_AUTHORITY (using resolved .app.xcent so application-identifier survives)"
+    if ! codesign --force --sign "$APP_DEV_AUTHORITY" --entitlements "$APP_XCENT" "$APP_PATH"; then
       echo "build.sh: WARN — re-sign of parent app failed (continuing)" >&2
     fi
 
