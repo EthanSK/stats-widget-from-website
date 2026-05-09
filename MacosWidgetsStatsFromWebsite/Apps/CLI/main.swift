@@ -22,6 +22,6 @@ if arguments.first == "mcp-token" {
         exit(1)
     }
 } else {
-    print("macos-widgets-stats-from-website CLI v0.12.7")
+    print("macos-widgets-stats-from-website CLI v0.12.9")
     print("Usage: macos-widgets-stats-from-website mcp-stdio | mcp-token")
 }
