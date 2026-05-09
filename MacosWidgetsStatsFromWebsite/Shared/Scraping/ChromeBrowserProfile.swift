@@ -209,6 +209,59 @@ final class ChromeBrowserProfile {
 
     private func findDedicatedHeadlessChromeViaPS(configuration: ChromeBrowserLaunchConfiguration) -> Bool {
         let userDataNeedle = "--user-data-dir=\(configuration.userDataDirectory.path)"
+        guard let output = Self.runPSAndReadOutput() else {
+            ActivityLogger.log("browser", "headless-detection PS probe failed", metadata: [
+                "profile": configuration.profileName,
+                "port": "\(configuration.cdpPort)"
+            ])
+            return false
+        }
+
+        var totalLines = 0
+        var matchingUserDataDir = 0
+        var parentMatches = 0
+        var headlessParents = 0
+
+        for line in output.split(separator: "\n", omittingEmptySubsequences: false) {
+            totalLines += 1
+            let command = String(line)
+            guard command.contains(userDataNeedle) else { continue }
+            matchingUserDataDir += 1
+            // Skip helper renderer/utility/gpu PIDs — they share argv with the parent.
+            if command.contains("--type=") { continue }
+            parentMatches += 1
+            if command.contains("--headless") {
+                headlessParents += 1
+            }
+        }
+
+        let isHeadless = headlessParents > 0
+
+        ActivityLogger.log("browser", "headless-detection PS probe", metadata: [
+            "profile": configuration.profileName,
+            "port": "\(configuration.cdpPort)",
+            "scannedLines": "\(totalLines)",
+            "matchingUserDataDir": "\(matchingUserDataDir)",
+            "parentMatches": "\(parentMatches)",
+            "headlessParents": "\(headlessParents)",
+            "result": isHeadless ? "headless" : "headed"
+        ])
+
+        return isHeadless
+    }
+
+    /// Runs `ps -axwwo pid=,command=` and returns the full stdout as a UTF-8 string.
+    ///
+    /// IMPORTANT: We must drain the stdout pipe concurrently with the child process
+    /// running, NOT after `waitUntilExit()`. The pipe buffer is ~64 KB and `ps -axww`
+    /// on a busy system easily exceeds 200 KB; if we let `ps` block on a full pipe
+    /// while we wait for it to exit, the whole thing deadlocks. The previous
+    /// `process.run() -> waitUntilExit() -> readToEnd()` ordering hit this on Ethan's
+    /// machine (≥800 processes, ~220 KB ps output) and made `findDedicatedHeadlessChromeViaPS`
+    /// return false, leading the foreground identify path to incorrectly reuse a
+    /// running headless Chrome instance instead of tearing it down and spawning a
+    /// headed one.
+    private static func runPSAndReadOutput() -> String? {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/ps", isDirectory: false)
         process.arguments = ["-axwwo", "pid=,command="]
@@ -216,26 +269,40 @@ final class ChromeBrowserProfile {
         process.standardOutput = pipe
         process.standardError = FileHandle.nullDevice
 
+        let lock = NSLock()
+        var collected = Data()
+        let readHandle = pipe.fileHandleForReading
+        readHandle.readabilityHandler = { handle in
+            let chunk = handle.availableData
+            if chunk.isEmpty {
+                handle.readabilityHandler = nil
+                return
+            }
+            lock.lock()
+            collected.append(chunk)
+            lock.unlock()
+        }
+
         do {
             try process.run()
         } catch {
-            return false
+            readHandle.readabilityHandler = nil
+            return nil
         }
         process.waitUntilExit()
 
-        guard let outputData = try? pipe.fileHandleForReading.readToEnd(),
-              let output = String(data: outputData, encoding: .utf8) else {
-            return false
-        }
+        // Detach the readabilityHandler and drain anything still buffered. The handler
+        // may already have stopped firing (EOF) or we may need to read the trailing
+        // bytes synchronously.
+        readHandle.readabilityHandler = nil
+        let trailing = (try? readHandle.readToEnd()) ?? Data()
 
-        for line in output.split(separator: "\n") {
-            let command = String(line)
-            guard command.contains(userDataNeedle) else { continue }
-            // Skip helper renderer/utility/gpu PIDs — they share argv with the parent.
-            if command.contains("--type=") { continue }
-            if command.contains("--headless") { return true }
-        }
-        return false
+        lock.lock()
+        collected.append(trailing)
+        let snapshot = collected
+        lock.unlock()
+
+        return String(data: snapshot, encoding: .utf8)
     }
 
     private func terminateHeadlessInstance(
@@ -1034,31 +1101,11 @@ final class ChromeBrowserProfile {
     /// (`~/Library/Application Support/Google/Chrome`), never our app-group path.
     private func findDedicatedBrowserPID(configuration: ChromeBrowserLaunchConfiguration) -> pid_t? {
         let needle = "--user-data-dir=\(configuration.userDataDirectory.path)"
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/bin/ps", isDirectory: false)
-        process.arguments = ["-axwwo", "pid=,command="]
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = FileHandle.nullDevice
-
-        do {
-            try process.run()
-        } catch {
-            return nil
-        }
-        process.waitUntilExit()
-
-        let outputData: Data
-        do {
-            outputData = (try pipe.fileHandleForReading.readToEnd()) ?? Data()
-        } catch {
-            return nil
-        }
-        guard let output = String(data: outputData, encoding: .utf8) else {
+        guard let output = Self.runPSAndReadOutput() else {
             return nil
         }
 
-        for line in output.split(separator: "\n") {
+        for line in output.split(separator: "\n", omittingEmptySubsequences: false) {
             let trimmed = String(line).trimmingCharacters(in: .whitespaces)
             guard let space = trimmed.firstIndex(where: { $0 == " " || $0 == "\t" }) else { continue }
             let pidString = String(trimmed[..<space])
