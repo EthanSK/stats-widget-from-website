@@ -38,7 +38,7 @@ enum ChromeBrowserProfileError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .browserNotFound:
-            return "No Chromium-based browser was found. Bundle Chrome for Testing, install Google Chrome/Chromium, or set MACOS_WIDGETS_STATS_CHROME_PATH."
+            return "Chrome for Testing is not available. The app downloads it on first launch; check your network connection."
         case .launchFailed(let message):
             return "Could not launch the browser profile: \(message)"
         case .downloadFailed(let message):
@@ -498,6 +498,33 @@ final class ChromeBrowserProfile {
                 }
             }
 
+            if application == nil && process == nil {
+                DispatchQueue.global(qos: .utility).async { [weak self] in
+                    guard let self else { return }
+                    // Defensive: `userVisiblePorts.contains(port)` was already checked above,
+                    // but that set only tracks visibility marked in THIS app session. A
+                    // user-visible Chrome started by a previous app session bound to the same
+                    // CDP port wouldn't appear in `userVisiblePorts` and would otherwise get
+                    // closed here. Confirm the existing instance is headless before issuing
+                    // the CDP-close. `isExistingInstanceHeadless` returns false when the
+                    // instance is headed OR when probing fails — in either case, skip.
+                    if self.isExistingInstanceHeadless(configuration: configuration) {
+                        self.requestBrowserCloseViaCDP(configuration: configuration) {
+                            ActivityLogger.log("browser", "closed app-owned background Chrome after scrape via CDP", metadata: [
+                                "profile": configuration.profileName,
+                                "port": "\(port)"
+                            ])
+                        }
+                    } else {
+                        ActivityLogger.log("browser", "skipped CDP close — instance not confirmed headless", metadata: [
+                            "profile": configuration.profileName,
+                            "port": "\(port)"
+                        ])
+                    }
+                }
+                return
+            }
+
             if application != nil || process != nil {
                 ActivityLogger.log("browser", "closed app-owned background Chrome after scrape", metadata: [
                     "profile": configuration.profileName,
@@ -654,12 +681,21 @@ final class ChromeBrowserProfile {
 
         // We always exec the Chrome binary directly (bypassing LaunchServices) so a
         // pre-existing personal Chrome session cannot intercept the launch and absorb
-        // our flags. LaunchServices' `NSWorkspace.shared.openApplication` with
-        // `createsNewApplicationInstance = true` is unreliable here: on some macOS+Chrome
-        // combinations the open event still routes into the user's already-running
-        // personal Chrome (which uses the default user-data-dir), instead of spawning
-        // our dedicated `--user-data-dir=<app-group>/Browser/...` instance.
-        // Direct exec guarantees a separate child process owning our user-data-dir.
+        // our flags. LaunchServices' `NSWorkspace.shared.openApplication` (and the
+        // equivalent `/usr/bin/open -n -a <app>` CLI) is unreliable here: on some
+        // macOS+Chrome combinations the open event still routes into the user's
+        // already-running personal Chrome (which uses the default user-data-dir),
+        // instead of spawning our dedicated `--user-data-dir=<app-group>/Browser/...`
+        // instance. Direct exec guarantees a separate child process owning our
+        // user-data-dir.
+        //
+        // Sandbox/keychain note: the SIGTRAP crash in v0.12.13 was *not* caused by
+        // direct exec — it was Chrome's password manager hitting the macOS keychain
+        // from within our inherited sandbox. v0.12.14 fixed that by passing
+        // --password-store=basic + --use-mock-keychain (see
+        // buildChromeLaunchArguments). Switching to LaunchServices would remove the
+        // dedicated-profile guarantee and re-open the personal-Chrome-hijack hole;
+        // direct exec + keychain-bypass flags is the right combination.
         let executableURL: URL
         switch browser.kind {
         case .appBundle(let appURL):
@@ -963,6 +999,8 @@ final class ChromeBrowserProfile {
     }
 
     private func resolveBrowser() throws -> ResolvedBrowser {
+        // Developer-only escape hatch. Lets us point at a custom Chromium binary
+        // for local testing. NOT user-facing — never documented in the UI.
         if let override = ProcessInfo.processInfo.environment["MACOS_WIDGETS_STATS_CHROME_PATH"]?.nilIfEmpty {
             if let browser = ResolvedBrowser(path: override) {
                 return browser
@@ -970,44 +1008,64 @@ final class ChromeBrowserProfile {
             throw ChromeBrowserProfileError.launchFailed("MACOS_WIDGETS_STATS_CHROME_PATH does not point at an app bundle or executable browser.")
         }
 
-        for url in bundledBrowserCandidates() + managedBrowserCandidates() + systemBrowserCandidates() {
+        // Always use a dedicated Chrome for Testing instance — never the user's
+        // installed Google Chrome / Chromium / Brave / Edge / etc.
+        //
+        // Why not the user's installed browser:
+        //   - Chrome enforces a single-profile-per-user-data-dir lock, so if the
+        //     user's personal Chrome is running we cannot reliably get a separate
+        //     instance bound to our `--user-data-dir`. LaunchServices/`open -n`
+        //     workarounds are flaky across macOS+Chrome combinations.
+        //   - Even when isolation works, scraping inside the user's Chrome means
+        //     hijacking their browser session for the duration of a scrape.
+        //   - Profile persistence (the whole point of "Identify in Chrome": log
+        //     in once, the widget reuses the cookies later) is impossible to
+        //     guarantee against the user's personal profile.
+        //
+        // Resolution order:
+        //   1. Bundled Chrome for Testing inside the app's Resources (release ships
+        //      this way once the binary is bundled at build time).
+        //   2. Managed Chrome for Testing previously downloaded to the App Group
+        //      Application Support directory.
+        //   3. Lazy-download Chrome for Testing (Stable channel) into the managed
+        //      directory and use that.
+        //
+        // If none of the above is available (e.g. download is explicitly disabled
+        // and nothing is bundled/managed yet), we hard-fail. We do NOT silently
+        // fall back to the user's Google Chrome.
+        for url in bundledBrowserCandidates() + managedBrowserCandidates() {
             if let browser = ResolvedBrowser(url: url) {
                 return browser
             }
         }
 
-        if autoDownloadChromeForTestingEnabled {
-            return try downloadChromeForTesting()
+        guard autoDownloadChromeForTestingEnabled else {
+            throw ChromeBrowserProfileError.downloadFailed(
+                "Chrome for Testing is not bundled or downloaded yet, and auto-download is disabled "
+                    + "(MACOS_WIDGETS_STATS_DISABLE_CHROME_DOWNLOAD is set). Re-enable auto-download or "
+                    + "place Chrome for Testing at \(managedChromeForTestingAppURL.path)."
+            )
         }
 
-        throw ChromeBrowserProfileError.browserNotFound
+        return try downloadChromeForTesting()
     }
 
     private func bundledBrowserCandidates() -> [URL] {
         guard let resources = Bundle.main.resourceURL else { return [] }
         return [
-            resources.appendingPathComponent("Browsers/Chromium.app", isDirectory: true),
+            // Bundled Chrome for Testing (preferred — ships inside the app, no
+            // network on first launch).
             resources.appendingPathComponent("Browsers/Google Chrome for Testing.app", isDirectory: true),
+            resources.appendingPathComponent("Google Chrome for Testing.app", isDirectory: true),
+            // A bundled Chromium build is also acceptable if the release ever
+            // chooses to ship pure upstream Chromium instead of CFT.
+            resources.appendingPathComponent("Browsers/Chromium.app", isDirectory: true),
             resources.appendingPathComponent("Chromium.app", isDirectory: true)
         ]
     }
 
     private func managedBrowserCandidates() -> [URL] {
         [managedChromeForTestingAppURL]
-    }
-
-    private func systemBrowserCandidates() -> [URL] {
-        [
-            URL(fileURLWithPath: "/Applications/Google Chrome.app", isDirectory: true),
-            URL(fileURLWithPath: "/Applications/Google Chrome for Testing.app", isDirectory: true),
-            URL(fileURLWithPath: "/Applications/Chromium.app", isDirectory: true),
-            URL(fileURLWithPath: "/Applications/Brave Browser.app", isDirectory: true),
-            URL(fileURLWithPath: "/Applications/Microsoft Edge.app", isDirectory: true),
-            URL(fileURLWithPath: "/opt/homebrew/bin/chromium", isDirectory: false),
-            URL(fileURLWithPath: "/usr/local/bin/chromium", isDirectory: false),
-            URL(fileURLWithPath: "/usr/bin/chromium", isDirectory: false),
-            URL(fileURLWithPath: "/usr/bin/google-chrome", isDirectory: false)
-        ]
     }
 
     private var autoDownloadChromeForTestingEnabled: Bool {
