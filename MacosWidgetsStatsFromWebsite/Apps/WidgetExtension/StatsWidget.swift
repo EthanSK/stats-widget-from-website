@@ -347,7 +347,12 @@ struct StatsWidgetEntryView: View {
                     .foregroundStyle(.secondary)
                     .padding(.horizontal, 6)
                     .padding(.vertical, 3)
-                    .background(.regularMaterial, in: Capsule())
+                    // Widgets render SwiftUI Material as a static screenshot, so
+                    // .regularMaterial / .thinMaterial come out opaque white on
+                    // a dark widget background — covering the title underneath.
+                    // Use a subtle translucent fill instead so the chip stays
+                    // legible without obscuring content.
+                    .background(Color.primary.opacity(0.08), in: Capsule())
                     .padding(6)
             }
         }
@@ -553,9 +558,22 @@ struct WidgetTrackerItem: Identifiable {
             return "not updated"
         }
 
-        let formatter = RelativeDateTimeFormatter()
-        formatter.unitsStyle = .abbreviated
-        return formatter.localizedString(for: date, relativeTo: Date())
+        // Widget timeline entries are static — RelativeDateTimeFormatter
+        // would freeze "5 sec ago" at render time and never tick because
+        // WidgetKit can't re-render between timeline entries. Show the
+        // ABSOLUTE time instead: same-day renders as "20:09", older
+        // renders as "11 May 20:09" so the user can always tell exactly
+        // when the value was fetched.
+        let now = Date()
+        let isToday = Calendar.current.isDate(date, inSameDayAs: now)
+        let formatter = DateFormatter()
+        formatter.locale = Locale.current
+        if isToday {
+            formatter.dateFormat = "HH:mm"
+        } else {
+            formatter.setLocalizedDateFormatFromTemplate("d MMM HH:mm")
+        }
+        return formatter.string(from: date)
     }
 
     var accent: Color {

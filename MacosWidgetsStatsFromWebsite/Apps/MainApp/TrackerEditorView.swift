@@ -24,6 +24,7 @@ struct TrackerEditorView: View {
     @State private var isShowingChromiumInstallSheet: Bool = false
     @State private var previewState: PreviewState = .idle
     @State private var previewSelector: String = ""
+    @State private var refreshIntervalUnit: RefreshIntervalUnit = .minutes
 
     let mode: Mode
     let onSave: (Tracker) -> Void
@@ -65,8 +66,26 @@ struct TrackerEditorView: View {
                     }
                     .pickerStyle(.segmented)
 
-                    Stepper(value: $draft.refreshIntervalSec, in: refreshIntervalRange, step: refreshIntervalStep) {
-                        Text("Refresh interval: \(formattedRefreshInterval)")
+                    // Typeable refresh interval input. Stored as seconds in the
+                    // model; user types in the same unit the current value reads
+                    // in (seconds when <60, minutes when <60min, hours otherwise).
+                    // Range clamping happens on commit so an out-of-range type
+                    // doesn't quietly break scheduling.
+                    HStack(spacing: 8) {
+                        Text("Refresh interval")
+                        Spacer()
+                        TextField("", value: refreshIntervalDisplayBinding, format: .number)
+                            .multilineTextAlignment(.trailing)
+                            .frame(width: 60)
+                            .textFieldStyle(.roundedBorder)
+                        Picker("", selection: $refreshIntervalUnit) {
+                            Text("sec").tag(RefreshIntervalUnit.seconds)
+                            Text("min").tag(RefreshIntervalUnit.minutes)
+                            Text("hr").tag(RefreshIntervalUnit.hours)
+                        }
+                        .pickerStyle(.menu)
+                        .frame(width: 80)
+                        .labelsHidden()
                     }
                 } header: {
                     Text("Tracker")
@@ -433,23 +452,35 @@ struct TrackerEditorView: View {
         }
     }
 
-    private var refreshIntervalStep: Int {
-        draft.renderMode == .text ? 60 : 1
+    /// SwiftUI Binding that lets the user type a number in the currently-
+    /// selected unit (seconds/minutes/hours) and writes back to
+    /// draft.refreshIntervalSec in seconds, clamped to refreshIntervalRange.
+    private var refreshIntervalDisplayBinding: Binding<Int> {
+        Binding<Int>(
+            get: {
+                let secs = draft.refreshIntervalSec
+                switch refreshIntervalUnit {
+                case .seconds: return secs
+                case .minutes: return max(1, secs / 60)
+                case .hours:   return max(1, secs / 3_600)
+                }
+            },
+            set: { newValue in
+                let multiplier: Int
+                switch refreshIntervalUnit {
+                case .seconds: multiplier = 1
+                case .minutes: multiplier = 60
+                case .hours:   multiplier = 3_600
+                }
+                let secs = max(1, newValue) * multiplier
+                let clamped = min(max(secs, refreshIntervalRange.lowerBound), refreshIntervalRange.upperBound)
+                draft.refreshIntervalSec = clamped
+            }
+        )
     }
 
-    private var formattedRefreshInterval: String {
-        if draft.refreshIntervalSec < 60 {
-            return "\(draft.refreshIntervalSec) sec"
-        }
-
-        let minutes = draft.refreshIntervalSec / 60
-        if minutes < 60 {
-            return "\(minutes) min"
-        }
-
-        let hours = minutes / 60
-        let remainder = minutes % 60
-        return remainder == 0 ? "\(hours) hr" : "\(hours) hr \(remainder) min"
+    enum RefreshIntervalUnit: Hashable {
+        case seconds, minutes, hours
     }
 
     private func save() {

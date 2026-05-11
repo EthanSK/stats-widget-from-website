@@ -25,7 +25,9 @@ enum RenderMode: String, CaseIterable, Codable, Identifiable {
     var defaultRefreshIntervalSec: Int {
         switch self {
         case .text:
-            return 1_800
+            // Default 5 min so newly-added trackers feel responsive
+            // (per Ethan 2026-05-11). Background scheduler floor is 60s.
+            return 300
         case .snapshot:
             return 2
         }
