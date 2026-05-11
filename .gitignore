@@ -71,7 +71,11 @@ node_modules/
 debug-snapshots/
 *.html.snapshot
 
-# Vendored Chrome for Testing (downloaded by scripts/fetch-chrome-for-testing.sh
-# during build; not committed because each arch is ~340 MB). The Xcode build
-# phase invokes the fetch script automatically when this directory is empty.
+# Vendored upstream Chromium (downloaded by scripts/fetch-chromium.sh during
+# build; not committed because each arch is ~340 MB extracted). The Xcode
+# postBuildScripts phase (embed-chromium.sh) invokes the fetch script
+# automatically when this directory is missing per-arch bundles.
+vendor/chromium/
+# Legacy CFT vendor dir from 0.13.0 — kept ignored so old worktrees that
+# still have it on disk don't pollute git status.
 vendor/chrome-for-testing/

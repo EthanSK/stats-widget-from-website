@@ -48,22 +48,22 @@ struct SignInPrefsView: View {
 
             Section {
                 if chromiumAvailable {
-                    Label("Chromium-family browser detected.", systemImage: "checkmark.seal")
+                    Label("Bundled Chromium detected.", systemImage: "checkmark.seal")
                         .foregroundStyle(.green)
-                    Text("The app will use your installed Chromium / Brave / Edge, or the managed Chromium snapshot in Application Support.")
+                    Text("The app will use the Chromium browser bundled inside its app bundle.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 } else {
                     VStack(alignment: .leading, spacing: 6) {
-                        Label("No Chromium browser detected.", systemImage: "exclamationmark.triangle")
+                        Label("Bundled Chromium is missing.", systemImage: "exclamationmark.triangle")
                             .foregroundStyle(.orange)
-                        Text("Identify, sign-in, and scraping all need Chromium / Brave / Edge. Install upstream Chromium (~150 MB) into the app's private folder, or install one of those browsers from their official sites.")
+                        Text("Identify, sign-in, and scraping need the Chromium browser bundled inside this app. Reinstall macOS Widgets Stats from Website to restore it.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                         Button {
                             isShowingChromiumInstallSheet = true
                         } label: {
-                            Label("Install Chromium (~150 MB)", systemImage: "arrow.down.circle")
+                            Label("Check Chromium", systemImage: "arrow.clockwise.circle")
                         }
                         .buttonStyle(.borderedProminent)
                     }

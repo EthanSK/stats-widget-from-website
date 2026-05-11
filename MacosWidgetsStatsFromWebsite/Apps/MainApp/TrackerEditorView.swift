@@ -81,15 +81,15 @@ struct TrackerEditorView: View {
                     VStack(alignment: .leading, spacing: 8) {
                         if !chromiumAvailable {
                             VStack(alignment: .leading, spacing: 6) {
-                                Label("Chromium isn't installed yet.", systemImage: "exclamationmark.triangle")
+                                Label("Bundled Chromium is missing.", systemImage: "exclamationmark.triangle")
                                     .foregroundStyle(.orange)
-                                Text("Identify needs Chromium / Brave / Edge to open a real signed-in browser. Install upstream Chromium (~150 MB) into the app's private folder, or install one of those browsers from their official sites.")
+                                Text("Identify needs the Chromium browser bundled inside this app. Reinstall macOS Widgets Stats from Website to restore the missing browser bundle.")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                                 Button {
                                     isShowingChromiumInstallSheet = true
                                 } label: {
-                                    Label("Install Chromium (~150 MB)", systemImage: "arrow.down.circle")
+                                    Label("Check Chromium", systemImage: "arrow.clockwise.circle")
                                 }
                                 .buttonStyle(.borderedProminent)
                             }

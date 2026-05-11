@@ -23,8 +23,8 @@ settings:
     # from Bundle.main.infoDictionary at runtime, so nothing else needs touching.
     # Enforced by .githooks/pre-commit (see core.hooksPath in repo config) and
     # by scripts/validate_release_metadata.py.
-    MARKETING_VERSION: "0.13.4"
-    CURRENT_PROJECT_VERSION: "1218"
+    MARKETING_VERSION: "0.14.0"
+    CURRENT_PROJECT_VERSION: "1219"
 
 packages:
   Sparkle:
@@ -50,14 +50,41 @@ targets:
         codeSign: true
       - package: Sparkle
         product: Sparkle
-    # Chrome for Testing bundling was removed in 0.13.1 — CFT injects a
-    # navigator.webdriver flag + a HeadlessChrome-derived User-Agent that
-    # Google's risk engine blocks at sign-in, defeating the whole point of
-    # the widget for any Google-authenticated dashboard. The app now resolves
-    # a real Chromium-based browser at runtime (Chromium.app / Brave / Edge,
-    # or a downloaded upstream Chromium snapshot) — see
-    # ChromeBrowserProfile.resolveBrowser. The legacy fetch + embed scripts
-    # under scripts/ are not invoked by the default project.
+    # Bundle upstream Chromium inside the .app (0.14.0+).
+    #
+    # Background: the 0.13.x lazy-download path (download → extract to
+    # <Container>/Data/Library/Application Support → exec) is fundamentally
+    # broken under App Sandbox. macOS auto-re-attaches `com.apple.quarantine`
+    # when the sandboxed app touches the extracted binary, and the sandbox
+    # itself denies execve from container-relative paths regardless of POSIX
+    # perms / xattr state. The 0.13.4 removexattr-syscall fix did not (and
+    # could not) solve this — confirmed empirically on Ethan's MBP install
+    # 2026-05-11: Chromium binary was 0755 + valid Mach-O + manually
+    # quarantine-stripped, AND `Chromium --version` worked from shell, BUT
+    # the sandboxed app's `isExecutableFile(atPath:)` still returned false
+    # because the OS re-attached quarantine the moment the app touched the
+    # file.
+    #
+    # The only path that reliably works under sandbox is bundling Chromium
+    # inside the .app — sandboxed apps CAN exec binaries from their own
+    # bundle (this is what v0.13.0 did for CFT, before CFT was rejected for
+    # blocking Google sign-in). Upstream Chromium does not inject the
+    # automation markers that CFT does, so it can sign into Google AND it
+    # runs from inside our sandbox.
+    #
+    # See scripts/embed-chromium.sh for the full rationale.
+    postBuildScripts:
+      - name: Embed Chromium
+        # Double-quote PROJECT_DIR in the shell line so checkout paths
+        # containing spaces (e.g. "~/My Projects/...") don't split the
+        # command. Xcode runs the shellScript value verbatim through
+        # /bin/sh — YAML quotes here only affect parsing, not the
+        # resulting shell line.
+        script: '"${PROJECT_DIR}/scripts/embed-chromium.sh"'
+        # No declared inputs/outputs: the script does its own up-to-date
+        # check via Chromium revision marker + signature-team comparison,
+        # so an "unchanged" build is cheap.
+        runOnlyWhenInstalling: false
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.ethansk.macos-widgets-stats-from-website

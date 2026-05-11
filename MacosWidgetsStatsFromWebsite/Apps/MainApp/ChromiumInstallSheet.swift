@@ -2,15 +2,21 @@
 //  ChromiumInstallSheet.swift
 //  MacosWidgetsStatsFromWebsite
 //
-//  UI affordance for pre-installing the managed Chromium snapshot.
+//  Defensive UI for the "Chromium not available" path.
 //
-//  The Identify-in-Chrome flow lazily downloads upstream Chromium on first
-//  use if no Chromium-family browser is found on disk (Chromium / Brave /
-//  Edge / a previously-managed download). That lazy path used to block on
-//  an opaque ~150 MB download with no UI feedback, so we surface a
-//  dedicated install button on the tracker editor + sign-in prefs + first-
-//  launch wizard. This sheet drives the download with a progress bar and
-//  surfaces a clear retry path on failure.
+//  In 0.14.0+ upstream Chromium is bundled INSIDE the .app at build time
+//  (see scripts/embed-chromium.sh + Resources/Browsers/Chromium.app), so
+//  normal installs never see this sheet. It only appears when the gating
+//  view detects the bundled Chromium is missing — i.e. a corrupt install
+//  or a build that somehow shipped without the embed phase running.
+//
+//  The 0.13.x lazy-download path that this sheet originally drove was
+//  fundamentally broken under App Sandbox (macOS auto-re-attaches
+//  com.apple.quarantine on every touch from the sandboxed app, and the
+//  sandbox denies execve from Application Support paths regardless),
+//  so the install button no longer downloads anything — it simply
+//  rechecks availability and surfaces a clear "reinstall the app" message
+//  if Chromium is still missing.
 //
 
 import AppKit
@@ -54,7 +60,7 @@ struct ChromiumInstallSheet: View {
                     Button {
                         viewModel.start()
                     } label: {
-                        Label("Install Chromium", systemImage: "arrow.down.circle")
+                        Label("Check Chromium", systemImage: "arrow.clockwise.circle")
                     }
                     .buttonStyle(.borderedProminent)
                     .keyboardShortcut(.defaultAction)
@@ -93,11 +99,11 @@ struct ChromiumInstallSheet: View {
     private var headerLabel: String {
         switch viewModel.state {
         case .completed:
-            return "Chromium Installed"
+            return "Chromium Available"
         case .failed:
-            return "Install Failed"
+            return "Bundled Chromium Missing"
         default:
-            return "Install Chromium"
+            return "Check Chromium"
         }
     }
 
@@ -108,36 +114,36 @@ struct ChromiumInstallSheet: View {
         case .failed:
             return "exclamationmark.triangle"
         default:
-            return "arrow.down.circle"
+            return "arrow.clockwise.circle"
         }
     }
 
     private var headerSubtitle: String {
         switch viewModel.state {
         case .idle:
-            return "This app needs a Chromium-based browser to scrape signed-in pages and open the Identify view. Downloads the latest upstream Chromium snapshot (~150 MB) into the app's private Application Support folder. Nothing else on your Mac is touched."
+            return "This app bundles upstream Chromium inside its own .app so the Identify-in-Chrome flow can launch a Google-sign-in-compatible browser without any extra install steps. This dialog re-checks the bundled Chromium is reachable — normal installs should never see this."
         case .downloading:
-            return "Downloading the latest upstream Chromium snapshot. This may take a couple of minutes on a slow connection."
+            return "Re-checking the bundled Chromium…"
         case .completed:
-            return "Chromium is ready. You can now open Identify in Chrome from any tracker."
+            return "The bundled Chromium is reachable. You can now open Identify in Chrome from any tracker."
         case .failed:
-            return "The Chromium download didn't finish. Check your network and try again, or install Chromium / Brave / Edge from their official sites instead."
+            return "The bundled Chromium inside the .app is missing or corrupt. Reinstall macOS Widgets Stats from Website from the GitHub release page to restore it."
         }
     }
 
     private var idleBody: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .top, spacing: 6) {
-                Image(systemName: "lock.shield")
+                Image(systemName: "shippingbox")
                     .foregroundStyle(.secondary)
-                Text("Downloaded from commondatastorage.googleapis.com/chromium-browser-snapshots — Google's official Chromium build bucket.")
+                Text("Chromium is bundled inside Resources/Browsers/Chromium.app at build time — no download, no network, no Application Support extraction.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
             HStack(alignment: .top, spacing: 6) {
-                Image(systemName: "externaldrive")
+                Image(systemName: "lock.shield")
                     .foregroundStyle(.secondary)
-                Text("Installs to the app's private Application Support folder. Removable from System Settings or Finder anytime.")
+                Text("Signed by the same Apple Developer ID as the outer app, with hardened-runtime + JIT entitlements so V8 / renderer processes start under sandbox.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -168,7 +174,7 @@ struct ChromiumInstallSheet: View {
                 .foregroundStyle(.red)
                 .textSelection(.enabled)
                 .fixedSize(horizontal: false, vertical: true)
-            Text("You can also install Chromium, Brave Browser, or Microsoft Edge from their official sites — the app will auto-detect any of them.")
+            Text("Reinstall macOS Widgets Stats from Website from the GitHub release page to restore the bundled Chromium.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -176,13 +182,12 @@ struct ChromiumInstallSheet: View {
 
     private func progressStatusText(fraction: Double) -> String {
         if fraction <= 0 {
-            return "Connecting…"
+            return "Checking…"
         }
         if fraction >= 0.995 {
-            return "Extracting and installing…"
+            return "Verifying bundled Chromium…"
         }
-        let percent = Int(round(fraction * 100))
-        return "Downloading… \(percent)%"
+        return "Checking…"
     }
 }
 
@@ -198,33 +203,31 @@ final class ChromiumInstallViewModel: ObservableObject {
     @Published private(set) var state: State = .idle
 
     func start() {
-        // Idempotent — if Chromium became available in the background (e.g.
-        // user installed Brave during the dialog), short-circuit.
+        // Idempotent — if the bundled Chromium is already reachable (the
+        // expected path in 0.14.0+ installs), short-circuit immediately.
         if ChromeBrowserProfile.shared.chromiumIsAvailable() {
             state = .completed
             return
         }
 
+        // Defensive path — bundled Chromium missing or unreachable. Call
+        // installChromium() (now a no-op that just rechecks availability +
+        // posts the change notification) so any UI listening for the
+        // notification still refreshes. Then surface a clear "reinstall"
+        // message rather than a download progress bar.
         state = .downloading(0)
-        ChromeBrowserProfile.shared.installChromium(progress: { [weak self] fraction in
-            guard let self else { return }
-            if case .downloading = self.state {
-                self.state = .downloading(fraction)
-            }
+        ChromeBrowserProfile.shared.installChromium(progress: { _ in
+            // No-op — the new install path is synchronous and has no
+            // intermediate progress.
         }, completion: { [weak self] result in
             guard let self else { return }
             switch result {
             case .success:
-                // Defensive: even after a clean managed download, an invalid
-                // `MACOS_WIDGETS_STATS_CHROME_PATH` env override still blocks
-                // every future `resolveBrowser()` call. Surface that as a
-                // failure here rather than reporting "installed and ready"
-                // while the user's actual identify attempts will throw.
                 if ChromeBrowserProfile.shared.chromiumIsAvailable() {
                     self.state = .completed
                 } else {
                     self.state = .failed(
-                        "Chromium downloaded successfully, but the MACOS_WIDGETS_STATS_CHROME_PATH environment variable points at an invalid path. Unset that variable (or fix the path) so the app can find a launchable browser."
+                        "The bundled Chromium inside the .app could not be reached after the recheck. Reinstall macOS Widgets Stats from Website to restore it."
                     )
                 }
             case .failure(let error):

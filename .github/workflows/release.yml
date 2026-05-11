@@ -112,11 +112,10 @@ jobs:
             -packageAuthorizationProvider netrc \
             -scmProvider system
 
-      # Chrome for Testing fetch step was removed in 0.13.1 — the app no
-      # longer bundles a browser at build time. The Release .app shipped from
-      # this workflow now resolves Chromium / Brave / Edge at runtime, or
-      # downloads upstream Chromium on first launch — see
-      # ChromeBrowserProfile.resolveBrowser.
+      # The app bundles upstream Chromium during the Xcode build via
+      # scripts/embed-chromium.sh. That post-build phase fetches any missing
+      # or stale vendor/chromium snapshots and re-signs the embedded browser
+      # before the archive is exported/notarized.
 
       - name: Build archive
         env:
