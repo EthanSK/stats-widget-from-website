@@ -41,11 +41,24 @@ final class BackgroundScheduler: ObservableObject {
             schedulers[removedID] = nil
         }
 
+        // Capture freshly-added IDs BEFORE we overwrite activeTrackerIDs.
+        // NSBackgroundActivityScheduler does NOT fire on registration —
+        // it waits for its first interval window (default 30 min for text
+        // trackers). Without an explicit kickoff, the widget the user just
+        // pinned shows a placeholder for the whole first interval. We
+        // trigger a one-shot scrape immediately so AppGroupStore gets a
+        // reading + the widget lights up within seconds.
+        let newlyAddedIDs = trackerIDs.subtracting(activeTrackerIDs)
+
         for tracker in trackers {
             schedule(tracker)
         }
 
         activeTrackerIDs = trackerIDs
+
+        for newID in newlyAddedIDs {
+            triggerScrapeNow(trackerID: newID)
+        }
     }
 
     func triggerScrapeNow(trackerID: UUID) {
