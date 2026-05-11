@@ -22,6 +22,8 @@ struct TrackerEditorView: View {
     @State private var capturedText: String
     @State private var chromiumAvailable: Bool = ChromeBrowserProfile.shared.chromiumIsAvailable()
     @State private var isShowingChromiumInstallSheet: Bool = false
+    @State private var previewState: PreviewState = .idle
+    @State private var previewSelector: String = ""
 
     let mode: Mode
     let onSave: (Tracker) -> Void
@@ -33,6 +35,13 @@ struct TrackerEditorView: View {
         _labelText = State(initialValue: tracker.label ?? "")
         _accentColor = State(initialValue: Color(hexString: tracker.accentColorHex) ?? Color(hexString: Tracker.defaultAccentColorHex) ?? .accentColor)
         _capturedText = State(initialValue: "")
+    }
+
+    private enum PreviewState {
+        case idle
+        case loading
+        case success(value: String, numeric: Double?, fetchedAt: Date)
+        case failure(message: String, fetchedAt: Date)
     }
 
     var body: some View {
@@ -129,6 +138,10 @@ struct TrackerEditorView: View {
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
+
+                        if !trimmedSelector.isEmpty {
+                            previewSection
+                        }
                     }
                 } header: {
                     Text("Capture")
@@ -171,6 +184,179 @@ struct TrackerEditorView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: ChromeBrowserProfile.chromiumAvailabilityDidChangeNotification)) { _ in
             chromiumAvailable = ChromeBrowserProfile.shared.chromiumIsAvailable()
+        }
+    }
+
+    @ViewBuilder
+    private var previewSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                Button {
+                    runPreviewScrape()
+                } label: {
+                    if case .loading = previewState {
+                        HStack(spacing: 6) {
+                            ProgressView()
+                                .controlSize(.small)
+                            Text("Scraping…")
+                        }
+                    } else {
+                        Label(previewButtonTitle, systemImage: "arrow.clockwise")
+                    }
+                }
+                .disabled(!canRunPreview)
+                .help("Run a one-off scrape now using the captured selector. Does not modify any saved data.")
+
+                if let fetchedDescription = previewTimestampDescription {
+                    Text(fetchedDescription)
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+            }
+
+            switch previewState {
+            case .idle:
+                Text("Test scrape to confirm the selector returns the number you expect before saving.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            case .loading:
+                EmptyView()
+            case .success(let value, let numeric, _):
+                HStack(spacing: 6) {
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundStyle(.green)
+                    Text(value)
+                        .font(.system(.body, design: .rounded).weight(.semibold))
+                        .textSelection(.enabled)
+                        .lineLimit(2)
+                    if let numeric, let parsed = formattedNumeric(numeric) {
+                        Text("(\(parsed))")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            case .failure(let message, _):
+                HStack(alignment: .top, spacing: 6) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange)
+                    Text(message)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                        .lineLimit(4)
+                        .textSelection(.enabled)
+                }
+            }
+        }
+        .padding(.top, 4)
+        .onChange(of: draft.selector) { newSelector in
+            // Selector changed (user re-identified or edited) — invalidate any
+            // stale preview so the user doesn't think the new selector has been
+            // verified.
+            if newSelector != previewSelector {
+                previewState = .idle
+            }
+        }
+    }
+
+    private var canRunPreview: Bool {
+        guard chromiumAvailable, validatedURL != nil, !trimmedSelector.isEmpty else {
+            return false
+        }
+
+        if case .loading = previewState {
+            return false
+        }
+
+        return true
+    }
+
+    private var previewButtonTitle: String {
+        switch previewState {
+        case .idle:
+            return "Test scrape now"
+        case .loading:
+            return "Scraping…"
+        case .success, .failure:
+            return "Re-test scrape"
+        }
+    }
+
+    private var previewTimestampDescription: String? {
+        let fetchedAt: Date?
+        switch previewState {
+        case .success(_, _, let date), .failure(_, let date):
+            fetchedAt = date
+        case .idle, .loading:
+            fetchedAt = nil
+        }
+
+        guard let fetchedAt else {
+            return nil
+        }
+
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .abbreviated
+        return "fetched \(formatter.localizedString(for: fetchedAt, relativeTo: Date()))"
+    }
+
+    private func formattedNumeric(_ value: Double) -> String? {
+        let formatter = NumberFormatter()
+        formatter.numberStyle = .decimal
+        formatter.minimumFractionDigits = 0
+        formatter.maximumFractionDigits = 4
+        return formatter.string(from: NSNumber(value: value))
+    }
+
+    private func runPreviewScrape() {
+        guard let url = validatedURL else {
+            return
+        }
+
+        let trimmedSelectorValue = trimmedSelector
+        guard !trimmedSelectorValue.isEmpty else {
+            return
+        }
+
+        // Snapshot the selector at request-start so a slow scrape's stale result
+        // doesn't overwrite a newer Identify the user kicked off in the meantime.
+        previewSelector = trimmedSelectorValue
+        previewState = .loading
+
+        var probeTracker = draft
+        probeTracker.url = url.absoluteString
+        probeTracker.selector = trimmedSelectorValue
+        probeTracker.browserProfile = Tracker.defaultBrowserProfile
+
+        ChromeCDPScraper.previewScrape(tracker: probeTracker) { result in
+            DispatchQueue.main.async {
+                // Guard against late callbacks: if the user re-identified mid-scrape,
+                // the previewSelector will have advanced. Drop the stale result.
+                guard previewSelector == trimmedSelectorValue else {
+                    return
+                }
+
+                switch result {
+                case .success(let reading):
+                    let value = reading.currentValue ?? ""
+                    if value.isEmpty {
+                        previewState = .failure(
+                            message: "Selector matched but the element had no text.",
+                            fetchedAt: Date()
+                        )
+                    } else {
+                        previewState = .success(
+                            value: value,
+                            numeric: reading.currentNumeric,
+                            fetchedAt: Date()
+                        )
+                    }
+                case .failure(let error):
+                    previewState = .failure(
+                        message: error.localizedDescription,
+                        fetchedAt: Date()
+                    )
+                }
+            }
         }
     }
 

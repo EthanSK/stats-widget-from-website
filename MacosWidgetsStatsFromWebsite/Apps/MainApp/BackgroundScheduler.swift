@@ -9,6 +9,20 @@ import Foundation
 import WidgetKit
 
 final class BackgroundScheduler: ObservableObject {
+    /// Posted on the main queue whenever a tracker's reading is written
+    /// (scheduled scrape, on-demand row refresh, or recorded failure). UI
+    /// surfaces — like the tracker list rows — observe this so they can
+    /// re-pull `AppGroupStore.reading(for:)` immediately and surface the new
+    /// value without needing the widget-reload roundtrip.
+    static let trackerReadingDidChangeNotification = Notification.Name(
+        "com.ethansk.macos-widgets-stats-from-website.trackerReadingDidChange"
+    )
+
+    /// Tracker IDs currently being scraped on-demand (Scrape Now). Exposed so
+    /// list rows / toolbar buttons can show a busy indicator. Published so
+    /// SwiftUI observers refresh when the set changes.
+    @Published private(set) var inFlightTrackerIDs: Set<UUID> = []
+
     private let store: AppGroupStore
     private var schedulers: [UUID: NSBackgroundActivityScheduler] = [:]
     private var activeTrackerIDs: Set<UUID> = []
@@ -39,7 +53,28 @@ final class BackgroundScheduler: ObservableObject {
             return
         }
 
-        scrape(tracker)
+        markInFlight(tracker.id)
+        scrape(tracker) { [weak self] in
+            self?.markFinished(tracker.id)
+        }
+    }
+
+    func isScrapeInFlight(trackerID: UUID) -> Bool {
+        inFlightTrackerIDs.contains(trackerID)
+    }
+
+    private func markInFlight(_ trackerID: UUID) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.inFlightTrackerIDs.insert(trackerID)
+        }
+    }
+
+    private func markFinished(_ trackerID: UUID) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.inFlightTrackerIDs.remove(trackerID)
+        }
     }
 
     private func schedule(_ tracker: Tracker) {
@@ -84,9 +119,20 @@ final class BackgroundScheduler: ObservableObject {
             handlePostRecord(reading: recordedReading, tracker: tracker)
             DockBadgeUpdater.update()
             WidgetCenter.shared.reloadTimelines(ofKind: "MacosWidgetsStatsFromWebsite")
+            postReadingDidChange(trackerID: tracker.id)
         } catch {
             // The Preferences UI surfaces configuration persistence errors;
             // scrape write failures are transient and retried by the scheduler.
+        }
+    }
+
+    private func postReadingDidChange(trackerID: UUID) {
+        DispatchQueue.main.async {
+            NotificationCenter.default.post(
+                name: Self.trackerReadingDidChangeNotification,
+                object: nil,
+                userInfo: ["trackerID": trackerID]
+            )
         }
     }
 

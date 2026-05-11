@@ -42,9 +42,12 @@ struct TrackersListView: View {
             } else {
                 List(selection: $selectedTrackerID) {
                     ForEach(store.trackers) { tracker in
-                        TrackerRowView(tracker: tracker) {
-                            edit(tracker)
-                        }
+                        TrackerRowView(
+                            tracker: tracker,
+                            isRefreshing: backgroundScheduler.inFlightTrackerIDs.contains(tracker.id),
+                            onEdit: { edit(tracker) },
+                            onRefresh: { backgroundScheduler.triggerScrapeNow(trackerID: tracker.id) }
+                        )
                         .tag(tracker.id)
                         .contentShape(Rectangle())
                         .onTapGesture {
@@ -56,6 +59,9 @@ struct TrackersListView: View {
                                 }
                                 Button("Duplicate") {
                                     store.duplicateTracker(tracker)
+                                }
+                                Button("Scrape Now") {
+                                    backgroundScheduler.triggerScrapeNow(trackerID: tracker.id)
                                 }
                                 Button("Export Selector Pack") {
                                     exportSelectorPack(tracker)
@@ -243,7 +249,11 @@ struct TrackersListView: View {
 
 private struct TrackerRowView: View {
     let tracker: Tracker
+    let isRefreshing: Bool
     let onEdit: () -> Void
+    let onRefresh: () -> Void
+
+    @State private var reading: TrackerReading?
 
     var body: some View {
         HStack(spacing: 12) {
@@ -264,6 +274,24 @@ private struct TrackerRowView: View {
 
             Spacer(minLength: 12)
 
+            // Latest scraped value + freshness, surfaced inline so the user
+            // can see at a glance whether the saved selector is producing the
+            // expected number without opening the editor.
+            VStack(alignment: .trailing, spacing: 2) {
+                Text(displayedValue)
+                    .font(.system(.body, design: .rounded).weight(.semibold))
+                    .monospacedDigit()
+                    .lineLimit(1)
+                    .foregroundStyle(valueColor)
+                if let timestamp = displayedTimestamp {
+                    Text(timestamp)
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                }
+            }
+            .frame(minWidth: 60, alignment: .trailing)
+
             Text(tracker.renderMode.rawValue)
                 .font(.caption.weight(.semibold))
                 .padding(.horizontal, 8)
@@ -273,6 +301,23 @@ private struct TrackerRowView: View {
                         .fill(tracker.renderMode == .text ? Color.green.opacity(0.18) : Color.blue.opacity(0.16))
                 )
                 .foregroundStyle(tracker.renderMode == .text ? .green : .blue)
+
+            Button(action: onRefresh) {
+                if isRefreshing {
+                    ProgressView()
+                        .controlSize(.small)
+                        .frame(width: 18, height: 18)
+                } else {
+                    Image(systemName: "arrow.clockwise.circle.fill")
+                        .font(.title3)
+                        .symbolRenderingMode(.hierarchical)
+                }
+            }
+            .buttonStyle(.borderless)
+            .labelStyle(.iconOnly)
+            .disabled(isRefreshing)
+            .help("Scrape \(tracker.name.isEmpty ? "tracker" : tracker.name) now")
+            .accessibilityLabel("Scrape tracker now")
 
             Button(action: onEdit) {
                 Image(systemName: "pencil.circle.fill")
@@ -285,6 +330,49 @@ private struct TrackerRowView: View {
             .accessibilityLabel("Edit tracker")
         }
         .padding(.vertical, 4)
+        .onAppear {
+            reading = AppGroupStore.reading(for: tracker.id)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: BackgroundScheduler.trackerReadingDidChangeNotification)) { notification in
+            guard let trackerID = notification.userInfo?["trackerID"] as? UUID,
+                  trackerID == tracker.id else {
+                return
+            }
+            reading = AppGroupStore.reading(for: tracker.id)
+        }
+    }
+
+    private var displayedValue: String {
+        if let value = reading?.currentValue, !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return value
+        }
+
+        if tracker.renderMode == .snapshot, reading?.snapshotCacheKey != nil {
+            return "(snapshot)"
+        }
+
+        return "—"
+    }
+
+    private var valueColor: Color {
+        switch reading?.status {
+        case .broken:
+            return .red
+        case .stale:
+            return .secondary
+        case .ok, nil:
+            return .primary
+        }
+    }
+
+    private var displayedTimestamp: String? {
+        guard let lastUpdated = reading?.lastUpdatedAt else {
+            return nil
+        }
+
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .abbreviated
+        return formatter.localizedString(for: lastUpdated, relativeTo: Date())
     }
 }
 

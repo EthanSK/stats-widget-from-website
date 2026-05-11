@@ -31,6 +31,22 @@ final class ChromeCDPScraper {
         }
     }
 
+    /// One-shot scrape used by the in-app preview UX in TrackerEditorView.
+    ///
+    /// Unlike the regular scheduler-driven `scrape(tracker:completion:)`, this
+    /// forces text-mode extraction regardless of the tracker's saved
+    /// `renderMode`. The intent is to show the user the live text that their
+    /// CSS selector would capture — for snapshot trackers we still surface
+    /// the matched element's text content as a sanity check, even though the
+    /// production scrape will capture an image clip of the same bounding
+    /// rect. Runs through the existing background (headless) Chrome flow so
+    /// no visible browser window pops up on every preview click.
+    static func previewScrape(tracker: Tracker, completion: @escaping Completion) {
+        var textTracker = tracker
+        textTracker.renderMode = .text
+        scrape(tracker: textTracker, completion: completion)
+    }
+
     private init(tracker: Tracker, completion: @escaping Completion) {
         self.tracker = tracker
         self.completion = completion
