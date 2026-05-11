@@ -666,12 +666,32 @@ final class ChromeBrowserProfile {
         if headless {
             arguments.append(contentsOf: [
                 "--headless=new",
-                "--disable-gpu"
+                "--disable-gpu",
+                // Override the User-Agent so outbound HTTP requests don't carry
+                // the `HeadlessChrome` tag. Many auth-gated sites (Claude.ai,
+                // Google sign-in, OpenAI, Cloudflare) inspect the UA and either
+                // serve a login wall OR refuse to honor the session cookie when
+                // they detect HeadlessChrome — so the scraper would re-load the
+                // page in a logged-out state and the captured selector (saved
+                // from the logged-in headed Identify session) would no longer
+                // match. The CDP /json/version endpoint reports the underlying
+                // process UA (still HeadlessChrome) so our own headless-detection
+                // logic via cdpVersionInfo is unaffected. Bumped per-release as
+                // Chromium versions ship.
+                "--user-agent=\(ChromeBrowserProfile.normalChromeUserAgent)"
             ])
         }
 
         return arguments
     }
+
+    /// User-Agent matching a normal headed Chrome 150 on macOS arm64. Apple
+    /// convention is to keep `Intel Mac OS X 10_15_7` in the UA on Apple
+    /// Silicon for compatibility with sites that sniff the platform string —
+    /// Chromium does the same on its own real-Chrome builds.
+    private static let normalChromeUserAgent =
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 " +
+        "(KHTML, like Gecko) Chrome/150.0.7836.0 Safari/537.36"
 
     private func launch(browser: ResolvedBrowser, configuration: ChromeBrowserLaunchConfiguration, foreground: Bool) throws {
         let arguments = buildChromeLaunchArguments(configuration: configuration, headless: !foreground) + ["about:blank"]
