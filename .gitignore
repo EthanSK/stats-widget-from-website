@@ -70,3 +70,8 @@ node_modules/
 # App data dumped during dev
 debug-snapshots/
 *.html.snapshot
+
+# Vendored Chrome for Testing (downloaded by scripts/fetch-chrome-for-testing.sh
+# during build; not committed because each arch is ~340 MB). The Xcode build
+# phase invokes the fetch script automatically when this directory is empty.
+vendor/chrome-for-testing/

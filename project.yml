@@ -23,8 +23,8 @@ settings:
     # from Bundle.main.infoDictionary at runtime, so nothing else needs touching.
     # Enforced by .githooks/pre-commit (see core.hooksPath in repo config) and
     # by scripts/validate_release_metadata.py.
-    MARKETING_VERSION: "0.12.15"
-    CURRENT_PROJECT_VERSION: "1213"
+    MARKETING_VERSION: "0.13.0"
+    CURRENT_PROJECT_VERSION: "1214"
 
 packages:
   Sparkle:
@@ -50,6 +50,22 @@ targets:
         codeSign: true
       - package: Sparkle
         product: Sparkle
+    # Embed the vendored Chrome for Testing bundle into Resources/Browsers BEFORE
+    # Xcode's outer code-sign phase. The script also re-signs the nested CFT with
+    # our identity so the outer notarize pass accepts every nested executable.
+    # See scripts/embed-chrome-for-testing.sh for the full rationale.
+    postBuildScripts:
+      - name: Embed Chrome for Testing
+        # Double-quote PROJECT_DIR in the shell line so checkout paths
+        # containing spaces (e.g. "~/My Projects/...") don't split the
+        # command. Xcode runs the shellScript value verbatim through
+        # /bin/sh — YAML quotes here only affect parsing, not the
+        # resulting shell line.
+        script: '"${PROJECT_DIR}/scripts/embed-chrome-for-testing.sh"'
+        # No declared inputs/outputs: the script does its own up-to-date
+        # check via CFBundleShortVersionString + signature-team
+        # comparison, so an "unchanged" build is cheap (<1s).
+        runOnlyWhenInstalling: false
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.ethansk.macos-widgets-stats-from-website

@@ -112,6 +112,15 @@ jobs:
             -packageAuthorizationProvider netrc \
             -scmProvider system
 
+      - name: Fetch Chrome for Testing (vendored, bundled into Release)
+        # Release archives build the full ARCHS set (arm64 + x86_64) and
+        # the embed phase needs a matching CFT bundle PER arch. Fetch
+        # both up front so the embed phase has nothing to do at archive
+        # time — and so we don't redownload the host arch when the embed
+        # phase falls back to --force for the missing cross-arch slice.
+        # The fetch script is idempotent; subsequent runs are no-ops.
+        run: ./scripts/fetch-chrome-for-testing.sh
+
       - name: Build archive
         env:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
