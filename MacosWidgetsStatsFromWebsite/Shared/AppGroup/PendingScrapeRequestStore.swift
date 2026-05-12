@@ -20,11 +20,24 @@ import Foundation
 struct PendingScrapeRequest: Codable, Equatable {
     /// Tracker the user tapped to refresh, encoded as UUID string for
     /// JSON portability.
+    ///
+    /// Special sentinel value `PendingScrapeRequest.reloadTimelinesSentinel`
+    /// (a single dunder string, not a UUID) signals "the configuration was
+    /// changed from a separate process (e.g. the CLI stdio MCP server) and
+    /// the running main app should call WidgetCenter.shared.reloadAllTimelines
+    /// to pick up the change." Used by the MCP `reload_widget_timelines`
+    /// tool — it's the only cross-process surface that can ask the running
+    /// main app (which holds the WidgetCenter handle) to refresh.
     let trackerID: String
     /// ISO8601 timestamp the widget wrote the request. Used for ordering
     /// + stale-request cleanup if the main app was off for an extended
     /// period.
     let requestedAt: Date
+
+    /// Sentinel trackerID that BackgroundScheduler interprets as
+    /// "reloadAllTimelines now" rather than "scrape this tracker." Never
+    /// a valid UUID, so legitimate tracker IDs can never collide.
+    static let reloadTimelinesSentinel = "__reload_widget_timelines__"
 }
 
 enum PendingScrapeRequestStore {

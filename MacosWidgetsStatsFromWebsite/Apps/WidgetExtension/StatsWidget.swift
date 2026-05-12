@@ -206,10 +206,15 @@ struct StatsWidgetProvider: AppIntentTimelineProvider {
 }
 
 struct StatsWidgetConfigurationIntent: WidgetConfigurationIntent {
-    static var title: LocalizedStringResource = "Stats Widget Configuration"
-    static var description = IntentDescription("Choose which saved widget configuration this widget should show.")
+    static var title: LocalizedStringResource = "Stats Widget"
+    static var description = IntentDescription("Pick a saved widget composition from the main app.")
 
-    @Parameter(title: "Configuration")
+    // Title is intentionally kept SHORT ("Widget") so the macOS Intents
+    // system-rendered placeholder reads "Select a Widget" instead of
+    // "Select a Configuration" which truncates to "Select a..." in the
+    // narrow widget edit-sheet popover. See PLAN.md §9 and the v0.16.4
+    // changelog.
+    @Parameter(title: "Widget")
     var configuration: WidgetConfigurationEntity?
 
     static var parameterSummary: some ParameterSummary {
@@ -687,16 +692,23 @@ struct ErrorStateBadge: View {
 
 struct EmptyWidgetView: View {
     var body: some View {
-        VStack(spacing: 6) {
-            Text("Click to configure tracker")
-                .font(.headline)
-            Text("Choose a tracker in widget configuration.")
-                .font(.caption)
+        VStack(spacing: 4) {
+            Image(systemName: "rectangle.dashed.badge.record")
+                .font(.title2)
                 .foregroundStyle(.secondary)
+            Text("No tracker")
+                .font(.caption.weight(.semibold))
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
+            Text("Open the app to add one.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
+                .minimumScaleFactor(0.7)
         }
         .multilineTextAlignment(.center)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .padding()
+        .padding(8)
     }
 }
 

@@ -545,7 +545,8 @@ private enum MCPToolCatalog {
         "delete_widget_configuration",
         "import_selector_pack",
         "attach_webhook",
-        "reset_tracker_failure_state"
+        "reset_tracker_failure_state",
+        "repair_tracker"
     ]
 
     static let toolNames = Set(tools.compactMap { $0["name"] as? String })
@@ -630,7 +631,18 @@ private enum MCPToolCatalog {
                 "type": ["string", "null"],
                 "description": "Webhook URL, or null to clear."
             ]
-        ], required: ["url"])
+        ], required: ["url"]),
+        tool("reload_widget_timelines", "Force every placed WidgetKit widget to reload its timeline. Use after changing tracker/config state from a separate process (e.g. the CLI stdio MCP), or when widgets look stale. Idempotent.", [:]),
+        tool("get_widget_diagnostics", "Return a focused diagnostic snapshot for one widget configuration (or every config when id is omitted): bound trackers, their last reading, status, last error, snapshot freshness, and which configuration the placed widget would currently render.", [
+            "id": stringSchema("Optional widget configuration UUID. Omit to return diagnostics for every saved configuration.")
+        ]),
+        tool("repair_tracker", "Repair a misconfigured or wedged tracker. Clears stale snapshot caches, resets the failure counter, optionally rewrites selector / url, then waits for the next scrape to verify. Use when a widget is rendering wrong data, frozen, or stuck on a stale snapshot.", [
+            "id": stringSchema("Tracker UUID"),
+            "selector": stringSchema("Optional new CSS selector"),
+            "url": stringSchema("Optional new URL"),
+            "clearSnapshot": boolSchema("Clear cached snapshot before next scrape (default true)"),
+            "triggerScrape": boolSchema("Trigger a scrape immediately after repair (default true)")
+        ], required: ["id"])
     ]
 
     private static func tool(
@@ -730,6 +742,12 @@ private enum MCPToolDispatcher {
             return try importSelectorPack(arguments)
         case "attach_webhook":
             return try attachWebhook(arguments)
+        case "reload_widget_timelines":
+            return reloadWidgetTimelines()
+        case "get_widget_diagnostics":
+            return try getWidgetDiagnostics(arguments)
+        case "repair_tracker":
+            return try repairTracker(arguments)
         default:
             throw MCPError.toolNotFound(name)
         }
@@ -1142,6 +1160,208 @@ private enum MCPToolDispatcher {
         }
         notifyConfigurationChanged()
         return ["ok": true]
+    }
+
+    /// Forces every placed WidgetKit widget to reload its timeline.
+    ///
+    /// WidgetCenter must be called from the main app process. We get there
+    /// by writing the cross-process reload sentinel into the same
+    /// directory BackgroundScheduler already watches for pending scrape
+    /// requests — see PendingScrapeRequest.reloadTimelinesSentinel. Works
+    /// regardless of which MCP transport the caller is using:
+    ///
+    /// - Embedded socket: main app sees the file event immediately.
+    /// - Stdio (CLI): main app picks it up on the next file-watcher tick
+    ///   (typically <50ms after write). If the main app isn't running,
+    ///   the sentinel is harmless; the widget gallery and freshly placed
+    ///   widgets always read App Group state from disk anyway, and the
+    ///   sentinel is cleaned up on next drain.
+    private static func reloadWidgetTimelines() -> Any {
+        do {
+            try PendingScrapeRequestStore.requestScrape(
+                trackerID: PendingScrapeRequest.reloadTimelinesSentinel
+            )
+            return ["ok": true, "queued": true]
+        } catch {
+            return ["ok": false, "error": error.localizedDescription]
+        }
+    }
+
+    /// Returns diagnostics for one widget configuration (when id is
+    /// provided) or every saved widget configuration (when omitted).
+    /// Includes bound trackers + their readings, last error, snapshot
+    /// freshness, and a "wouldRender" hint that mirrors the resolution
+    /// logic in StatsWidgetProvider.selectConfiguration so the caller can
+    /// tell what a placed widget would actually display right now.
+    private static func getWidgetDiagnostics(_ arguments: [String: Any]) throws -> Any {
+        let configuration = AppGroupStore.loadSharedConfiguration()
+        let readings = AppGroupStore.loadReadings().readings
+
+        let configurationsToReport: [WidgetConfiguration]
+        if arguments.keys.contains("id") {
+            let id = try uuidArgument("id", arguments)
+            guard let match = configuration.widgetConfigurations.first(where: { $0.id == id }) else {
+                throw MCPError.notFound("Widget configuration \(id.uuidString) was not found.")
+            }
+            configurationsToReport = [match]
+        } else {
+            configurationsToReport = configuration.widgetConfigurations
+        }
+
+        let now = Date()
+        let isoFormatter = ISO8601DateFormatter()
+
+        let widgetReports: [[String: Any]] = configurationsToReport.map { widgetConfiguration in
+            let boundTrackers = widgetConfiguration.trackerIDs.compactMap { trackerID in
+                configuration.trackers.first { $0.id == trackerID }
+            }
+            let missingTrackerIDs = widgetConfiguration.trackerIDs.filter { trackerID in
+                !configuration.trackers.contains { $0.id == trackerID }
+            }
+
+            let trackerReports: [[String: Any]] = boundTrackers.map { tracker in
+                let reading = readings[tracker.id.uuidString]
+                var trackerReport: [String: Any] = [
+                    "id": tracker.id.uuidString,
+                    "name": tracker.name,
+                    "renderMode": tracker.renderMode.rawValue,
+                    "selector": tracker.selector,
+                    "url": tracker.url,
+                    "refreshIntervalSec": tracker.refreshIntervalSec,
+                    "status": reading?.status.rawValue ?? "notReadYet",
+                    "currentValue": reading?.currentValue as Any? ?? NSNull(),
+                    "lastError": reading?.lastError as Any? ?? NSNull(),
+                    "lastUpdatedAt": reading?.lastUpdatedAt.map(isoFormatter.string(from:)) as Any? ?? NSNull(),
+                    "consecutiveFailureCount": reading?.consecutiveFailureCount as Any? ?? NSNull(),
+                    "snapshotPath": reading?.snapshotPath as Any? ?? NSNull(),
+                    "snapshotCachedInMemory": SnapshotSharedCache.shared.data(for: tracker.id) != nil
+                ]
+                if let snapshotCapturedAt = reading?.snapshotCapturedAt {
+                    trackerReport["snapshotCapturedAt"] = isoFormatter.string(from: snapshotCapturedAt)
+                    trackerReport["snapshotAgeSec"] = Int(now.timeIntervalSince(snapshotCapturedAt))
+                } else {
+                    trackerReport["snapshotCapturedAt"] = NSNull()
+                    trackerReport["snapshotAgeSec"] = NSNull()
+                }
+                if let updatedAt = reading?.lastUpdatedAt {
+                    trackerReport["valueAgeSec"] = Int(now.timeIntervalSince(updatedAt))
+                } else {
+                    trackerReport["valueAgeSec"] = NSNull()
+                }
+                return trackerReport
+            }
+
+            var report: [String: Any] = [
+                "id": widgetConfiguration.id.uuidString,
+                "name": widgetConfiguration.name,
+                "templateID": widgetConfiguration.templateID.rawValue,
+                "size": widgetConfiguration.size.rawValue,
+                "layout": widgetConfiguration.layout.rawValue,
+                "showSparklines": widgetConfiguration.showSparklines,
+                "showLabels": widgetConfiguration.showLabels,
+                "trackerIDs": widgetConfiguration.trackerIDs.map(\.uuidString),
+                "boundTrackers": trackerReports,
+                "missingTrackerIDs": missingTrackerIDs.map(\.uuidString)
+            ]
+
+            // Health summary: did every bound tracker scrape OK recently?
+            let okCount = trackerReports.filter { ($0["status"] as? String) == "ok" }.count
+            let staleCount = trackerReports.filter { ($0["status"] as? String) == "stale" }.count
+            let brokenCount = trackerReports.filter { ($0["status"] as? String) == "broken" }.count
+            let notReadCount = trackerReports.filter { ($0["status"] as? String) == "notReadYet" }.count
+            report["health"] = [
+                "ok": okCount,
+                "stale": staleCount,
+                "broken": brokenCount,
+                "notReadYet": notReadCount,
+                "missing": missingTrackerIDs.count
+            ]
+            return report
+        }
+
+        return [
+            "configurations": widgetReports,
+            "totalConfigurations": configuration.widgetConfigurations.count,
+            "totalTrackers": configuration.trackers.count
+        ]
+    }
+
+    /// Repairs a misconfigured/wedged tracker. Optionally rewrites url/
+    /// selector, clears the in-memory snapshot cache, resets failure
+    /// counters, and (by default) triggers an immediate scrape so the
+    /// repair is visible without waiting for the next scheduled tick.
+    private static func repairTracker(_ arguments: [String: Any]) throws -> Any {
+        let id = try uuidArgument("id", arguments)
+        let clearSnapshot = (arguments["clearSnapshot"] as? Bool) ?? true
+        let triggerScrape = (arguments["triggerScrape"] as? Bool) ?? true
+
+        var updatedTracker: Tracker?
+        var changedFields: [String] = []
+
+        try AppGroupStore.mutateSharedConfiguration { configuration in
+            guard let index = configuration.trackers.firstIndex(where: { $0.id == id }) else {
+                throw MCPError.notFound("Tracker \(id.uuidString) was not found.")
+            }
+
+            var tracker = configuration.trackers[index]
+
+            if arguments.keys.contains("url") {
+                tracker.url = try urlArgument("url", arguments).absoluteString
+                changedFields.append("url")
+            }
+            if let value = arguments["selector"] as? String {
+                let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !trimmed.isEmpty else {
+                    throw MCPError.validation("Selector cannot be empty when supplied to repair_tracker.")
+                }
+                tracker.selector = trimmed
+                changedFields.append("selector")
+            }
+
+            configuration.trackers[index] = tracker
+            updatedTracker = tracker
+        }
+
+        let tracker = try require(updatedTracker, "repair_tracker could not load tracker.")
+
+        if clearSnapshot {
+            SnapshotSharedCache.shared.remove(for: id)
+            changedFields.append("snapshotCache")
+        }
+
+        _ = try AppGroupStore.resetFailureState(
+            for: id,
+            reason: "repair_tracker invoked; waiting for next scrape to verify."
+        )
+        changedFields.append("failureState")
+
+        notifyConfigurationChanged()
+
+        var payload: [String: Any] = [
+            "ok": true,
+            "trackerId": id.uuidString,
+            "changedFields": changedFields,
+            "tracker": trackerPayload(tracker, includeHistory: true)
+        ]
+
+        if triggerScrape {
+            let result = blockingScrape(tracker)
+            let reading: TrackerReading
+            switch result {
+            case .success(let newReading):
+                try AppGroupStore.record(reading: newReading, for: tracker)
+                reading = newReading
+            case .failure(let error):
+                reading = try AppGroupStore.recordFailure(message: error.localizedDescription, for: tracker)
+            }
+            payload["postRepairReading"] = readingPayload(reading, includeHistory: true)
+        }
+
+        // Always poke the widget timelines so the repaired state surfaces
+        // without waiting for the next 5-min tick.
+        _ = reloadWidgetTimelines()
+
+        return payload
     }
 
     private static func blockingScrape(_ tracker: Tracker) -> Result<TrackerReading, Error> {

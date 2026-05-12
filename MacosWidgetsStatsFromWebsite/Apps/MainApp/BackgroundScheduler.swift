@@ -199,9 +199,23 @@ final class BackgroundScheduler: ObservableObject {
         // Dedupe: if the user tap-spammed the widget, multiple files exist
         // for the same trackerID. One scrape is sufficient — collapse and
         // clear all matching files.
+        //
+        // Also detect the cross-process WidgetCenter reload sentinel
+        // (PendingScrapeRequest.reloadTimelinesSentinel). The CLI stdio MCP
+        // server writes one of those whenever an external agent calls
+        // `reload_widget_timelines` — since WidgetKit's WidgetCenter must
+        // be invoked from the main app process, the sentinel is how the
+        // out-of-process MCP delegates the call.
         var seenTrackerIDs: Set<UUID> = []
+        var reloadRequested = false
         for (fileURL, request) in pending {
             defer { PendingScrapeRequestStore.clearPending(fileURL: fileURL) }
+
+            if request.trackerID == PendingScrapeRequest.reloadTimelinesSentinel {
+                reloadRequested = true
+                continue
+            }
+
             guard let trackerID = UUID(uuidString: request.trackerID),
                   !seenTrackerIDs.contains(trackerID) else {
                 continue
@@ -213,6 +227,19 @@ final class BackgroundScheduler: ObservableObject {
             ])
             DispatchQueue.main.async { [weak self] in
                 self?.triggerScrapeNow(trackerID: trackerID)
+            }
+        }
+
+        if reloadRequested {
+            ActivityLogger.log("pending-scrape", "draining widget reload sentinel")
+            // AppGroupStore on disk has changed (the external MCP caller
+            // wrote to it before requesting reload). Reload our in-memory
+            // copy so the next tick sees the new config, then push the
+            // timeline refresh.
+            DispatchQueue.main.async { [weak self] in
+                self?.store.reloadFromDisk()
+                self?.sync()
+                WidgetCenter.shared.reloadAllTimelines()
             }
         }
     }
