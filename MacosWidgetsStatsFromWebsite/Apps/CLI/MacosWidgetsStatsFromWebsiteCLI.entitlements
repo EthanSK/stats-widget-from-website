@@ -2,8 +2,6 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<!-- CLI also spawns the bundled Chromium child, so same un-sandboxing
-	     decision as the main app. See MacosWidgetsStatsFromWebsite.entitlements. -->
 	<key>com.apple.security.app-sandbox</key>
 	<false/>
 	<key>com.apple.security.application-groups</key>
@@ -14,7 +12,7 @@
 	<true/>
 	<key>keychain-access-groups</key>
 	<array>
-		<string>$(AppIdentifierPrefix)com.ethansk.macos-widgets-stats-from-website</string>
+		<string>T34G959ZG8.com.ethansk.macos-widgets-stats-from-website</string>
 	</array>
 </dict>
 </plist>

@@ -23,8 +23,8 @@ settings:
     # from Bundle.main.infoDictionary at runtime, so nothing else needs touching.
     # Enforced by .githooks/pre-commit (see core.hooksPath in repo config) and
     # by scripts/validate_release_metadata.py.
-    MARKETING_VERSION: "0.16.2"
-    CURRENT_PROJECT_VERSION: "1226"
+    MARKETING_VERSION: "0.16.3"
+    CURRENT_PROJECT_VERSION: "1227"
 
 packages:
   Sparkle:
@@ -241,8 +241,12 @@ targets:
         com.apple.security.network.client: true
         com.apple.security.application-groups:
           - T34G959ZG8.group.com.ethansk.macos-widgets-stats-from-website
+        # Hard-coded team prefix instead of $(AppIdentifierPrefix); see
+        # MacosWidgetsStatsFromWebsite.entitlements for why $(AppIdentifierPrefix)
+        # silently fails to substitute in Debug builds without a resolved
+        # provisioning profile, triggering RunningBoard error 5.
         keychain-access-groups:
-          - "$(AppIdentifierPrefix)com.ethansk.macos-widgets-stats-from-website"
+          - T34G959ZG8.com.ethansk.macos-widgets-stats-from-website
 
 schemes:
   MacosWidgetsStatsFromWebsite:

@@ -20,9 +20,22 @@
 	<array>
 		<string>T34G959ZG8.group.com.ethansk.macos-widgets-stats-from-website</string>
 	</array>
+	<!-- keychain-access-groups MUST use the literal team identifier prefix
+	     (T34G959ZG8.) instead of $(AppIdentifierPrefix). Xcode only
+	     substitutes $(AppIdentifierPrefix) when a valid provisioning
+	     profile resolves the team. Under Debug builds without an active
+	     embedded.provisionprofile (common with CODE_SIGN_STYLE=Automatic
+	     + transient Apple Development cert), the substitution silently
+	     fails and the embedded entitlements end up containing the raw
+	     literal "$(AppIdentifierPrefix)..." string. That malforms the
+	     keychain-access-groups entry, the trust evaluator rejects the
+	     binary's entitlements at exec time, and RunningBoard refuses to
+	     launch the process with the generic "RunningBoard has returned
+	     error 5" diagnostic. Hard-coding the team prefix sidesteps the
+	     provisioning-profile dependency entirely. -->
 	<key>keychain-access-groups</key>
 	<array>
-		<string>$(AppIdentifierPrefix)com.ethansk.macos-widgets-stats-from-website</string>
+		<string>T34G959ZG8.com.ethansk.macos-widgets-stats-from-website</string>
 	</array>
 	<key>com.apple.security.files.user-selected.read-write</key>
 	<true/>

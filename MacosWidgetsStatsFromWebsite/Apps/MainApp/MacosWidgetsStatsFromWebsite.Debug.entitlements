@@ -30,9 +30,14 @@
 	<array>
 		<string>T34G959ZG8.group.com.ethansk.macos-widgets-stats-from-website</string>
 	</array>
+	<!-- See Release entitlements file for rationale: $(AppIdentifierPrefix)
+	     silently fails to substitute in Debug builds without a resolved
+	     provisioning profile, malforming this entry and triggering
+	     RunningBoard error 5 on Xcode build & run. Use the literal team
+	     prefix to sidestep the provisioning-profile dependency. -->
 	<key>keychain-access-groups</key>
 	<array>
-		<string>$(AppIdentifierPrefix)com.ethansk.macos-widgets-stats-from-website</string>
+		<string>T34G959ZG8.com.ethansk.macos-widgets-stats-from-website</string>
 	</array>
 	<key>com.apple.security.files.user-selected.read-write</key>
 	<true/>
