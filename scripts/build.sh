@@ -509,6 +509,21 @@ if [[ "$INSTALL_FLAG" == "1" ]]; then
   # Best-effort terminate any running copy so the file replace doesn't fail.
   pkill -f "$INSTALLED_APP/Contents/MacOS/MacosWidgetsStatsFromWebsite" 2>/dev/null || true
   sleep 1
+
+  # Remove the prior install before copying. `ditto src dst` MERGES into an
+  # existing destination — it doesn't replace it — so files only in the OLD
+  # bundle (e.g. a stale `Contents/Resources/Browsers/Chromium.app/Contents/
+  # Frameworks/Chromium Framework.framework/Versions/<old>` directory left
+  # over from a previous Chromium version) survive the copy. The parent
+  # .app's sealed `CodeResources` (sealed at build time, before ditto) knows
+  # nothing about those leftover files, so `codesign -v` then fails with
+  # `a sealed resource is missing or invalid` even though the bundle we just
+  # built is itself fine. Pre-clearing the destination guarantees the
+  # post-install verify is checking the same file set we just sealed.
+  if [[ -d "$INSTALLED_APP" ]]; then
+    rm -rf "$INSTALLED_APP"
+  fi
+
   ditto "$APP_PATH" "$INSTALLED_APP"
   codesign -v "$INSTALLED_APP" >/dev/null 2>&1 \
     || { echo "build.sh: ERROR — installed .app failed signature verification at $INSTALLED_APP" >&2; exit 1; }
