@@ -34,6 +34,7 @@ struct StatsListWatchlistTemplate: View {
                         .minimumScaleFactor(0.5)
                         .lineLimit(1)
                         .numericValueTransition()
+                        .foregroundStyle(item.gradientColor ?? .primary)
                         .frame(width: 86, alignment: .trailing)
                 }
                 .frame(height: 50)

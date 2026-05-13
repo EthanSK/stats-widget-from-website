@@ -585,6 +585,18 @@ struct WidgetTrackerItem: Identifiable {
         Color(hexString: tracker.accentColorHex) ?? .accentColor
     }
 
+    /// Optional gradient-based color for the big numeric value, computed
+    /// from `tracker.gradientMode` and the parsed `currentNumeric`. Returns
+    /// nil when the tracker has gradient disabled, has no numeric reading,
+    /// or is in snapshot mode (snapshot templates render bitmaps, not text).
+    /// Templates fall back to their existing default text color when nil.
+    var gradientColor: Color? {
+        guard tracker.renderMode == .text else {
+            return nil
+        }
+        return GradientColor.color(numeric: numeric, mode: tracker.gradientMode)
+    }
+
     var snapshotImage: NSImage? {
         guard tracker.renderMode == .snapshot,
               let data = SnapshotSharedCache.shared.data(for: tracker.id) else {

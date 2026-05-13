@@ -101,6 +101,17 @@ struct TrackerEditorView: View {
                     }
 
                     ColorPicker("Accent color", selection: $accentColor, supportsOpacity: false)
+
+                    // Gradient mode colors the big-number value in text-style
+                    // widget templates from green to red based on the parsed
+                    // numeric reading. Default `.none` preserves the existing
+                    // primary text color for trackers that don't fit a 0-100
+                    // health metric model (e.g. raw currency, follower counts).
+                    Picker("Value gradient", selection: $draft.gradientMode) {
+                        ForEach(GradientMode.allCases, id: \.self) { mode in
+                            Text(mode.displayName).tag(mode)
+                        }
+                    }
                 } header: {
                     Text("Presentation")
                 }

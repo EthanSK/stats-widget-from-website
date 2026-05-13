@@ -50,13 +50,18 @@ struct SingleBigNumberTemplate: View {
     }
 
     private var statusColor: Color {
+        // Broken/stale states take precedence — surfacing a green or red
+        // gradient color on a broken tracker would lie about its health.
         switch item?.status {
         case .broken:
             return .red
         case .stale, nil:
             return .secondary
         case .ok:
-            return .primary
+            // gradientColor is nil when the tracker has `.none` or no numeric
+            // reading, in which case we fall back to the default primary
+            // text color — preserving existing behavior for older trackers.
+            return item?.gradientColor ?? .primary
         }
     }
 

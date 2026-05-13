@@ -22,6 +22,7 @@ struct HeroPlusDetailTemplate: View {
                     .minimumScaleFactor(0.4)
                     .lineLimit(1)
                     .numericValueTransition()
+                    .foregroundStyle(item?.gradientColor ?? .primary)
             }
 
             SparklineView(values: item?.sparkline ?? [], tint: item?.accent ?? .accentColor)

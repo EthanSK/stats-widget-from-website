@@ -566,10 +566,11 @@ private enum MCPToolCatalog {
             "label": stringSchema("Optional widget label"),
             "icon": stringSchema("SF Symbol name"),
             "accentColorHex": stringSchema("Hex accent color, e.g. #10a37f"),
+            "gradientMode": gradientModeSchema(),
             "refreshIntervalSec": intSchema("Refresh interval in seconds"),
             "hideElements": arraySchema(stringSchema("CSS selector to hide before snapshots"))
         ], required: ["name", "url", "selector"]),
-        tool("update_tracker", "Modify tracker fields such as name, URL, label, icon, refresh interval, mode, selector, element bounds, or hidden snapshot selectors.", [
+        tool("update_tracker", "Modify tracker fields such as name, URL, label, icon, refresh interval, mode, selector, element bounds, or hidden snapshot selectors. Includes gradientMode for coloring the big-number value (red↔green sweep based on whether high values are bad or good).", [
             "id": stringSchema("Tracker UUID"),
             "name": stringSchema("Tracker name"),
             "url": stringSchema("HTTPS URL, or http://localhost for testing"),
@@ -579,6 +580,7 @@ private enum MCPToolCatalog {
             "label": stringSchema("Optional widget label"),
             "icon": stringSchema("SF Symbol name"),
             "accentColorHex": stringSchema("Hex accent color, e.g. #10a37f"),
+            "gradientMode": gradientModeSchema(),
             "refreshIntervalSec": intSchema("Refresh interval in seconds"),
             "hideElements": arraySchema(stringSchema("CSS selector to hide before snapshots"))
         ], required: ["id"]),
@@ -685,6 +687,14 @@ private enum MCPToolCatalog {
 
     private static func arraySchema(_ itemSchema: [String: Any]) -> [String: Any] {
         ["type": "array", "items": itemSchema]
+    }
+
+    private static func gradientModeSchema() -> [String: Any] {
+        [
+            "type": "string",
+            "enum": GradientMode.allCases.map(\.rawValue),
+            "description": "Gradient color for the big-number value text. 'highIsBad' = 0 green → 100 red. 'highIsGood' = 0 red → 100 green. 'none' = default text color (no gradient)."
+        ]
     }
 
     private static func boundingBoxSchema() -> [String: Any] {
@@ -825,6 +835,7 @@ private enum MCPToolDispatcher {
             label: arguments["label"] as? String,
             icon: (arguments["icon"] as? String)?.nilIfEmpty ?? Tracker.defaultIcon,
             accentColorHex: (arguments["accentColorHex"] as? String)?.nilIfEmpty ?? Tracker.defaultAccentColorHex,
+            gradientMode: try gradientModeArgument(arguments["gradientMode"]) ?? Tracker.defaultGradientMode,
             hideElements: stringArrayArgument("hideElements", arguments) ?? []
         )
 
@@ -861,6 +872,9 @@ private enum MCPToolDispatcher {
             }
             if let value = arguments["accentColorHex"] as? String {
                 tracker.accentColorHex = value
+            }
+            if let mode = try gradientModeArgument(arguments["gradientMode"]) {
+                tracker.gradientMode = mode
             }
             if let value = intArgument("refreshIntervalSec", arguments) {
                 tracker.refreshIntervalSec = max(1, value)
@@ -1430,6 +1444,7 @@ private enum MCPToolDispatcher {
             "label": tracker.label as Any? ?? NSNull(),
             "icon": tracker.icon,
             "accentColorHex": tracker.accentColorHex,
+            "gradientMode": tracker.gradientMode.rawValue,
             "hideElements": tracker.hideElements,
             "reading": AppGroupStore.reading(for: tracker.id).map { readingPayload($0, includeHistory: includeHistory) } as Any? ?? NSNull()
         ]
@@ -1640,6 +1655,22 @@ private enum MCPToolDispatcher {
 
     private static func renderModeArgument(_ value: Any?) -> RenderMode? {
         (value as? String).flatMap(RenderMode.init(rawValue:))
+    }
+
+    /// Parses a `gradientMode` argument. Returns nil when the caller omitted
+    /// the field (so we leave the existing value alone on update). Throws
+    /// `MCPError.invalidParams` if the field is present but not one of the
+    /// canonical enum values — silently falling back would mask typos like
+    /// `"highisbad"` (lowercase, no camelCase) that look right at a glance.
+    private static func gradientModeArgument(_ value: Any?) throws -> GradientMode? {
+        guard let rawString = value as? String else {
+            return nil
+        }
+        guard let mode = GradientMode(rawValue: rawString) else {
+            let allowed = GradientMode.allCases.map(\.rawValue).joined(separator: ", ")
+            throw MCPError.invalidParams("gradientMode must be one of: \(allowed).")
+        }
+        return mode
     }
 
     private static func widgetTemplateArgument(_ value: Any?) -> WidgetTemplate? {

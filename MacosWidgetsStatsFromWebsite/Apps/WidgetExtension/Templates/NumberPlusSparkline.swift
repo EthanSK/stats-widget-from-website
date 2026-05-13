@@ -21,6 +21,7 @@ struct NumberPlusSparklineTemplate: View {
                 .numericValueTransition()
                 .minimumScaleFactor(0.5)
                 .lineLimit(1)
+                .foregroundStyle(item?.gradientColor ?? .primary)
             SparklineView(values: item?.sparkline ?? [], tint: item?.accent ?? .accentColor)
                 .frame(height: 34)
             Text(item?.updatedText ?? "not updated")

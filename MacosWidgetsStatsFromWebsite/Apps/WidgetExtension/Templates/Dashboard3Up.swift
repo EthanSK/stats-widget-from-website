@@ -24,6 +24,7 @@ struct Dashboard3UpTemplate: View {
                         .minimumScaleFactor(0.5)
                         .lineLimit(1)
                         .numericValueTransition()
+                        .foregroundStyle(item.gradientColor ?? .primary)
                     SparklineView(values: item.sparkline, tint: item.accent)
                         .frame(height: 24)
                     Text(item.updatedText)

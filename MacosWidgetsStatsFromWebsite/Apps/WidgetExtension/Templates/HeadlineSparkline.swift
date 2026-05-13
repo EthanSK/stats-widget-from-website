@@ -21,6 +21,7 @@ struct HeadlineSparklineTemplate: View {
                     .numericValueTransition()
                     .minimumScaleFactor(0.45)
                     .lineLimit(1)
+                    .foregroundStyle(item?.gradientColor ?? .primary)
                 Text(item?.updatedText ?? "not updated")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
