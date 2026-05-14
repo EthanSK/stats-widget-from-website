@@ -38,7 +38,7 @@ struct WidgetConfigurationsView: View {
                         Label("Create Widget Configuration", systemImage: "plus")
                     }
                     .disabled(store.trackers.isEmpty)
-                    Text("After you create a configuration, add the desktop widget from macOS Edit Widgets. Click/right-click a placed widget and choose Edit “macOS Widgets Stats from Website” to pick this configuration. Desktop widgets require macOS 14 or later.")
+                    Text("After you create a configuration, add the desktop widget from macOS Edit Widgets, then choose this configuration in the widget's edit panel. Requires macOS 14 or later.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)
@@ -180,7 +180,7 @@ private struct WidgetSetupInstructionsFooter: View {
     let configurationName: String?
 
     var body: some View {
-        Text("Add the widget from macOS Edit Widgets. Click/right-click a placed widget and choose Edit “macOS Widgets Stats from Website” to select \(quotedConfigurationName). It refreshes when you edit configurations here. Desktop widgets require macOS 14 or later.")
+        Text("Add the widget from macOS Edit Widgets, then choose \(quotedConfigurationName) in the placed widget's edit panel. Requires macOS 14 or later.")
             .font(.caption)
             .foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)
@@ -211,7 +211,7 @@ private struct WidgetConfigurationRow: View {
                 Text(configuration.name)
                     .font(.body.weight(.medium))
                     .lineLimit(1)
-                Text("\(configuration.templateID.displayName) · \(configuration.size.displayName) · \(boundTrackerNames)")
+                Text("\(configuration.templateID.displayName) · \(configuration.templateID.size.displayName) · \(boundTrackerNames)")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -247,7 +247,7 @@ private struct WidgetConfigurationRow: View {
     }
 
     private var iconName: String {
-        switch configuration.size {
+        switch configuration.templateID.size {
         case .small:
             return "square"
         case .medium:
@@ -296,29 +296,10 @@ private struct WidgetConfigurationEditorView: View {
                             Text(template.displayName).tag(template)
                         }
                     }
-
-                    Picker("Size", selection: $draft.size) {
-                        ForEach(WidgetConfigurationSize.allCases, id: \.self) { size in
-                            Text(size.displayName).tag(size)
-                        }
-                    }
-
-                    Picker("Layout", selection: $draft.layout) {
-                        ForEach(WidgetConfigurationLayout.allCases, id: \.self) { layout in
-                            Text(layout.displayName).tag(layout)
-                        }
-                    }
                 } header: {
                     Text("Configuration")
                 } footer: {
-                    Text("\(draft.templateID.mode.rawValue.capitalized) template · \(slotDescription)")
-                }
-
-                Section {
-                    Toggle("Show labels", isOn: $draft.showLabels)
-                    Toggle("Show sparklines", isOn: $draft.showSparklines)
-                } header: {
-                    Text("Display")
+                    Text("\(draft.templateID.size.displayName) widget · \(slotDescription) Pick the matching widget size in macOS Edit Widgets.")
                 }
 
                 Section {
@@ -367,6 +348,11 @@ private struct WidgetConfigurationEditorView: View {
         }
         .navigationTitle(mode == .add ? "Add Widget Configuration" : "Edit Widget Configuration")
         .onChange(of: draft.templateID) { template in
+            // Size/layout are now derived from the template (the picker UI
+            // for them was removed in v0.17.11 — they were dead controls,
+            // never consumed by the widget extension). Keep the persisted
+            // fields in sync with the chosen template so MCP clients still
+            // see consistent values.
             draft.size = template.size
             draft.layout = template.defaultLayout
             draft.trackerIDs = Array(draft.trackerIDs.prefix(template.slotCount.upperBound))

@@ -92,7 +92,12 @@ struct TrackerEditorView: View {
                 }
 
                 Section {
-                    TextField("Label", text: $labelText)
+                    VStack(alignment: .leading, spacing: 4) {
+                        TextField("Label", text: $labelText)
+                        Text("Optional shorter caption shown by widget templates instead of Name. Leave empty to use Name.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
 
                     HStack {
                         TextField("SF Symbol", text: $draft.icon)
