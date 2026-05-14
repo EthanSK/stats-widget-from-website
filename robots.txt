@@ -1,4 +1,4 @@
 User-agent: *
 Allow: /
 
-Sitemap: https://ethansk.github.io/macos-widgets-stats-from-website/sitemap.xml
+Sitemap: https://ethansk.github.io/stats-widget-from-website/sitemap.xml

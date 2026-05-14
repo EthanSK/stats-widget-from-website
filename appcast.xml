@@ -1,10 +1,10 @@
 <?xml version='1.0' encoding='utf-8'?>
 <rss xmlns:atom="http://www.w3.org/2005/Atom" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
   <channel>
-    <title>macOS Widgets Stats from Website Updates</title>
-    <link>https://ethansk.github.io/macos-widgets-stats-from-website/</link>
-    <description>Automatic update feed for macOS Widgets Stats from Website.</description>
+    <title>Stats Widget from Website Updates</title>
+    <link>https://ethansk.github.io/stats-widget-from-website/</link>
+    <description>Automatic update feed for Stats Widget from Website.</description>
     <language>en</language>
-    <atom:link href="https://ethansk.github.io/macos-widgets-stats-from-website/appcast.xml" rel="self" type="application/rss+xml" />
+    <atom:link href="https://ethansk.github.io/stats-widget-from-website/appcast.xml" rel="self" type="application/rss+xml" />
   </channel>
 </rss>
