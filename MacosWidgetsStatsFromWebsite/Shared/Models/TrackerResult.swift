@@ -67,13 +67,41 @@ extension ValueParser {
         case .currencyOrNumber:
             var candidate = value
             stripChars.forEach { candidate = candidate.replacingOccurrences(of: $0, with: "") }
-            return Double(candidate.trimmingCharacters(in: .whitespacesAndNewlines))
+            let trimmed = candidate.trimmingCharacters(in: .whitespacesAndNewlines)
+            if let direct = Double(trimmed) {
+                return direct
+            }
+            // Fallback: extract the leading numeric token. Handles values like
+            // "81% used", "$42.50/mo", "1,234 visitors / 5,000", "83%" when the
+            // stripChars list doesn't cover trailing units / suffixes.
+            return Self.extractLeadingNumber(from: value)
         case .percent:
             let candidate = value
                 .replacingOccurrences(of: "%", with: "")
                 .replacingOccurrences(of: ",", with: "")
                 .trimmingCharacters(in: .whitespacesAndNewlines)
-            return Double(candidate)
+            if let direct = Double(candidate) {
+                return direct
+            }
+            // Fallback: extract the leading numeric token. Handles "81% used",
+            // "~83% of quota", "approx. 42% remaining" etc.
+            return Self.extractLeadingNumber(from: value)
         }
+    }
+
+    /// Extracts the first numeric run from a string (optional sign, digits,
+    /// optional decimal point). Strips commas so "1,234.5" parses as 1234.5.
+    /// Returns nil if no numeric run is found.
+    static func extractLeadingNumber(from value: String) -> Double? {
+        // Remove thousands-separator commas, then scan for the first numeric token.
+        let cleaned = value.replacingOccurrences(of: ",", with: "")
+        let pattern = "[+-]?[0-9]+(?:\\.[0-9]+)?"
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return nil }
+        let range = NSRange(cleaned.startIndex..<cleaned.endIndex, in: cleaned)
+        guard let match = regex.firstMatch(in: cleaned, range: range),
+              let swiftRange = Range(match.range, in: cleaned) else {
+            return nil
+        }
+        return Double(cleaned[swiftRange])
     }
 }
