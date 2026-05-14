@@ -338,13 +338,16 @@ struct StatsWidgetEntryView: View {
         .widgetCompatibleBackground()
         .dynamicTypeSize(.xSmall ... .accessibility3)
         .overlay(alignment: .topTrailing) {
+            // The configuration-name chip and the error badge both live at
+            // top-trailing because top-leading is reserved for the template's
+            // own title (rendering them in the same corner caused a "double
+            // title" visual artifact — voice 2960). Error badge wins when
+            // both would render so the user always sees the attention
+            // signal first.
             if let item = firstAttentionItem {
                 ErrorStateBadge(item: item)
                     .padding(8)
-            }
-        }
-        .overlay(alignment: .topLeading) {
-            if let configurationName = visibleConfigurationName {
+            } else if let configurationName = visibleConfigurationName {
                 Text(configurationName)
                     .font(.system(size: 9, weight: .semibold, design: .rounded))
                     .lineLimit(1)
