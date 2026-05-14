@@ -269,28 +269,7 @@ jobs:
           # version badge). Keep the schema in sync with site/version.json
           # on gh-pages — index.html's loader expects { version, channel,
           # release_url, appcast_url, download_url } keys.
-          VERSION_JSON_VERSION="$RELEASE_VERSION" \
-          VERSION_JSON_REPO="$REPO" \
-          VERSION_JSON_LATEST_ZIP="$LATEST_ZIP_FILENAME" \
-          VERSION_JSON_GH_PAGES_DIR="$GH_PAGES_DIR" \
-            python3 - <<'PY'
-import json, os, datetime
-repo = os.environ["VERSION_JSON_REPO"]
-slug = repo.split("/", 1)[1]
-data = {
-    "version": os.environ["VERSION_JSON_VERSION"],
-    "channel": "stable",
-    "updated_at": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-    "release_url": f"https://github.com/{repo}/releases/latest",
-    "appcast_url": f"https://ethansk.github.io/{slug}/appcast.xml",
-    "download_url": f"https://github.com/{repo}/releases/latest/download/{os.environ['VERSION_JSON_LATEST_ZIP']}",
-}
-out = os.path.join(os.environ["VERSION_JSON_GH_PAGES_DIR"], "version.json")
-with open(out, "w") as f:
-    json.dump(data, f, indent=2)
-    f.write("\n")
-print("wrote", out, data)
-PY
+          python3 scripts/write_version_json.py "$GH_PAGES_DIR/version.json"
 
           python3 scripts/validate_release_metadata.py \
             --site-dir "$GH_PAGES_DIR" \
