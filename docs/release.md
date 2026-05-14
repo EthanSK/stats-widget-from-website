@@ -2,13 +2,15 @@
 
 This repo is wired for signed, notarized GitHub Releases plus a Sparkle appcast on the `gh-pages` branch.
 
+The release flow mirrors the pattern used by [Producer Player](https://github.com/EthanSK/producer-player) and [OBScene](https://github.com/EthanSK/OBScene): every push to `main` automatically builds, notarizes, publishes a GitHub Release, regenerates the Sparkle appcast, and rewrites `version.json` on `gh-pages` so the landing page's version badge stays current with zero manual intervention.
+
 ## What the workflow publishes
 
 The `Release` workflow runs on:
 
-- pushes to `main` or `master`
-- tags matching `v*`
-- manual `workflow_dispatch`
+- pushes to `main` or `master` (auto-release on every commit)
+- tags matching `v*` (manual canonical tag releases)
+- manual `workflow_dispatch` (re-runs from the Actions tab)
 
 For branch/manual runs, the workflow reads the checked-in app version from `MacosWidgetsStatsFromWebsite/Apps/MainApp/Info.plist`.
 
