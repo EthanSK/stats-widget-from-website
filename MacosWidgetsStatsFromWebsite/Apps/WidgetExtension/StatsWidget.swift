@@ -612,7 +612,19 @@ struct WidgetTrackerItem: Identifiable {
     }
 
     var sparkline: [Double] {
-        reading?.sparkline ?? []
+        let raw = reading?.sparkline ?? []
+        switch tracker.valueTransform {
+        case .none:
+            return raw
+        case .invertFromHundred:
+            // Codex review (2026-05-14): the big-number text and gradient
+            // already apply `100 - x`, so leaving the sparkline raw would
+            // visually reverse the trend (e.g. "99% remaining" while the
+            // sparkline trends as the underlying "% used" curve). Apply the
+            // same presentation transform to history-derived values so the
+            // chart matches the displayed value.
+            return raw.map { max(0.0, min(100.0, 100.0 - $0)) }
+        }
     }
 
     var status: TrackerStatus {
