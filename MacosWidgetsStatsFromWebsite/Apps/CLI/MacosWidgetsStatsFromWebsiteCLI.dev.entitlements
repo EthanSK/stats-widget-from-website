@@ -2,9 +2,38 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<!--
+	  DEV_RESIGN CLI entitlements.
+
+	  Why this file exists: production CLI entitlements include the App Group
+	  + keychain-access-groups entries which require a resolved provisioning
+	  profile. Under DEV_RESIGN=1 we re-sign the CLI with the Apple
+	  Development cert directly (no embedded profile on the CLI itself), so
+	  the production entitlements file would leave $(AppIdentifierPrefix)
+	  placeholders unresolved and trigger RunningBoard error 5 / SIGKILL.
+
+	  v0.19.1 update: the App Group entitlement IS required even in
+	  DEV_RESIGN mode, because the CLI (run by LaunchAgent) needs to call
+	  WidgetCenter.shared.reloadAllTimelines() and have macOS recognise the
+	  call as coming from the same App Group scope as the widget extension.
+	  Without this entry, reloadAllTimelines is silently dropped and the
+	  desktop widget never repaints when the GUI is quit. We use the
+	  hard-coded team prefix (T34G959ZG8.) rather than $(AppIdentifierPrefix)
+	  so the substitution doesn't depend on a provisioning profile being
+	  present — same pattern as the parent app's Debug.entitlements.
+
+	  We intentionally do NOT include keychain-access-groups here — the CLI
+	  doesn't need keychain access on the LaunchAgent code path, and
+	  including it re-introduces the $(AppIdentifierPrefix) / profile gating
+	  that DEV_RESIGN exists to sidestep.
+	-->
 	<key>com.apple.security.app-sandbox</key>
 	<false/>
 	<key>com.apple.security.network.client</key>
 	<true/>
+	<key>com.apple.security.application-groups</key>
+	<array>
+		<string>T34G959ZG8.group.com.ethansk.macos-widgets-stats-from-website</string>
+	</array>
 </dict>
 </plist>

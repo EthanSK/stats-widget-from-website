@@ -6,6 +6,16 @@
 //
 
 import Foundation
+// WidgetKit is needed so the LaunchAgent code path can call
+// WidgetCenter.shared.reloadAllTimelines() after scrape-all writes fresh
+// readings to the App Group. Without this call macOS does not reliably
+// invoke the widget extension's TimelineProvider when the host GUI app is
+// not running, even though the timeline policy is `.after(Date+5min)` —
+// the system parks the extension under "no host activity" and the desktop
+// widget visibly stays stale. v0.19.1 introduced this signal as the
+// belt-and-braces partner to the existing reload policy. See PLAN.md
+// §9.2 (no macOS widget reload budget) for why poking is safe.
+import WidgetKit
 
 let arguments = Array(CommandLine.arguments.dropFirst())
 
@@ -105,6 +115,13 @@ private enum ScrapeAllCommand {
                 "successes": "\(successes)",
                 "failures": "\(failures)"
             ])
+            // Even on timeout some trackers may have written fresh data
+            // before the deadline — wake the widget so those land on
+            // screen rather than being held back until next tick.
+            if successes > 0 {
+                WidgetCenter.shared.reloadAllTimelines()
+                ActivityLogger.log("cli", "scrape-all reloaded widget timelines (partial)")
+            }
             ChromeBrowserProfile.shared.terminateAppOwnedBrowsersOnAppExit()
             exit(2)
         }
@@ -161,6 +178,25 @@ private enum ScrapeAllCommand {
                         "successes": "\(successes)",
                         "failures": "\(failures)"
                     ])
+                    // Force every placed WidgetKit widget to reload its
+                    // timeline. v0.19.1 fix: the widget extension's
+                    // TimelineReloadPolicy `.after(Date+5min)` (StatsWidget
+                    // line ~197) is correct, but macOS does not reliably
+                    // honour it when the host GUI app is fully quit — the
+                    // extension gets parked and the desktop widget visibly
+                    // freezes on stale data even though the App Group has
+                    // fresh readings. Calling reloadAllTimelines from the
+                    // CLI (which shares the App Group + team prefix as the
+                    // widget extension) wakes the extension's
+                    // getTimeline() within seconds. macOS WidgetKit has no
+                    // reload budget (PLAN.md §9.2), so calling on every
+                    // tick is safe.
+                    //
+                    // We fire this BEFORE the browser teardown + exit so
+                    // any deferred WidgetKit IPC has a chance to flush
+                    // while the runloop is still spinning.
+                    WidgetCenter.shared.reloadAllTimelines()
+                    ActivityLogger.log("cli", "scrape-all reloaded widget timelines")
                     // Best-effort browser teardown — match what
                     // applicationWillTerminate does in the GUI app.
                     ChromeBrowserProfile.shared.terminateAppOwnedBrowsersOnAppExit()
