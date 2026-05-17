@@ -5,16 +5,22 @@
 //  Power-user adjunct and MCP stdio entrypoint.
 //
 
+import AppKit
 import Foundation
 // WidgetKit is needed so the LaunchAgent code path can call
 // WidgetCenter.shared.reloadAllTimelines() after scrape-all writes fresh
-// readings to the App Group. Without this call macOS does not reliably
-// invoke the widget extension's TimelineProvider when the host GUI app is
-// not running, even though the timeline policy is `.after(Date+5min)` —
-// the system parks the extension under "no host activity" and the desktop
-// widget visibly stays stale. v0.19.1 introduced this signal as the
-// belt-and-braces partner to the existing reload policy. See PLAN.md
-// §9.2 (no macOS widget reload budget) for why poking is safe.
+// readings to the App Group. v0.19.1 added this as a belt-and-braces
+// partner to the timeline reload policy, BUT empirically it does NOT
+// wake a parked widget extension when the host GUI app is fully quit —
+// WidgetKit only honours the call from the host app's process identity.
+//
+// v0.20.0 fixes the actual repaint by spawning the bundled GUI binary
+// with `--background-widget-refresh` from this CLI after a successful
+// scrape; the GUI binary calls `reloadAllTimelines()` from the right
+// identity and exits ~2 s later (see BackgroundWidgetRefreshRunner).
+// The direct call below is kept as a no-op-cheap fallback so the
+// LaunchAgent path stays self-contained if the GUI binary lookup ever
+// fails.
 import WidgetKit
 
 let arguments = Array(CommandLine.arguments.dropFirst())
@@ -121,6 +127,7 @@ private enum ScrapeAllCommand {
             if successes > 0 {
                 WidgetCenter.shared.reloadAllTimelines()
                 ActivityLogger.log("cli", "scrape-all reloaded widget timelines (partial)")
+                HeadlessWidgetRelauncher.kickIfNeeded()
             }
             ChromeBrowserProfile.shared.terminateAppOwnedBrowsersOnAppExit()
             exit(2)
@@ -178,25 +185,18 @@ private enum ScrapeAllCommand {
                         "successes": "\(successes)",
                         "failures": "\(failures)"
                     ])
-                    // Force every placed WidgetKit widget to reload its
-                    // timeline. v0.19.1 fix: the widget extension's
-                    // TimelineReloadPolicy `.after(Date+5min)` (StatsWidget
-                    // line ~197) is correct, but macOS does not reliably
-                    // honour it when the host GUI app is fully quit — the
-                    // extension gets parked and the desktop widget visibly
-                    // freezes on stale data even though the App Group has
-                    // fresh readings. Calling reloadAllTimelines from the
-                    // CLI (which shares the App Group + team prefix as the
-                    // widget extension) wakes the extension's
-                    // getTimeline() within seconds. macOS WidgetKit has no
-                    // reload budget (PLAN.md §9.2), so calling on every
-                    // tick is safe.
-                    //
-                    // We fire this BEFORE the browser teardown + exit so
-                    // any deferred WidgetKit IPC has a chance to flush
-                    // while the runloop is still spinning.
+                    // v0.19.1 belt-and-braces signal — does not wake the
+                    // extension on its own but is cheap and safe to call.
                     WidgetCenter.shared.reloadAllTimelines()
                     ActivityLogger.log("cli", "scrape-all reloaded widget timelines")
+                    // v0.20.0 — the actual repaint-trigger. Spawn the GUI
+                    // binary in invisible background-refresh mode so
+                    // WidgetCenter.reloadAllTimelines() runs from the
+                    // host's process identity, which is the only thing
+                    // macOS will accept as a wake signal for the parked
+                    // widget extension. Fire-and-forget — we don't block
+                    // the CLI's exit on the GUI binary's lifecycle.
+                    HeadlessWidgetRelauncher.kickIfNeeded()
                     // Best-effort browser teardown — match what
                     // applicationWillTerminate does in the GUI app.
                     ChromeBrowserProfile.shared.terminateAppOwnedBrowsersOnAppExit()
@@ -211,5 +211,112 @@ private enum ScrapeAllCommand {
         // completes (its callback calls exit()) or the overall timeout
         // fires.
         dispatchMain()
+    }
+}
+
+// MARK: - Headless GUI relaunch for widget refresh (v0.20.0)
+
+/// Spawns the bundled GUI binary in invisible background-refresh mode so
+/// WidgetCenter.reloadAllTimelines() runs from the host app's process
+/// identity. The widget extension only wakes when the call originates
+/// from the host — calling it from this CLI (different bundle id) is a
+/// no-op even with matching App Group entitlements (verified empirically
+/// on v0.19.1).
+///
+/// Hardcoded bundle id of the main app — kept in sync with
+/// AppDelegate.mainBundleIdentifier. Hardcoding avoids a runtime
+/// dependency on Bundle metadata that the CLI doesn't otherwise need.
+private let mainAppBundleIdentifier = "com.ethansk.macos-widgets-stats-from-website"
+
+/// Background-refresh flag — kept in sync with
+/// BackgroundWidgetRefreshRunner.flag in Apps/MainApp. The MainApp
+/// directory is NOT in the CLI target's source set (see project.yml
+/// MacosWidgetsStatsFromWebsiteCLI.sources), so we hardcode the
+/// literal here. If you change one, change both.
+private let backgroundWidgetRefreshFlag = "--background-widget-refresh"
+
+private enum HeadlessWidgetRelauncher {
+    /// Decides whether to spawn the GUI binary in background-refresh
+    /// mode. Skips when the GUI app is already running (the running
+    /// instance's normal store/onChange wiring already calls
+    /// reloadWidgets() — see MacosWidgetsStatsFromWebsiteApp.body —
+    /// AND it already has the correct process identity, so we don't
+    /// need a second copy fighting it for the App Group container).
+    /// Fire-and-forget — never blocks the caller.
+    static func kickIfNeeded() {
+        if isMainAppAlreadyRunning() {
+            ActivityLogger.log("cli", "headless widget relaunch skipped: GUI already running")
+            return
+        }
+
+        guard let guiBinaryPath = resolveGUIBinaryPath() else {
+            ActivityLogger.log("cli", "headless widget relaunch skipped: GUI binary not found in bundle")
+            return
+        }
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: guiBinaryPath)
+        process.arguments = [backgroundWidgetRefreshFlag]
+        // Detach stdio so the child does not inherit the LaunchAgent's
+        // log file handles; the child writes its own ActivityLogger
+        // entries via the GUI app's normal log file.
+        process.standardInput = FileHandle.nullDevice
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+
+        do {
+            try process.run()
+            ActivityLogger.log("cli", "headless widget relaunch spawned", metadata: [
+                "pid": "\(process.processIdentifier)",
+                "binary": guiBinaryPath
+            ])
+            // Fire-and-forget: do NOT call waitUntilExit() — the CLI is
+            // about to call exit() and we don't want to block on the
+            // GUI binary's ~2 s runloop hold. The child is a normal
+            // detached subprocess from launchd's POV; it will not be
+            // reparented or zombied because the CLI exits before
+            // becoming a parent that needs to reap it (launchd
+            // adopts the orphan if the CLI dies first).
+        } catch {
+            ActivityLogger.log("cli", "headless widget relaunch spawn failed", metadata: [
+                "binary": guiBinaryPath,
+                "error": error.localizedDescription
+            ])
+        }
+    }
+
+    /// "Already running" = at least one `NSRunningApplication` with the
+    /// main bundle id, EXCLUDING any prior background-refresh process
+    /// that might still be in its 2 s hold (we only care about
+    /// foreground GUI instances). The headless instance sets activation
+    /// policy `.prohibited` BEFORE any registration so it never shows
+    /// up as a running app with `.regular` policy; we filter on that to
+    /// avoid the two-headless-ticks-in-a-row deadlock.
+    static func isMainAppAlreadyRunning() -> Bool {
+        let running = NSRunningApplication
+            .runningApplications(withBundleIdentifier: mainAppBundleIdentifier)
+            .filter { !$0.isTerminated }
+        // `.prohibited`-policy processes do not register with the normal
+        // running-application list (NSRunningApplication is for `.regular`
+        // and `.accessory` policies), so they won't appear here. Defensive
+        // filter regardless.
+        let foreground = running.filter { $0.activationPolicy != .prohibited }
+        return !foreground.isEmpty
+    }
+
+    /// Resolves the path to the GUI binary that lives alongside this
+    /// CLI inside the .app bundle's Contents/MacOS directory. CLI binary
+    /// is `macos-widgets-stats-from-website`; GUI binary is
+    /// `MacosWidgetsStatsFromWebsite` (the productName of the main app
+    /// target in project.yml — kept in sync with that file).
+    private static func resolveGUIBinaryPath() -> String? {
+        let cliBinaryURL = URL(fileURLWithPath: CommandLine.arguments[0])
+        let macosDir = cliBinaryURL.deletingLastPathComponent()
+        let guiBinaryURL = macosDir.appendingPathComponent("MacosWidgetsStatsFromWebsite")
+        let path = guiBinaryURL.path
+        guard FileManager.default.isExecutableFile(atPath: path) else {
+            return nil
+        }
+        return path
     }
 }

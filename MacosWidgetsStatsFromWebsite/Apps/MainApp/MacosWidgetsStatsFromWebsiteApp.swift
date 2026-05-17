@@ -24,6 +24,33 @@ struct MacosWidgetsStatsFromWebsiteApp: App {
             Darwin.exit(0)
         }
 
+        // v0.20.0 — headless widget-refresh mode.
+        //
+        // Background: WidgetKit on macOS will NOT wake a parked widget
+        // extension just because a non-host CLI process calls
+        // `WidgetCenter.reloadAllTimelines()`, even with matching App Group
+        // entitlements (verified empirically on v0.19.1, see PLAN.md).
+        // The only process identity that reliably wakes the extension is
+        // the host app itself.
+        //
+        // The LaunchAgent's `scrape-all` CLI tick now spawns this binary
+        // (the GUI bundle's executable) with `--background-widget-refresh`
+        // after a successful scrape. We detect that flag here BEFORE any
+        // SwiftUI scene or AppDelegate is touched, set the activation
+        // policy to `.prohibited` so no Dock icon / window can appear,
+        // call `WidgetCenter.reloadAllTimelines()`, and exit after a
+        // short delay so the WidgetKit IPC has time to flush.
+        //
+        // This path deliberately bypasses `AppDelegate.terminatePriorInstancesIfNeeded()`
+        // — if the user has the real GUI running we still want their
+        // window to keep working. The CLI side handles "GUI is already
+        // running" by skipping the headless relaunch entirely (see
+        // CLI/main.swift).
+        if BackgroundWidgetRefreshRunner.isInvokedForBackgroundRefresh() {
+            BackgroundWidgetRefreshRunner.runAndExit()
+            // runAndExit() never returns.
+        }
+
         ActivityLogger.log("app", "launch")
 
         // Single-instance enforcement: terminate any prior copy of this app
