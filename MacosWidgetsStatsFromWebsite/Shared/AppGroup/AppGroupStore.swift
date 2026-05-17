@@ -362,7 +362,14 @@ final class AppGroupStore: ObservableObject {
         try withReadingsMutationLock {
             var file = loadReadingsUnlocked()
             let key = tracker.id.uuidString
-            let reading = normalizedReading(newReading, existing: file.readings[key], for: tracker)
+            var reading = normalizedReading(newReading, existing: file.readings[key], for: tracker)
+            // Always stamp lastAttemptedAt on persist so the CLI rate-limit
+            // path can distinguish "haven't tried in N seconds" from "tried
+            // but the page errored". Falls back to lastUpdatedAt for callers
+            // that didn't supply one.
+            if reading.lastAttemptedAt == nil {
+                reading.lastAttemptedAt = reading.lastUpdatedAt ?? Date()
+            }
             file.schemaVersion = currentSchemaVersion
             file.readings[key] = reading
             try write(readingsFile: file)
@@ -387,6 +394,7 @@ final class AppGroupStore: ObservableObject {
                 snapshotCacheKey: existing?.snapshotCacheKey,
                 snapshotCapturedAt: existing?.snapshotCapturedAt,
                 lastUpdatedAt: existing?.lastUpdatedAt,
+                lastAttemptedAt: Date(),
                 status: status,
                 sparkline: existing?.sparkline ?? [],
                 lastError: message,

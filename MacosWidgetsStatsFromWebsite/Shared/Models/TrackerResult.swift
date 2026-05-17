@@ -20,6 +20,13 @@ struct TrackerReading: Codable, Equatable {
     var snapshotCacheKey: String?
     var snapshotCapturedAt: Date?
     var lastUpdatedAt: Date?
+    /// Timestamp of the most recent scrape ATTEMPT, regardless of success or
+    /// failure. `lastUpdatedAt` only advances on a successful read; we need a
+    /// separate field so the LaunchAgent-driven scraper (v0.19.0+) can
+    /// rate-limit retries on broken trackers — without it, a tracker whose
+    /// site is down would be hammered on every LaunchAgent tick.
+    /// Optional for backward compatibility with older readings.json files.
+    var lastAttemptedAt: Date?
     var status: TrackerStatus
     var sparkline: [Double]
     var lastError: String?
@@ -32,6 +39,7 @@ struct TrackerReading: Codable, Equatable {
         snapshotCacheKey: String? = nil,
         snapshotCapturedAt: Date? = nil,
         lastUpdatedAt: Date? = Date(),
+        lastAttemptedAt: Date? = nil,
         status: TrackerStatus = .ok,
         sparkline: [Double] = [],
         lastError: String? = nil,
@@ -43,6 +51,7 @@ struct TrackerReading: Codable, Equatable {
         self.snapshotCacheKey = snapshotCacheKey
         self.snapshotCapturedAt = snapshotCapturedAt
         self.lastUpdatedAt = lastUpdatedAt
+        self.lastAttemptedAt = lastAttemptedAt
         self.status = status
         self.sparkline = sparkline
         self.lastError = lastError

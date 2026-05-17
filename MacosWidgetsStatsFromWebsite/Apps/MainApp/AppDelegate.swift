@@ -83,6 +83,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         TrackerAttentionNotifier.shared.configure()
         UpdateController.shared.start()
         MCPServer.shared.startSocketServer()
+        // v0.19.0+ — install / refresh the per-user LaunchAgent that runs
+        // the bundled CLI on a fixed interval. Without this, scrapes only
+        // happen while the SwiftUI app is alive, and `readings.json`
+        // freezes the moment the user closes the window (the bug Ethan
+        // reported 2026-05-17: "last updated says 1356 thats ages ago").
+        // Idempotent — re-runs every launch to keep the plist's
+        // ProgramArguments path in sync with the current bundle.
+        LaunchAgentInstaller.installIfPossible()
         bringAppToFrontOnLaunch()
     }
 
