@@ -292,16 +292,30 @@ private enum HeadlessWidgetRelauncher {
     /// policy `.prohibited` BEFORE any registration so it never shows
     /// up as a running app with `.regular` policy; we filter on that to
     /// avoid the two-headless-ticks-in-a-row deadlock.
+    ///
+    /// NOTE (v0.20.1): we deliberately AVOID
+    /// `NSRunningApplication.runningApplications(withBundleIdentifier:)`
+    /// here. That AppKit class method internally asserts on AppKit
+    /// state that a CLI `type: tool` target doesn't initialise (see
+    /// NSInternalInconsistencyException 'Invalid parameter not
+    /// satisfying: bundleIdentifier != nil' in v0.20.0 LaunchAgent
+    /// crash reports — the assertion message is misleading; the actual
+    /// precondition is an NSApplication/AppKit context the CLI lacks).
+    /// `NSWorkspace.shared.runningApplications` is the documented
+    /// CLI-safe entry point: it talks to the WindowServer / launchd
+    /// snapshot directly and works from any process context, no NSApp
+    /// init required.
     static func isMainAppAlreadyRunning() -> Bool {
-        let running = NSRunningApplication
-            .runningApplications(withBundleIdentifier: mainAppBundleIdentifier)
-            .filter { !$0.isTerminated }
-        // `.prohibited`-policy processes do not register with the normal
-        // running-application list (NSRunningApplication is for `.regular`
-        // and `.accessory` policies), so they won't appear here. Defensive
-        // filter regardless.
-        let foreground = running.filter { $0.activationPolicy != .prohibited }
-        return !foreground.isEmpty
+        let apps = NSWorkspace.shared.runningApplications
+        return apps.contains { app in
+            app.bundleIdentifier == mainAppBundleIdentifier
+                && !app.isTerminated
+                // `.prohibited`-policy processes are headless
+                // background-refresh in-flight instances; don't count
+                // them as "the main GUI app is open" (would deadlock
+                // two ticks back-to-back if we did).
+                && app.activationPolicy != .prohibited
+        }
     }
 
     /// Resolves the path to the GUI binary that lives alongside this
