@@ -5,7 +5,6 @@
 //  Power-user adjunct and MCP stdio entrypoint.
 //
 
-import AppKit
 import Foundation
 // WidgetKit is needed so the LaunchAgent code path can call
 // WidgetCenter.shared.reloadAllTimelines() after scrape-all writes fresh
@@ -223,11 +222,6 @@ private enum ScrapeAllCommand {
 /// no-op even with matching App Group entitlements (verified empirically
 /// on v0.19.1).
 ///
-/// Hardcoded bundle id of the main app — kept in sync with
-/// AppDelegate.mainBundleIdentifier. Hardcoding avoids a runtime
-/// dependency on Bundle metadata that the CLI doesn't otherwise need.
-private let mainAppBundleIdentifier = "com.ethansk.macos-widgets-stats-from-website"
-
 /// Background-refresh flag — kept in sync with
 /// BackgroundWidgetRefreshRunner.flag in Apps/MainApp. The MainApp
 /// directory is NOT in the CLI target's source set (see project.yml
@@ -236,19 +230,32 @@ private let mainAppBundleIdentifier = "com.ethansk.macos-widgets-stats-from-webs
 private let backgroundWidgetRefreshFlag = "--background-widget-refresh"
 
 private enum HeadlessWidgetRelauncher {
-    /// Decides whether to spawn the GUI binary in background-refresh
-    /// mode. Skips when the GUI app is already running (the running
-    /// instance's normal store/onChange wiring already calls
-    /// reloadWidgets() — see MacosWidgetsStatsFromWebsiteApp.body —
-    /// AND it already has the correct process identity, so we don't
-    /// need a second copy fighting it for the App Group container).
-    /// Fire-and-forget — never blocks the caller.
+    /// Spawns the GUI binary in background-refresh mode so
+    /// `WidgetCenter.reloadAllTimelines()` runs from the host app's
+    /// process identity (the only thing macOS will accept as a wake
+    /// signal for the parked widget extension). Fire-and-forget — never
+    /// blocks the caller.
+    ///
+    /// NOTE (v0.20.2): we deliberately do NOT gate on "is the main app
+    /// already running?". Both prior gate implementations crashed from
+    /// the LaunchAgent CLI context:
+    ///   - v0.20.0 used `NSRunningApplication.runningApplications(
+    ///     withBundleIdentifier:)` — NSInternalInconsistencyException
+    ///     because the API needs an NSApplication / AppKit context that
+    ///     a `type: tool` CLI target never initialises.
+    ///   - v0.20.1 used `NSWorkspace.shared.runningApplications` filtered
+    ///     by Swift `String.==` on `bundleIdentifier` — SIGSEGV in
+    ///     `_stringCompareInternal` because transient NSRunningApplication
+    ///     entries can expose stale Swift-bridged String backing memory
+    ///     that's already been freed.
+    /// The "skip the spawn if the GUI is already up" optimisation was
+    /// never worth the crashes it caused. A transient duplicate spawn
+    /// is harmless: the host's `--background-widget-refresh` handler
+    /// sets `activationPolicy(.prohibited)` BEFORE any window can
+    /// present, calls `reloadAllTimelines()` from the host bundle id,
+    /// and exits cleanly in ~2 s. No Dock bounce, no menu bar, no
+    /// interference with any existing user-launched GUI instance.
     static func kickIfNeeded() {
-        if isMainAppAlreadyRunning() {
-            ActivityLogger.log("cli", "headless widget relaunch skipped: GUI already running")
-            return
-        }
-
         guard let guiBinaryPath = resolveGUIBinaryPath() else {
             ActivityLogger.log("cli", "headless widget relaunch skipped: GUI binary not found in bundle")
             return
@@ -282,39 +289,6 @@ private enum HeadlessWidgetRelauncher {
                 "binary": guiBinaryPath,
                 "error": error.localizedDescription
             ])
-        }
-    }
-
-    /// "Already running" = at least one `NSRunningApplication` with the
-    /// main bundle id, EXCLUDING any prior background-refresh process
-    /// that might still be in its 2 s hold (we only care about
-    /// foreground GUI instances). The headless instance sets activation
-    /// policy `.prohibited` BEFORE any registration so it never shows
-    /// up as a running app with `.regular` policy; we filter on that to
-    /// avoid the two-headless-ticks-in-a-row deadlock.
-    ///
-    /// NOTE (v0.20.1): we deliberately AVOID
-    /// `NSRunningApplication.runningApplications(withBundleIdentifier:)`
-    /// here. That AppKit class method internally asserts on AppKit
-    /// state that a CLI `type: tool` target doesn't initialise (see
-    /// NSInternalInconsistencyException 'Invalid parameter not
-    /// satisfying: bundleIdentifier != nil' in v0.20.0 LaunchAgent
-    /// crash reports — the assertion message is misleading; the actual
-    /// precondition is an NSApplication/AppKit context the CLI lacks).
-    /// `NSWorkspace.shared.runningApplications` is the documented
-    /// CLI-safe entry point: it talks to the WindowServer / launchd
-    /// snapshot directly and works from any process context, no NSApp
-    /// init required.
-    static func isMainAppAlreadyRunning() -> Bool {
-        let apps = NSWorkspace.shared.runningApplications
-        return apps.contains { app in
-            app.bundleIdentifier == mainAppBundleIdentifier
-                && !app.isTerminated
-                // `.prohibited`-policy processes are headless
-                // background-refresh in-flight instances; don't count
-                // them as "the main GUI app is open" (would deadlock
-                // two ticks back-to-back if we did).
-                && app.activationPolicy != .prohibited
         }
     }
 
