@@ -4,22 +4,25 @@
 //
 //  Power-user adjunct and MCP stdio entrypoint.
 //
+//  v0.21.0 — the scrape loop has moved INSIDE the menu-bar host app
+//  (`BackgroundScheduler` running 24/7 inside the always-running app
+//  process). The CLI no longer needs to:
+//    - run on a LaunchAgent tick (removed in v0.21.0)
+//    - spawn the GUI binary in `--background-widget-refresh` mode
+//      (removed in v0.21.0; widget reload now fires from the menu-bar
+//      host directly)
+//    - call `WidgetCenter.reloadAllTimelines()` itself (it was always
+//      a no-op from CLI bundle identity anyway)
+//
+//  What's kept:
+//    - `--mcp-stdio` / `mcp-stdio` — the stdio MCP server entrypoint
+//      used by external agent integrations.
+//    - `mcp-token` — print the current MCP socket token.
+//    - `scrape-all [--due-only]` — manual one-shot scrape from a
+//      shell. Useful for diagnostics; no longer wired into automation.
+//
 
 import Foundation
-// WidgetKit is needed so the LaunchAgent code path can call
-// WidgetCenter.shared.reloadAllTimelines() after scrape-all writes fresh
-// readings to the App Group. v0.19.1 added this as a belt-and-braces
-// partner to the timeline reload policy, BUT empirically it does NOT
-// wake a parked widget extension when the host GUI app is fully quit —
-// WidgetKit only honours the call from the host app's process identity.
-//
-// v0.20.0 fixes the actual repaint by spawning the bundled GUI binary
-// with `--background-widget-refresh` from this CLI after a successful
-// scrape; the GUI binary calls `reloadAllTimelines()` from the right
-// identity and exits ~2 s later (see BackgroundWidgetRefreshRunner).
-// The direct call below is kept as a no-op-cheap fallback so the
-// LaunchAgent path stays self-contained if the GUI binary lookup ever
-// fails.
 import WidgetKit
 
 let arguments = Array(CommandLine.arguments.dropFirst())
@@ -39,36 +42,27 @@ case "mcp-token":
     }
 
 case "scrape-all":
-    // LaunchAgent-driven background scrape entrypoint (v0.19.0+). Reads
-    // the shared App Group configuration, decides which trackers are
-    // currently due based on `ScrapeDuePolicy`, runs Chrome/CDP scrapes
-    // against them in parallel, and exits when all complete. This is the
-    // path that fixes the "widget freezes when GUI app is closed" bug —
-    // the LaunchAgent fires us every 5 minutes regardless of whether the
-    // SwiftUI app is alive.
     let dueOnly = arguments.contains("--due-only")
     ScrapeAllCommand.run(dueOnly: dueOnly)
 
 default:
-    // Read CFBundleShortVersionString from the embedded Info.plist (xcodebuild
-    // links the CLI Info.plist into the binary via INFOPLIST_FILE). Single
-    // source of truth lives in project.yml MARKETING_VERSION; see AGENTS.md.
     let marketingVersion = (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "unknown"
     print("macos-widgets-stats-from-website CLI v\(marketingVersion)")
     print("Usage:")
     print("  macos-widgets-stats-from-website mcp-stdio")
     print("  macos-widgets-stats-from-website mcp-token")
     print("  macos-widgets-stats-from-website scrape-all [--due-only]")
+    print("")
+    print("Note: v0.21.0+ the scrape loop runs inside the always-on")
+    print("menu-bar app. The CLI scrape-all command remains for one-")
+    print("shot diagnostic use; it is no longer fired automatically.")
 }
 
 // MARK: - scrape-all command
 
 private enum ScrapeAllCommand {
     /// Hard timeout — caps the entire CLI invocation so a single hung
-    /// scrape can't pin the LaunchAgent's slot indefinitely. Each
-    /// individual scrape inside ChromeCDPScraper already has its own
-    /// per-tracker timeout (`armTimeout()`), but the harness needs a
-    /// belt-and-braces upper bound too.
+    /// scrape can't pin the diagnostic shell-invocation indefinitely.
     static let overallTimeoutSec: TimeInterval = 120
 
     static func run(dueOnly: Bool) {
@@ -101,15 +95,11 @@ private enum ScrapeAllCommand {
             "due_only": "\(dueOnly)"
         ])
 
-        // Track per-tracker outcomes for a clean stdout summary at end.
         var pending = candidates.count
         var successes = 0
         var failures = 0
         let mutex = DispatchQueue(label: "scrape-all.mutex")
 
-        // Schedule the hard timeout. If we hit it, force-terminate any
-        // app-owned browsers and bail with a non-zero exit so launchd's
-        // log captures the partial-completion state.
         let timeoutDeadline = Date().addingTimeInterval(overallTimeoutSec)
         let timeoutTimer = DispatchSource.makeTimerSource(queue: .main)
         timeoutTimer.schedule(deadline: .now() + overallTimeoutSec)
@@ -120,14 +110,6 @@ private enum ScrapeAllCommand {
                 "successes": "\(successes)",
                 "failures": "\(failures)"
             ])
-            // Even on timeout some trackers may have written fresh data
-            // before the deadline — wake the widget so those land on
-            // screen rather than being held back until next tick.
-            if successes > 0 {
-                WidgetCenter.shared.reloadAllTimelines()
-                ActivityLogger.log("cli", "scrape-all reloaded widget timelines (partial)")
-                HeadlessWidgetRelauncher.kickIfNeeded()
-            }
             ChromeBrowserProfile.shared.terminateAppOwnedBrowsersOnAppExit()
             exit(2)
         }
@@ -148,9 +130,6 @@ private enum ScrapeAllCommand {
                         do {
                             _ = try AppGroupStore.recordFailure(message: error.localizedDescription, for: tracker)
                         } catch {
-                            // Failure-of-the-failure-write is logged but not
-                            // surfaced — the original scrape error is the
-                            // signal the user cares about.
                             ActivityLogger.log("cli", "recordFailure threw", metadata: [
                                 "tracker": tracker.id.uuidString,
                                 "error": error.localizedDescription
@@ -184,127 +163,26 @@ private enum ScrapeAllCommand {
                         "successes": "\(successes)",
                         "failures": "\(failures)"
                     ])
-                    // v0.19.1 belt-and-braces signal — does not wake the
-                    // extension on its own but is cheap and safe to call.
-                    WidgetCenter.shared.reloadAllTimelines()
-                    ActivityLogger.log("cli", "scrape-all reloaded widget timelines")
-                    // v0.20.0 — the actual repaint-trigger. Spawn the GUI
-                    // binary in invisible background-refresh mode so
-                    // WidgetCenter.reloadAllTimelines() runs from the
-                    // host's process identity, which is the only thing
-                    // macOS will accept as a wake signal for the parked
-                    // widget extension. Fire-and-forget — we don't block
-                    // the CLI's exit on the GUI binary's lifecycle.
-                    HeadlessWidgetRelauncher.kickIfNeeded()
-                    // Best-effort browser teardown — match what
-                    // applicationWillTerminate does in the GUI app.
+                    // v0.21.0 — calling reloadAllTimelines here is a
+                    // documented no-op from CLI bundle identity, BUT
+                    // the menu-bar host has a PendingScrapeRequestStore
+                    // file watcher. Write a reload sentinel so the host
+                    // wakes up the widget on our behalf.
+                    do {
+                        try PendingScrapeRequestStore.requestScrape(
+                            trackerID: PendingScrapeRequest.reloadTimelinesSentinel
+                        )
+                    } catch {
+                        ActivityLogger.log("cli", "reload sentinel write failed", metadata: [
+                            "error": error.localizedDescription
+                        ])
+                    }
                     ChromeBrowserProfile.shared.terminateAppOwnedBrowsersOnAppExit()
                     exit(failures > 0 ? 1 : 0)
                 }
             }
         }
 
-        // Run the main run loop so async callbacks fire. ChromeCDPScraper
-        // dispatches to DispatchQueue.main internally, so the CLI MUST
-        // drive the main run loop forward until either every scrape
-        // completes (its callback calls exit()) or the overall timeout
-        // fires.
         dispatchMain()
-    }
-}
-
-// MARK: - Headless GUI relaunch for widget refresh (v0.20.0)
-
-/// Spawns the bundled GUI binary in invisible background-refresh mode so
-/// WidgetCenter.reloadAllTimelines() runs from the host app's process
-/// identity. The widget extension only wakes when the call originates
-/// from the host — calling it from this CLI (different bundle id) is a
-/// no-op even with matching App Group entitlements (verified empirically
-/// on v0.19.1).
-///
-/// Background-refresh flag — kept in sync with
-/// BackgroundWidgetRefreshRunner.flag in Apps/MainApp. The MainApp
-/// directory is NOT in the CLI target's source set (see project.yml
-/// MacosWidgetsStatsFromWebsiteCLI.sources), so we hardcode the
-/// literal here. If you change one, change both.
-private let backgroundWidgetRefreshFlag = "--background-widget-refresh"
-
-private enum HeadlessWidgetRelauncher {
-    /// Spawns the GUI binary in background-refresh mode so
-    /// `WidgetCenter.reloadAllTimelines()` runs from the host app's
-    /// process identity (the only thing macOS will accept as a wake
-    /// signal for the parked widget extension). Fire-and-forget — never
-    /// blocks the caller.
-    ///
-    /// NOTE (v0.20.2): we deliberately do NOT gate on "is the main app
-    /// already running?". Both prior gate implementations crashed from
-    /// the LaunchAgent CLI context:
-    ///   - v0.20.0 used `NSRunningApplication.runningApplications(
-    ///     withBundleIdentifier:)` — NSInternalInconsistencyException
-    ///     because the API needs an NSApplication / AppKit context that
-    ///     a `type: tool` CLI target never initialises.
-    ///   - v0.20.1 used `NSWorkspace.shared.runningApplications` filtered
-    ///     by Swift `String.==` on `bundleIdentifier` — SIGSEGV in
-    ///     `_stringCompareInternal` because transient NSRunningApplication
-    ///     entries can expose stale Swift-bridged String backing memory
-    ///     that's already been freed.
-    /// The "skip the spawn if the GUI is already up" optimisation was
-    /// never worth the crashes it caused. A transient duplicate spawn
-    /// is harmless: the host's `--background-widget-refresh` handler
-    /// sets `activationPolicy(.prohibited)` BEFORE any window can
-    /// present, calls `reloadAllTimelines()` from the host bundle id,
-    /// and exits cleanly in ~2 s. No Dock bounce, no menu bar, no
-    /// interference with any existing user-launched GUI instance.
-    static func kickIfNeeded() {
-        guard let guiBinaryPath = resolveGUIBinaryPath() else {
-            ActivityLogger.log("cli", "headless widget relaunch skipped: GUI binary not found in bundle")
-            return
-        }
-
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: guiBinaryPath)
-        process.arguments = [backgroundWidgetRefreshFlag]
-        // Detach stdio so the child does not inherit the LaunchAgent's
-        // log file handles; the child writes its own ActivityLogger
-        // entries via the GUI app's normal log file.
-        process.standardInput = FileHandle.nullDevice
-        process.standardOutput = FileHandle.nullDevice
-        process.standardError = FileHandle.nullDevice
-
-        do {
-            try process.run()
-            ActivityLogger.log("cli", "headless widget relaunch spawned", metadata: [
-                "pid": "\(process.processIdentifier)",
-                "binary": guiBinaryPath
-            ])
-            // Fire-and-forget: do NOT call waitUntilExit() — the CLI is
-            // about to call exit() and we don't want to block on the
-            // GUI binary's ~2 s runloop hold. The child is a normal
-            // detached subprocess from launchd's POV; it will not be
-            // reparented or zombied because the CLI exits before
-            // becoming a parent that needs to reap it (launchd
-            // adopts the orphan if the CLI dies first).
-        } catch {
-            ActivityLogger.log("cli", "headless widget relaunch spawn failed", metadata: [
-                "binary": guiBinaryPath,
-                "error": error.localizedDescription
-            ])
-        }
-    }
-
-    /// Resolves the path to the GUI binary that lives alongside this
-    /// CLI inside the .app bundle's Contents/MacOS directory. CLI binary
-    /// is `macos-widgets-stats-from-website`; GUI binary is
-    /// `MacosWidgetsStatsFromWebsite` (the productName of the main app
-    /// target in project.yml — kept in sync with that file).
-    private static func resolveGUIBinaryPath() -> String? {
-        let cliBinaryURL = URL(fileURLWithPath: CommandLine.arguments[0])
-        let macosDir = cliBinaryURL.deletingLastPathComponent()
-        let guiBinaryURL = macosDir.appendingPathComponent("MacosWidgetsStatsFromWebsite")
-        let path = guiBinaryURL.path
-        guard FileManager.default.isExecutableFile(atPath: path) else {
-            return nil
-        }
-        return path
     }
 }

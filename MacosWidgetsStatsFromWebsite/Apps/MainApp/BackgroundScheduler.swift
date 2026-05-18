@@ -28,6 +28,19 @@ final class BackgroundScheduler: ObservableObject {
     private var activeTrackerIDs: Set<UUID> = []
     private var notifiedBrokenTrackerIDs: Set<UUID> = []
 
+    // MARK: - Coalesced widget reload (v0.21.0)
+    //
+    // WidgetKit budgets non-foreground apps to ~40-70 timeline reloads
+    // per day. If every tracker calls `reloadTimelines(ofKind:)` after
+    // its own scrape, a 4-tracker setup at 30 min cadence = 192 reloads/
+    // day — well over budget. We coalesce all reload requests in a
+    // 5-second window so consecutive scrapes only emit one wake-up.
+    //
+    // The coalescing window is deliberately short so user-visible
+    // delays after "Scrape Now" stay <10 s.
+    private let widgetReloadCoalesceWindow: TimeInterval = 5.0
+    private var widgetReloadWorkItem: DispatchWorkItem?
+
     // MARK: - Widget refresh handoff
     //
     // The widget extension (separate sandboxed process) writes pending
@@ -80,6 +93,48 @@ final class BackgroundScheduler: ObservableObject {
         for newID in newlyAddedIDs {
             triggerScrapeNow(trackerID: newID)
         }
+    }
+
+    /// v0.21.0 — single entry point for the menu-bar "Scrape Trackers
+    /// Now" command. When `force` is true we ignore `ScrapeDuePolicy`
+    /// and scrape every configured tracker; when false we only scrape
+    /// trackers that are actually due.
+    func scrapeAllDueTrackers(force: Bool) {
+        let configuration = AppGroupStore.loadSharedConfiguration()
+        let readings = AppGroupStore.loadReadings().readings
+        let now = Date()
+        let candidates: [Tracker]
+        if force {
+            candidates = configuration.trackers
+        } else {
+            candidates = configuration.trackers.filter { tracker in
+                let reading = readings[tracker.id.uuidString]
+                return ScrapeDuePolicy.isDue(tracker: tracker, reading: reading, now: now)
+            }
+        }
+        ActivityLogger.log("scheduler", "scrapeAllDueTrackers", metadata: [
+            "force": "\(force)",
+            "candidates": "\(candidates.count)",
+            "configured": "\(configuration.trackers.count)"
+        ])
+        for tracker in candidates {
+            triggerScrapeNow(trackerID: tracker.id)
+        }
+    }
+
+    /// Coalesces widget-timeline reload requests inside a short window
+    /// so a burst of scrapes only emits a single `reloadTimelines`
+    /// call. WidgetKit's daily budget for non-foreground apps means
+    /// we want to minimise wake-ups; one per coalesced burst is enough
+    /// because the next scrape cycle is 30 min away regardless.
+    private func requestCoalescedWidgetReload() {
+        widgetReloadWorkItem?.cancel()
+        let work = DispatchWorkItem {
+            WidgetCenter.shared.reloadTimelines(ofKind: "MacosWidgetsStatsFromWebsite")
+            ActivityLogger.log("scheduler", "coalesced widget reload fired")
+        }
+        widgetReloadWorkItem = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + widgetReloadCoalesceWindow, execute: work)
     }
 
     func triggerScrapeNow(trackerID: UUID) {
@@ -166,7 +221,7 @@ final class BackgroundScheduler: ObservableObject {
             }
             handlePostRecord(reading: recordedReading, tracker: tracker)
             DockBadgeUpdater.update()
-            WidgetCenter.shared.reloadTimelines(ofKind: "MacosWidgetsStatsFromWebsite")
+            requestCoalescedWidgetReload()
             postReadingDidChange(trackerID: tracker.id)
             fireScrapeLifecycleHooks(
                 tracker: tracker,

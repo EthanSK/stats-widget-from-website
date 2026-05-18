@@ -83,15 +83,93 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         TrackerAttentionNotifier.shared.configure()
         UpdateController.shared.start()
         MCPServer.shared.startSocketServer()
-        // v0.19.0+ — install / refresh the per-user LaunchAgent that runs
-        // the bundled CLI on a fixed interval. Without this, scrapes only
-        // happen while the SwiftUI app is alive, and `readings.json`
-        // freezes the moment the user closes the window (the bug Ethan
-        // reported 2026-05-17: "last updated says 1356 thats ages ago").
-        // Idempotent — re-runs every launch to keep the plist's
-        // ProgramArguments path in sync with the current bundle.
-        LaunchAgentInstaller.installIfPossible()
-        bringAppToFrontOnLaunch()
+
+        // v0.21.0 — menu-bar agent architecture.
+        //
+        // Previously (v0.19/0.20) we relied on a per-user LaunchAgent
+        // firing the bundled CLI every 5 min to keep `readings.json`
+        // fresh. That hit two WidgetKit problems:
+        //   1. macOS only honours `WidgetCenter.reloadTimelines(ofKind:)`
+        //      from the host app's process identity, so the CLI's call
+        //      was a no-op; we had to relaunch the GUI binary headlessly
+        //      every tick to wake the widget — fragile + chronod-noisy.
+        //   2. WidgetKit budgets non-foreground apps to ~40–70 timeline
+        //      reloads/day. A 5-min cadence = 288/day; we routinely
+        //      blew the budget and chronod started silently throttling
+        //      us on macOS 26.
+        //
+        // The new model: the app itself runs as an `LSUIElement=true`
+        // menu-bar agent. It is the one persistent process. The
+        // BackgroundScheduler's in-process timers handle scraping
+        // (default 30 min cadence per tracker), and the host calls
+        // `WidgetCenter.reloadTimelines(ofKind:)` from its own (correct)
+        // identity. No CLI re-launch, no LaunchAgent, no chronod-state
+        // mismatch.
+        //
+        // Migration: tear down any legacy LaunchAgent from prior
+        // installs so we don't end up with both schedulers fighting.
+        let migrated = LegacyLaunchAgentMigrator.migrateIfNeeded()
+
+        // Install menu-bar status item. Wires up "Open Preferences",
+        // "Scrape Trackers Now", "Launch at Login", "Quit", etc.
+        if let store = appStoreForWiring, let scheduler = appSchedulerForWiring {
+            MainPreferencesWindowController.shared.configure(
+                store: store,
+                backgroundScheduler: scheduler
+            )
+            MenuBarController.shared.install(
+                store: store,
+                backgroundScheduler: scheduler
+            )
+        }
+
+        // Default activation policy is `.accessory` — no Dock icon,
+        // no menu bar. Only the menu-bar status item is visible.
+        // (LSUIElement=true in Info.plist already gives us this on
+        // launch; we re-assert here to be explicit.)
+        NSApp.setActivationPolicy(.accessory)
+
+        if migrated {
+            presentMigrationAlertOnNextRunLoop()
+        }
+
+        // First-launch flow: if there's no existing configuration on
+        // disk, auto-open the preferences window so the user can
+        // create their first tracker. (Without this, a fresh-install
+        // user would just see a chart icon in their menu bar with no
+        // obvious way to start.)
+        if AppDelegate.shouldShowFirstLaunchFlow {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                MainPreferencesWindowController.shared.showWindow()
+            }
+        }
+    }
+
+    /// Set by `MacosWidgetsStatsFromWebsiteApp.init()` after the
+    /// `AppGroupStore` and `BackgroundScheduler` have been created so
+    /// `applicationDidFinishLaunching` can hand them to the menu-bar /
+    /// window controllers. Static rather than instance state so
+    /// `App.init()` can write to it before `AppDelegate` is invoked.
+    static var pendingStore: AppGroupStore?
+    static var pendingScheduler: BackgroundScheduler?
+    static var shouldShowFirstLaunchFlow: Bool = false
+
+    private var appStoreForWiring: AppGroupStore? { AppDelegate.pendingStore }
+    private var appSchedulerForWiring: BackgroundScheduler? { AppDelegate.pendingScheduler }
+
+    private func presentMigrationAlertOnNextRunLoop() {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+            let alert = NSAlert()
+            alert.messageText = "Stats Widget now runs in the menu bar"
+            alert.informativeText = """
+                The app now lives in your menu bar (look for the chart icon at the top of your screen). Click it to open Preferences, trigger a manual scrape, or quit.
+
+                The previous background-refresh job (a LaunchAgent) has been disabled — the menu-bar app handles refreshing on its own now.
+                """
+            alert.addButton(withTitle: "Got it")
+            alert.alertStyle = .informational
+            alert.runModal()
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -99,19 +177,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         MCPServer.shared.stopSocketServer()
     }
 
-    /// Single-window app behaviour: when the user (re)launches the app while
-    /// another instance is already running, focus the existing window instead
-    /// of opening a second one. macOS calls `applicationShouldHandleReopen`
-    /// when the dock icon is clicked or the app is reopened with no visible
-    /// windows; returning `true` lets AppKit run its default reopen logic
-    /// (which makes the main window key and ordered front).
+    /// Menu-bar agent behaviour: when the user re-launches the app
+    /// (double-clicking the .app in Finder, hitting Open from
+    /// LaunchPad, etc.), we surface the Preferences window. The menu-
+    /// bar status item is already present; the re-launch is a clear
+    /// "I want to see the UI" signal so we honour it.
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         if !flag {
-            for window in sender.windows where window.canBecomeKey {
-                window.makeKeyAndOrderFront(nil)
-            }
+            MainPreferencesWindowController.shared.showWindow()
         }
-        sender.activate(ignoringOtherApps: true)
         return true
     }
 
@@ -136,7 +210,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     ) {
         if let trackerIDString = response.notification.request.content.userInfo["trackerID"] as? String,
            let trackerID = UUID(uuidString: trackerIDString) {
-            NSApp.activate(ignoringOtherApps: true)
+            MainPreferencesWindowController.shared.showWindow(section: .trackers)
             AppNavigationEvents.openTrackerSettings(trackerID: trackerID)
         }
 
@@ -153,7 +227,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         // we don't need to do anything extra here other than make sure
         // the app is foregrounded.
         if url.host == "refresh" {
-            NSApp.activate(ignoringOtherApps: true)
+            // v0.21.0 — menu-bar agent never needs to foreground for a
+            // refresh deep link. The scheduler watches the pending-
+            // request directory and dispatches scrapes from background.
             NotificationCenter.default.post(
                 name: AppNavigationEvents.drainPendingScrapeRequestsNotification,
                 object: nil
@@ -167,20 +243,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             return
         }
 
-        NSApp.activate(ignoringOtherApps: true)
+        // Open the preferences window so AppNavigationEvents can route
+        // to the trackers section. Without a visible window the
+        // notification would land but never be acted on.
+        MainPreferencesWindowController.shared.showWindow(section: .trackers)
         AppNavigationEvents.openTrackerSettings(trackerID: trackerID)
     }
 
-    private func bringAppToFrontOnLaunch() {
-        DispatchQueue.main.async {
-            NSRunningApplication.current.activate(options: [.activateAllWindows, .activateIgnoringOtherApps])
-            NSApp.activate(ignoringOtherApps: true)
-
-            for window in NSApp.windows where window.canBecomeKey {
-                window.makeKeyAndOrderFront(nil)
-            }
-        }
-    }
+    // v0.21.0 — `bringAppToFrontOnLaunch` removed. The menu-bar agent
+    // is intentionally launch-silent (no Dock icon flash, no auto-
+    // opened window). The user explicitly opens Preferences from the
+    // menu-bar dropdown when they want to interact with the app.
 }
 
 private enum MCPInvocationLoggerProxy {

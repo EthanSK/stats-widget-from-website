@@ -23,8 +23,8 @@ settings:
     # from Bundle.main.infoDictionary at runtime, so nothing else needs touching.
     # Enforced by .githooks/pre-commit (see core.hooksPath in repo config) and
     # by scripts/validate_release_metadata.py.
-    MARKETING_VERSION: "0.20.3"
-    CURRENT_PROJECT_VERSION: "1256"
+    MARKETING_VERSION: "0.21.0"
+    CURRENT_PROJECT_VERSION: "1257"
 
 packages:
   Sparkle:
@@ -137,6 +137,12 @@ targets:
               - macos-widgets-stats-from-website
         LSApplicationCategoryType: public.app-category.utilities
         LSMinimumSystemVersion: $(MACOSX_DEPLOYMENT_TARGET)
+        # v0.21.0 — LSUIElement makes the app a menu-bar agent: no Dock
+        # icon at launch, no menu bar, no auto-presented window. The
+        # NSStatusItem in MenuBarController is the only persistent UI.
+        # Preferences window is shown on demand (briefly bumps the
+        # activation policy to .regular while open).
+        LSUIElement: true
         NSPrincipalClass: NSApplication
         SUEnableAutomaticChecks: true
         SUFeedURL: https://ethansk.github.io/stats-widget-from-website/appcast.xml

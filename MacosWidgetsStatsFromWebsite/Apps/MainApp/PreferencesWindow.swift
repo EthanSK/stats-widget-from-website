@@ -65,6 +65,12 @@ struct PreferencesWindow: View {
         .onReceive(NotificationCenter.default.publisher(for: AppNavigationEvents.openTrackerSettingsNotification)) { _ in
             selection = .trackers
         }
+        .onReceive(NotificationCenter.default.publisher(for: .menuBarPreferencesSectionRequested)) { notification in
+            if let rawValue = notification.userInfo?["section"] as? String,
+               let section = PreferencesSection(rawValue: rawValue) {
+                selection = section
+            }
+        }
         .onReceive(NotificationCenter.default.publisher(for: .mcpIdentifyElementRequested)) { notification in
             openMCPIdentifyRequest(notification)
         }
@@ -206,7 +212,7 @@ private struct MCPIdentifyPresentation: Identifiable {
     let renderMode: RenderMode
 }
 
-private enum PreferencesSection: String, CaseIterable, Hashable, Identifiable {
+enum PreferencesSection: String, CaseIterable, Hashable, Identifiable {
     case trackers
     case widgets
     case browser
