@@ -750,6 +750,7 @@ final class ChromeBrowserProfile {
         var arguments = [
             "--remote-debugging-address=127.0.0.1",
             "--remote-debugging-port=\(configuration.cdpPort)",
+            "--remote-allow-origins=*",
             "--user-data-dir=\(configuration.userDataDirectory.path)",
             "--no-first-run",
             "--no-default-browser-check",
