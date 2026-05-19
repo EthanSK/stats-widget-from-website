@@ -28,6 +28,11 @@ struct ChromeBrowserPageTarget: Equatable {
     let webSocketDebuggerURL: URL
 }
 
+private struct PendingTargetCreation {
+    let url: URL
+    let completion: (Result<ChromeBrowserTarget, Error>) -> Void
+}
+
 enum ChromeBrowserProfileError: LocalizedError {
     case browserNotFound
     case launchFailed(String)
@@ -64,6 +69,9 @@ final class ChromeBrowserProfile {
     private var foregroundLaunchedProcesses: [Int: Process] = [:]
     private var backgroundUseCounts: [Int: Int] = [:]
     private var userVisiblePorts: Set<Int> = []
+    private var pendingLaunchCompletions: [String: [(Result<ChromeBrowserLaunchConfiguration, Error>) -> Void]] = [:]
+    private var pendingTargetCreations: [Int: [PendingTargetCreation]] = [:]
+    private var targetCreationPortsInFlight: Set<Int> = []
 
     private init() {}
 
@@ -159,21 +167,108 @@ final class ChromeBrowserProfile {
     ) {
         queue.async { [weak self] in
             guard let self else { return }
-            do {
-                try self.fileManager.createDirectory(at: configuration.userDataDirectory, withIntermediateDirectories: true)
-                let browser = try self.resolveBrowser()
-                try self.launch(browser: browser, configuration: configuration, foreground: foreground)
-                self.waitUntilCDPReachable(configuration: configuration, deadline: Date().addingTimeInterval(12), completion: completion)
-            } catch {
-                ActivityLogger.log("browser", "launch failed", metadata: [
+
+            if self.isCDPReachable(configuration: configuration) {
+                DispatchQueue.main.async {
+                    completion(.success(configuration))
+                }
+                return
+            }
+
+            let launchKey = self.pendingLaunchKey(configuration: configuration, foreground: foreground)
+            if self.pendingLaunchCompletions[launchKey] != nil {
+                self.pendingLaunchCompletions[launchKey]?.append(completion)
+                ActivityLogger.log("browser", "joined in-flight Chrome launch", metadata: [
                     "profile": configuration.profileName,
                     "port": "\(configuration.cdpPort)",
-                    "foreground": foreground ? "true" : "false",
-                    "error": error.localizedDescription
+                    "foreground": foreground ? "true" : "false"
                 ])
-                DispatchQueue.main.async {
-                    completion(.failure(error))
-                }
+                return
+            }
+
+            self.pendingLaunchCompletions[launchKey] = [completion]
+            self.startPendingLaunchWhenReady(
+                configuration: configuration,
+                foreground: foreground,
+                deadline: Date().addingTimeInterval(8),
+                loggedWait: false
+            )
+        }
+    }
+
+    private func pendingLaunchKey(configuration: ChromeBrowserLaunchConfiguration, foreground: Bool) -> String {
+        "\(configuration.cdpPort):\(foreground ? "foreground" : "background")"
+    }
+
+    private func startPendingLaunchWhenReady(
+        configuration: ChromeBrowserLaunchConfiguration,
+        foreground: Bool,
+        deadline: Date,
+        loggedWait: Bool
+    ) {
+        if isCDPReachable(configuration: configuration) {
+            finishPendingLaunch(configuration: configuration, foreground: foreground, result: .success(configuration))
+            return
+        }
+
+        if let pid = findDedicatedBrowserPID(configuration: configuration), Date() < deadline {
+            if !loggedWait {
+                ActivityLogger.log("browser", "waiting for previous Chrome process before launch", metadata: [
+                    "profile": configuration.profileName,
+                    "port": "\(configuration.cdpPort)",
+                    "pid": "\(pid)",
+                    "foreground": foreground ? "true" : "false"
+                ])
+            }
+            queue.asyncAfter(deadline: .now() + 0.2) { [weak self] in
+                self?.startPendingLaunchWhenReady(
+                    configuration: configuration,
+                    foreground: foreground,
+                    deadline: deadline,
+                    loggedWait: true
+                )
+            }
+            return
+        }
+
+        if let pid = findDedicatedBrowserPID(configuration: configuration) {
+            ActivityLogger.log("browser", "previous Chrome process still alive after wait; launching anyway", metadata: [
+                "profile": configuration.profileName,
+                "port": "\(configuration.cdpPort)",
+                "pid": "\(pid)",
+                "foreground": foreground ? "true" : "false"
+            ])
+        }
+
+        do {
+            try fileManager.createDirectory(at: configuration.userDataDirectory, withIntermediateDirectories: true)
+            let browser = try resolveBrowser()
+            try launch(browser: browser, configuration: configuration, foreground: foreground)
+            waitUntilCDPReachable(configuration: configuration, deadline: Date().addingTimeInterval(12)) { [weak self] result in
+                self?.finishPendingLaunch(configuration: configuration, foreground: foreground, result: result)
+            }
+        } catch {
+            ActivityLogger.log("browser", "launch failed", metadata: [
+                "profile": configuration.profileName,
+                "port": "\(configuration.cdpPort)",
+                "foreground": foreground ? "true" : "false",
+                "error": error.localizedDescription
+            ])
+            finishPendingLaunch(configuration: configuration, foreground: foreground, result: .failure(error))
+        }
+    }
+
+    private func finishPendingLaunch(
+        configuration: ChromeBrowserLaunchConfiguration,
+        foreground: Bool,
+        result: Result<ChromeBrowserLaunchConfiguration, Error>
+    ) {
+        queue.async { [weak self] in
+            guard let self else { return }
+            let launchKey = self.pendingLaunchKey(configuration: configuration, foreground: foreground)
+            let completions = self.pendingLaunchCompletions.removeValue(forKey: launchKey) ?? []
+            DispatchQueue.main.async {
+                completions.forEach { $0(result) }
             }
         }
     }
@@ -662,12 +757,34 @@ final class ChromeBrowserProfile {
         configuration: ChromeBrowserLaunchConfiguration,
         completion: @escaping (Result<ChromeBrowserTarget, Error>) -> Void
     ) {
-        createTargetRequest(url: url, configuration: configuration, method: "PUT") { [weak self] result in
-            switch result {
-            case .success:
-                completion(result)
-            case .failure:
-                self?.createTargetRequest(url: url, configuration: configuration, method: "GET", completion: completion)
+        queue.async { [weak self] in
+            guard let self else { return }
+            let port = configuration.cdpPort
+            self.pendingTargetCreations[port, default: []].append(
+                PendingTargetCreation(url: url, completion: completion)
+            )
+            self.drainTargetCreationQueue(configuration: configuration)
+        }
+    }
+
+    private func drainTargetCreationQueue(configuration: ChromeBrowserLaunchConfiguration) {
+        let port = configuration.cdpPort
+        guard !targetCreationPortsInFlight.contains(port),
+              var queue = pendingTargetCreations[port],
+              !queue.isEmpty else {
+            return
+        }
+
+        let request = queue.removeFirst()
+        pendingTargetCreations[port] = queue.isEmpty ? nil : queue
+        targetCreationPortsInFlight.insert(port)
+
+        createTargetRequest(url: request.url, configuration: configuration, method: "PUT") { [weak self] result in
+            request.completion(result)
+            self?.queue.async { [weak self] in
+                guard let self else { return }
+                self.targetCreationPortsInFlight.remove(port)
+                self.drainTargetCreationQueue(configuration: configuration)
             }
         }
     }
