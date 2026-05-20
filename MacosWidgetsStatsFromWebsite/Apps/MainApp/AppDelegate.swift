@@ -47,6 +47,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         guard !others.isEmpty else { return }
 
         for other in others {
+            let warning = "[startup] WARN: another instance of \(mainBundleIdentifier) detected at \(other.bundleURL?.path ?? "<unknown>")"
+            NSLog("%@ PID=%d", warning, other.processIdentifier)
+            ActivityLogger.log("startup", warning, metadata: [
+                "pid": "\(other.processIdentifier)"
+            ])
             NSLog(
                 "[startup] terminating prior MacosWidgetsStatsFromWebsite instance PID=%d (bundleURL=%@)",
                 other.processIdentifier,

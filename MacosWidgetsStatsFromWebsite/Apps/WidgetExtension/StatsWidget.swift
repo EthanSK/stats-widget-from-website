@@ -193,6 +193,7 @@ struct StatsWidgetProvider: AppIntentTimelineProvider {
 
     func timeline(for configuration: StatsWidgetConfigurationIntent, in context: Context) async -> Timeline<StatsWidgetEntry> {
         let entry = StatsWidgetEntryFactory.makeEntry(configurationID: configuration.configuration?.id)
+        logTimelineDiagnostics(entry: entry, configurationID: configuration.configuration?.id)
         let nextDate = Calendar.current.date(byAdding: .minute, value: 5, to: Date()) ?? Date().addingTimeInterval(300)
         return Timeline(entries: [entry], policy: .after(nextDate))
     }
@@ -202,6 +203,30 @@ struct StatsWidgetProvider: AppIntentTimelineProvider {
             let intent = StatsWidgetConfigurationIntent(configuration: entity)
             return AppIntentRecommendation(intent: intent, description: entity.recommendationDescription)
         }
+    }
+
+    private func logTimelineDiagnostics(entry: StatsWidgetEntry, configurationID: String?) {
+        let bundle = Bundle.main
+        let formatter = ISO8601DateFormatter()
+        let selectedTrackerIDs = entry.trackers.map(\.id.uuidString).joined(separator: ",")
+        let readingSummary = entry.trackers.map { tracker in
+            let reading = entry.readings[tracker.id]
+            let value = reading?.currentValue ?? "<nil>"
+            let status = reading?.status.rawValue ?? "missing"
+            let updated = reading?.lastUpdatedAt.map { formatter.string(from: $0) } ?? "<nil>"
+            return "\(tracker.id.uuidString)=value:\(value),status:\(status),updated:\(updated)"
+        }
+        .joined(separator: "|")
+
+        ActivityLogger.log("widget", "TimelineProvider.getTimeline", metadata: [
+            "pid": "\(ProcessInfo.processInfo.processIdentifier)",
+            "extensionBundlePath": bundle.bundleURL.path,
+            "version": (bundle.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "unknown",
+            "build": (bundle.infoDictionary?["CFBundleVersion"] as? String) ?? "unknown",
+            "configurationID": configurationID ?? entry.configuration?.id.uuidString ?? "none",
+            "selectedTrackerIDs": selectedTrackerIDs,
+            "readings": readingSummary
+        ])
     }
 }
 

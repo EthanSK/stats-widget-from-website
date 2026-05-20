@@ -102,6 +102,168 @@ enum SelectorExtractionJS {
         """
     }
 
+    static func contentFallbackScript(trackerName: String, hint: String?) -> String {
+        let trackerNameLiteral = javaScriptStringLiteral(trackerName)
+        let hintLiteral = javaScriptStringLiteral(hint ?? "")
+        return """
+        (() => {
+          const trackerName = \(trackerNameLiteral);
+          const explicitHint = \(hintLiteral);
+          const percentPattern = /(\\d+(?:\\.\\d+)?\\s*%\\s*(?:used|remaining)?)/i;
+          const genericTerms = new Set([
+            'usage', 'used', 'percent', 'percentage', 'quota', 'limit',
+            'remaining', 'tracker', 'stats', 'widget', 'value'
+          ]);
+
+          function normalizeText(value) {
+            return String(value || '').replace(/\\s+/g, ' ').trim();
+          }
+
+          function terms(value, dropGeneric) {
+            const matches = normalizeText(value).toLowerCase().match(/[a-z0-9]+/g) || [];
+            const seen = new Set();
+            const result = [];
+            for (const term of matches) {
+              if (term.length < 2 || seen.has(term)) continue;
+              if (dropGeneric && genericTerms.has(term)) continue;
+              seen.add(term);
+              result.push(term);
+            }
+            return result;
+          }
+
+          function isVisible(element) {
+            try {
+              const style = window.getComputedStyle(element);
+              if (!style || style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity || 1) === 0) {
+                return false;
+              }
+              const rect = element.getBoundingClientRect();
+              return rect.width > 0 && rect.height > 0;
+            } catch (_) {
+              return false;
+            }
+          }
+
+          function surroundingText(element) {
+            const chunks = [];
+            let current = element;
+            for (let depth = 0; current && depth < 4; depth += 1) {
+              chunks.push(normalizeText(current.innerText || current.textContent).slice(0, 320));
+              const parent = current.parentElement;
+              if (parent) {
+                for (const sibling of Array.from(parent.children || [])) {
+                  if (sibling === current) continue;
+                  const text = normalizeText(sibling.innerText || sibling.textContent);
+                  if (text && text.length <= 320) chunks.push(text);
+                }
+              }
+              current = parent;
+            }
+            return normalizeText(chunks.join(' '));
+          }
+
+          const explicitTerms = terms(explicitHint, false);
+          const nameTerms = terms(trackerName, true);
+          const candidates = [];
+          const nodes = document.body ? Array.from(document.body.querySelectorAll('*')) : [];
+
+          nodes.forEach((element, index) => {
+            const tagName = String(element.tagName || '').toLowerCase();
+            if (['script', 'style', 'noscript', 'svg', 'path'].includes(tagName)) return;
+            if (!isVisible(element)) return;
+
+            const text = normalizeText(element.innerText || element.textContent);
+            if (!text || text.length > 180) return;
+            const match = text.match(percentPattern);
+            if (!match) return;
+
+            const context = surroundingText(element);
+            const lowerText = text.toLowerCase();
+            const lowerContext = context.toLowerCase();
+            const rect = element.getBoundingClientRect();
+            let score = 0;
+            const matchedTerms = [];
+
+            for (const term of explicitTerms) {
+              if (lowerText.includes(term)) {
+                score += 24;
+                matchedTerms.push(term);
+              } else if (lowerContext.includes(term)) {
+                score += 18;
+                matchedTerms.push(term);
+              }
+            }
+
+            for (const term of nameTerms) {
+              if (lowerText.includes(term)) {
+                score += 8;
+                matchedTerms.push(term);
+              } else if (lowerContext.includes(term)) {
+                score += 5;
+                matchedTerms.push(term);
+              }
+            }
+
+            if (text.length <= 40) score += 4;
+            if (/^\\s*\\d+(?:\\.\\d+)?\\s*%\\s*(?:used|remaining)?\\s*$/i.test(text)) score += 5;
+            score -= index / 10000;
+            score -= Math.min(text.length, 180) / 1000;
+
+            candidates.push({
+              text: match[1].trim(),
+              fullText: text,
+              context,
+              score,
+              matchedTerms,
+              index,
+              tagName,
+              bbox: {
+                x: Math.max(0, rect.left + window.scrollX),
+                y: Math.max(0, rect.top + window.scrollY),
+                width: rect.width,
+                height: rect.height,
+                viewportWidth: window.innerWidth,
+                viewportHeight: window.innerHeight,
+                devicePixelRatio: window.devicePixelRatio || 1
+              }
+            });
+          });
+
+          if (!candidates.length) {
+            return {
+              count: 0,
+              candidates: 0,
+              text: '',
+              hint: explicitHint,
+              trackerName
+            };
+          }
+
+          candidates.sort((left, right) => {
+            if (right.score !== left.score) return right.score - left.score;
+            return left.index - right.index;
+          });
+
+          const selected = candidates[0];
+          return {
+            count: 1,
+            candidates: candidates.length,
+            text: selected.text,
+            fullText: selected.fullText,
+            context: selected.context.slice(0, 240),
+            hint: explicitHint,
+            trackerName,
+            score: selected.score,
+            matchedTerms: selected.matchedTerms,
+            tagName: selected.tagName,
+            bbox: selected.bbox,
+            fallback: true
+          };
+        })()
+        """
+    }
+
     static func snapshotRectScript(for selector: String, hideElements: [String]) -> String {
         let selectorLiteral = javaScriptStringLiteral(selector)
         let hideElementsLiteral = javaScriptArrayLiteral(hideElements)

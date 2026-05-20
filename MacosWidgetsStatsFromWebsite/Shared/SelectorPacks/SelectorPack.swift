@@ -17,6 +17,7 @@ struct SelectorPack: Codable {
     var url: String
     var mode: RenderMode
     var selector: String
+    var contentSelectorHint: String?
     var cropRegion: ElementBoundingBox?
     var label: String?
     var icon: String?
@@ -28,6 +29,7 @@ struct SelectorPack: Codable {
         url: String,
         mode: RenderMode,
         selector: String,
+        contentSelectorHint: String? = nil,
         cropRegion: ElementBoundingBox? = nil,
         label: String? = nil,
         icon: String? = nil,
@@ -38,6 +40,7 @@ struct SelectorPack: Codable {
         self.url = url
         self.mode = mode
         self.selector = selector
+        self.contentSelectorHint = contentSelectorHint?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
         self.cropRegion = cropRegion
         self.label = label
         self.icon = icon
@@ -50,6 +53,7 @@ struct SelectorPack: Codable {
             url: tracker.url,
             mode: tracker.renderMode,
             selector: tracker.selector,
+            contentSelectorHint: tracker.contentSelectorHint,
             cropRegion: tracker.elementBoundingBox,
             label: tracker.label,
             icon: tracker.icon,
@@ -67,6 +71,7 @@ struct SelectorPack: Codable {
             url: url,
             renderMode: mode,
             selector: selector,
+            contentSelectorHint: contentSelectorHint,
             elementBoundingBox: cropRegion,
             label: label?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty,
             icon: icon?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty ?? Tracker.defaultIcon,
@@ -124,6 +129,7 @@ struct SelectorPack: Codable {
             "url",
             "mode",
             "selector",
+            "contentSelectorHint",
             "cropRegion",
             "label",
             "icon",

@@ -565,6 +565,7 @@ private enum MCPToolCatalog {
             "url": stringSchema("HTTPS URL, or http://localhost for testing"),
             "renderMode": enumSchema(["text", "snapshot"]),
             "selector": stringSchema("CSS selector"),
+            "contentSelectorHint": stringSchema("Optional content hint used when the saved CSS selector no longer matches, e.g. session, weekly, or 5h"),
             "elementBoundingBox": boundingBoxSchema(),
             "label": stringSchema("Optional widget label"),
             "icon": stringSchema("SF Symbol name"),
@@ -574,12 +575,13 @@ private enum MCPToolCatalog {
             "refreshIntervalSec": intSchema("Refresh interval in seconds"),
             "hideElements": arraySchema(stringSchema("CSS selector to hide before snapshots"))
         ], required: ["name", "url", "selector"]),
-        tool("update_tracker", "Modify tracker fields such as name, URL, label, icon, refresh interval, mode, selector, element bounds, or hidden snapshot selectors. Includes gradientMode for coloring the big-number value (red↔green sweep based on whether high values are bad or good), and valueTransform for displaying e.g. '99 remaining' instead of '1% used'.", [
+        tool("update_tracker", "Modify tracker fields such as name, URL, label, icon, refresh interval, mode, selector, content fallback hint, element bounds, or hidden snapshot selectors. Includes gradientMode for coloring the big-number value (red↔green sweep based on whether high values are bad or good), and valueTransform for displaying e.g. '99 remaining' instead of '1% used'.", [
             "id": stringSchema("Tracker UUID"),
             "name": stringSchema("Tracker name"),
             "url": stringSchema("HTTPS URL, or http://localhost for testing"),
             "renderMode": enumSchema(["text", "snapshot"]),
             "selector": stringSchema("CSS selector"),
+            "contentSelectorHint": stringSchema("Optional content hint used when the saved CSS selector no longer matches, e.g. session, weekly, or 5h"),
             "elementBoundingBox": boundingBoxSchema(),
             "label": stringSchema("Optional widget label"),
             "icon": stringSchema("SF Symbol name"),
@@ -891,6 +893,7 @@ private enum MCPToolDispatcher {
             url: url.absoluteString,
             renderMode: renderMode,
             selector: selector,
+            contentSelectorHint: (arguments["contentSelectorHint"] as? String)?.nilIfEmpty,
             elementBoundingBox: try boundingBoxArgument("elementBoundingBox", arguments),
             refreshIntervalSec: intArgument("refreshIntervalSec", arguments),
             label: arguments["label"] as? String,
@@ -950,6 +953,10 @@ private enum MCPToolDispatcher {
             }
             if let value = arguments["selector"] as? String {
                 tracker.selector = value.trimmingCharacters(in: .whitespacesAndNewlines)
+                shouldResetFailureState = true
+            }
+            if arguments.keys.contains("contentSelectorHint") {
+                tracker.contentSelectorHint = (arguments["contentSelectorHint"] as? String)?.nilIfEmpty
                 shouldResetFailureState = true
             }
             if arguments.keys.contains("elementBoundingBox") {
@@ -1698,6 +1705,7 @@ private enum MCPToolDispatcher {
             "browserProfile": tracker.browserProfile,
             "renderMode": tracker.renderMode.rawValue,
             "selector": tracker.selector,
+            "contentSelectorHint": tracker.contentSelectorHint as Any? ?? NSNull(),
             "refreshIntervalSec": tracker.refreshIntervalSec,
             "label": tracker.label as Any? ?? NSNull(),
             "icon": tracker.icon,

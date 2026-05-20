@@ -84,11 +84,25 @@ struct RefreshTrackerIntent: AppIntent {
         //    we add later) refreshes immediately. The actual value swap
         //    happens after the scrape completes; that path already calls
         //    WidgetCenter.shared.reloadTimelines from BackgroundScheduler.
+        logWidgetReload(reason: "refresh intent")
         WidgetCenter.shared.reloadTimelines(ofKind: "MacosWidgetsStatsFromWebsite")
 
         ActivityLogger.log("refresh-intent", "perform", metadata: [
             "trackerIDs": ids.joined(separator: ",")
         ])
         return .result()
+    }
+
+    private func logWidgetReload(reason: String) {
+        let bundle = Bundle.main
+        ActivityLogger.log("widget-reload", "WidgetCenter.reloadTimelines", metadata: [
+            "reason": reason,
+            "kind": "MacosWidgetsStatsFromWebsite",
+            "pid": "\(ProcessInfo.processInfo.processIdentifier)",
+            "bundleID": bundle.bundleIdentifier ?? "unknown",
+            "bundlePath": bundle.bundleURL.path,
+            "version": (bundle.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "unknown",
+            "build": (bundle.infoDictionary?["CFBundleVersion"] as? String) ?? "unknown"
+        ])
     }
 }

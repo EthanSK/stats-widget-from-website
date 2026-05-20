@@ -130,7 +130,7 @@ final class BackgroundScheduler: ObservableObject {
     private func requestCoalescedWidgetReload() {
         widgetReloadWorkItem?.cancel()
         let work = DispatchWorkItem {
-            WidgetCenter.shared.reloadTimelines(ofKind: "MacosWidgetsStatsFromWebsite")
+            WidgetCenterDiagnostics.reloadTimelines(reason: "coalesced scrape")
             ActivityLogger.log("scheduler", "coalesced widget reload fired")
         }
         widgetReloadWorkItem = work
@@ -361,7 +361,7 @@ final class BackgroundScheduler: ObservableObject {
             DispatchQueue.main.async { [weak self] in
                 self?.store.reloadFromDisk()
                 self?.sync()
-                WidgetCenter.shared.reloadAllTimelines()
+                WidgetCenterDiagnostics.reloadAllTimelines(reason: "pending-scrape sentinel")
             }
         }
     }

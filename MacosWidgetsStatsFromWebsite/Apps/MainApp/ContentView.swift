@@ -50,6 +50,6 @@ struct ContentView: View {
     }
 
     private func reloadWidgets() {
-        WidgetCenter.shared.reloadTimelines(ofKind: "MacosWidgetsStatsFromWebsite")
+        WidgetCenterDiagnostics.reloadTimelines(reason: "preferences/config change")
     }
 }

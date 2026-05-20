@@ -74,6 +74,7 @@ struct Tracker: Codable, Identifiable {
     var browserProfile: String
     var renderMode: RenderMode
     var selector: String
+    var contentSelectorHint: String?
     var elementBoundingBox: ElementBoundingBox?
     var refreshIntervalSec: Int
     var label: String?
@@ -99,6 +100,7 @@ struct Tracker: Codable, Identifiable {
         browserProfile: String = Tracker.defaultBrowserProfile,
         renderMode: RenderMode = .text,
         selector: String = "",
+        contentSelectorHint: String? = nil,
         elementBoundingBox: ElementBoundingBox? = nil,
         refreshIntervalSec: Int? = nil,
         label: String? = nil,
@@ -117,6 +119,7 @@ struct Tracker: Codable, Identifiable {
         self.browserProfile = browserProfile
         self.renderMode = renderMode
         self.selector = selector
+        self.contentSelectorHint = Self.normalizedContentSelectorHint(contentSelectorHint)
         self.elementBoundingBox = elementBoundingBox
         self.refreshIntervalSec = refreshIntervalSec ?? renderMode.defaultRefreshIntervalSec
         self.label = label
@@ -140,6 +143,9 @@ struct Tracker: Codable, Identifiable {
         browserProfile = try container.decodeIfPresent(String.self, forKey: .browserProfile) ?? Tracker.defaultBrowserProfile
         self.renderMode = renderMode
         selector = try container.decodeIfPresent(String.self, forKey: .selector) ?? ""
+        contentSelectorHint = Self.normalizedContentSelectorHint(
+            try container.decodeIfPresent(String.self, forKey: .contentSelectorHint)
+        )
         elementBoundingBox = try container.decodeIfPresent(ElementBoundingBox.self, forKey: .elementBoundingBox)
         refreshIntervalSec = try container.decodeIfPresent(Int.self, forKey: .refreshIntervalSec)
             ?? renderMode.defaultRefreshIntervalSec
@@ -164,6 +170,11 @@ struct Tracker: Codable, Identifiable {
         // scaffold for existing trackers on first load (so users get the
         // self-heal benefit without opting in).
         hooks = try container.decodeIfPresent(TrackerHooks.self, forKey: .hooks) ?? TrackerHooks()
+    }
+
+    private static func normalizedContentSelectorHint(_ value: String?) -> String? {
+        let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? nil : trimmed
     }
 }
 

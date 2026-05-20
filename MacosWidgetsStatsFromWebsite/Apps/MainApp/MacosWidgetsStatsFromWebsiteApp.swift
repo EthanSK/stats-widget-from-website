@@ -62,7 +62,7 @@ struct MacosWidgetsStatsFromWebsiteApp: App {
         scheduler.sync()
         scheduler.drainPendingScrapeRequests()
         DockBadgeUpdater.update()
-        WidgetCenter.shared.reloadTimelines(ofKind: "MacosWidgetsStatsFromWebsite")
+        WidgetCenterDiagnostics.reloadTimelines(reason: "app init")
     }
 
     var body: some Scene {

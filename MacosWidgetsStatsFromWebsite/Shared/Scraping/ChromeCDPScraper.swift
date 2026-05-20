@@ -162,11 +162,7 @@ final class ChromeCDPScraper {
 
             guard Date() < deadline else {
                 let finalStatus = lastStatus ?? status
-                if SelectorExtractionJS.boolValue(finalStatus["loginLikely"]) == true {
-                    finish(.failure(SelectorExtractionError.loginRequired))
-                } else {
-                    finish(.failure(SelectorExtractionError.selectorDidNotMatch))
-                }
+                attemptContentFallback(finalStatus: finalStatus)
                 return
             }
 
@@ -182,6 +178,71 @@ final class ChromeCDPScraper {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
                 self?.waitForSelector(deadline: deadline, lastStatus: lastStatus)
             }
+        }
+    }
+
+    private func attemptContentFallback(finalStatus: [String: Any]) {
+        guard let client else {
+            finishSelectorFailure(finalStatus: finalStatus)
+            return
+        }
+
+        client.evaluate(
+            SelectorExtractionJS.contentFallbackScript(
+                trackerName: tracker.name,
+                hint: tracker.contentSelectorHint
+            )
+        ) { [weak self] result in
+            DispatchQueue.main.async {
+                self?.handleContentFallback(result, finalStatus: finalStatus)
+            }
+        }
+    }
+
+    private func handleContentFallback(_ result: Result<Any?, Error>, finalStatus: [String: Any]) {
+        switch result {
+        case .success(let value):
+            guard let status = SelectorExtractionJS.dictionary(from: value) else {
+                finishSelectorFailure(finalStatus: finalStatus)
+                return
+            }
+
+            let count = SelectorExtractionJS.intValue(status["count"]) ?? 0
+            guard count > 0 else {
+                finishSelectorFailure(finalStatus: finalStatus)
+                return
+            }
+
+            ActivityLogger.log("scrape", "WARN selector content fallback fired", metadata: [
+                "tracker": tracker.id.uuidString,
+                "trackerName": tracker.name,
+                "selector": tracker.selector,
+                "hint": tracker.contentSelectorHint ?? "",
+                "value": (status["text"] as? String) ?? "",
+                "candidateCount": "\(SelectorExtractionJS.intValue(status["candidates"]) ?? count)",
+                "matchedTerms": ((status["matchedTerms"] as? [String]) ?? []).joined(separator: ",")
+            ])
+
+            switch tracker.renderMode {
+            case .text:
+                scrapeText(from: status)
+            case .snapshot:
+                guard let rect = SelectorExtractionJS.rect(from: status["bbox"]) else {
+                    finish(.failure(ScraperError.selectedElementHasNoVisibleRect))
+                    return
+                }
+                capture(rect: rect)
+            }
+        case .failure:
+            finishSelectorFailure(finalStatus: finalStatus)
+        }
+    }
+
+    private func finishSelectorFailure(finalStatus: [String: Any]) {
+        if SelectorExtractionJS.boolValue(finalStatus["loginLikely"]) == true {
+            finish(.failure(SelectorExtractionError.loginRequired))
+        } else {
+            finish(.failure(SelectorExtractionError.selectorDidNotMatch))
         }
     }
 
