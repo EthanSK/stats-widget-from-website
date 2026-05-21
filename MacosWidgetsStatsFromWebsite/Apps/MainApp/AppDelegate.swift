@@ -89,6 +89,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         UpdateController.shared.start()
         MCPServer.shared.startSocketServer()
 
+        let launchdManaged = LaunchAgentManager.isCurrentProcessLaunchdManaged()
+        let startupLine = "[startup] launchd-managed=\(launchdManaged) pid=\(getpid()) bundle=\(Bundle.main.bundlePath)"
+        NSLog("%@", startupLine)
+        ActivityLogger.log("startup", startupLine)
+        LaunchAgentManager.ensureInstalledAndBootstrapped()
+
         // v0.21.0 — menu-bar agent architecture.
         //
         // Previously (v0.19/0.20) we relied on a per-user LaunchAgent
