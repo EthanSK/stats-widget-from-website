@@ -15,6 +15,12 @@ struct TrackersListView: View {
     @State private var selectedTrackerID: UUID?
     @State private var editorPresentation: TrackerEditorPresentation?
     @State private var selectorPackExportMessage: String?
+    /// v0.21.7 perf: single readings cache, refreshed by one parent-level
+    /// notification subscriber instead of one per row. Codex review flagged
+    /// per-row `AppGroupStore.reading(for:)` (which reads/decodes the whole
+    /// readings file) and per-row notification subscriptions as a primary
+    /// UI-lag cause during config / list navigation.
+    @State private var readingsByTrackerID: [UUID: TrackerReading] = [:]
 
     var body: some View {
         ZStack {
@@ -44,6 +50,7 @@ struct TrackersListView: View {
                     ForEach(store.trackers) { tracker in
                         TrackerRowView(
                             tracker: tracker,
+                            reading: readingsByTrackerID[tracker.id],
                             isRefreshing: backgroundScheduler.inFlightTrackerIDs.contains(tracker.id),
                             onEdit: { edit(tracker) },
                             onRefresh: { backgroundScheduler.triggerScrapeNow(trackerID: tracker.id) },
@@ -64,7 +71,11 @@ struct TrackersListView: View {
                                 Button("Scrape Now") {
                                     backgroundScheduler.triggerScrapeNow(trackerID: tracker.id)
                                 }
-                                Button("Export Selector Pack") {
+                                // v0.21.7: renamed from "Export Selector Pack"
+                                // to the plain-English "Export Tracker Config"
+                                // so the action is self-explanatory. Same
+                                // file format under the hood.
+                                Button("Export Tracker Config…") {
                                     exportSelectorPack(tracker)
                                 }
                                 Divider()
@@ -104,13 +115,11 @@ struct TrackersListView: View {
                 .disabled(selectedTracker == nil)
                 .help("Scrape Now")
 
-                Button {
-                    exportSelectedSelectorPack()
-                } label: {
-                    Label("Export Selector Pack", systemImage: "square.and.arrow.up")
-                }
-                .disabled(selectedTracker == nil)
-                .help("Export Selector Pack")
+                // v0.21.7 prefs-button audit: Export Tracker Config (formerly
+                // "Export Selector Pack") was rarely used as a toolbar button —
+                // most users discover it via the context-menu / right-click on
+                // a tracker. Keep the action available there + via File menu,
+                // but drop the toolbar slot to reduce clutter.
             }
         }
         .sheet(item: $editorPresentation) { presentation in
@@ -125,9 +134,24 @@ struct TrackersListView: View {
             .frame(width: 620, height: 680)
         }
         .onAppear {
+            refreshReadings()
             if let trackerID = AppNavigationEvents.consumePendingTrackerID() {
                 let startIdentify = AppNavigationEvents.consumePendingShouldStartIdentify()
                 openTrackerSettings(trackerID: trackerID, startIdentify: startIdentify)
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: BackgroundScheduler.trackerReadingDidChangeNotification)) { notification in
+            // Single subscriber at the list level (v0.21.7) — each row used
+            // to subscribe individually, causing N file reads per scrape
+            // event. Patch only the changed tracker's row, not the whole map.
+            if let trackerID = notification.userInfo?["trackerID"] as? UUID {
+                if let updated = AppGroupStore.reading(for: trackerID) {
+                    readingsByTrackerID[trackerID] = updated
+                } else {
+                    readingsByTrackerID.removeValue(forKey: trackerID)
+                }
+            } else {
+                refreshReadings()
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: AppNavigationEvents.openTrackerSettingsNotification)) { notification in
@@ -258,6 +282,20 @@ struct TrackersListView: View {
         store.deleteTracker(id: tracker.id)
     }
 
+    /// Bulk-load all readings into the parent-level cache. Decodes the
+    /// readings file ONCE per refresh instead of N times (one per row).
+    private func refreshReadings() {
+        let file = AppGroupStore.loadReadings()
+        var byID: [UUID: TrackerReading] = [:]
+        byID.reserveCapacity(file.readings.count)
+        for (key, reading) in file.readings {
+            if let uuid = UUID(uuidString: key) {
+                byID[uuid] = reading
+            }
+        }
+        readingsByTrackerID = byID
+    }
+
     private func openTrackerSettings(trackerID: UUID, startIdentify: Bool = false) {
         guard let tracker = store.trackers.first(where: { $0.id == trackerID }) else {
             return
@@ -274,12 +312,14 @@ struct TrackersListView: View {
 
 private struct TrackerRowView: View {
     let tracker: Tracker
+    /// v0.21.7: reading is now provided by the parent's single readings
+    /// cache instead of being read+subscribed per-row. See
+    /// TrackersListView.readingsByTrackerID.
+    let reading: TrackerReading?
     let isRefreshing: Bool
     let onEdit: () -> Void
     let onRefresh: () -> Void
     let onReIdentify: () -> Void
-
-    @State private var reading: TrackerReading?
 
     var body: some View {
         HStack(spacing: 12) {
@@ -367,16 +407,6 @@ private struct TrackerRowView: View {
             .accessibilityLabel("Edit tracker")
         }
         .padding(.vertical, 4)
-        .onAppear {
-            reading = AppGroupStore.reading(for: tracker.id)
-        }
-        .onReceive(NotificationCenter.default.publisher(for: BackgroundScheduler.trackerReadingDidChangeNotification)) { notification in
-            guard let trackerID = notification.userInfo?["trackerID"] as? UUID,
-                  trackerID == tracker.id else {
-                return
-            }
-            reading = AppGroupStore.reading(for: tracker.id)
-        }
     }
 
     /// Latest failure classification for this row. Returns nil when the
@@ -477,10 +507,17 @@ private struct TrackerRowView: View {
             return nil
         }
 
+        return TrackerRowView.relativeFormatter.localizedString(for: lastUpdated, relativeTo: Date())
+    }
+
+    // v0.21.7 perf: hoist the formatter out of the per-row body recomputation
+    // path. Codex flagged this as a hot allocation during widget-config
+    // / tracker-list re-renders (one formatter per row per re-render).
+    private static let relativeFormatter: RelativeDateTimeFormatter = {
         let formatter = RelativeDateTimeFormatter()
         formatter.unitsStyle = .abbreviated
-        return formatter.localizedString(for: lastUpdated, relativeTo: Date())
-    }
+        return formatter
+    }()
 }
 
 private struct TrackerEditorPresentation: Identifiable {

@@ -48,7 +48,8 @@ struct PreferencesWindow: View {
         )
         .overlay(alignment: .bottomTrailing) {
             if isSelectorPackDropTargeted {
-                Label("Import selector pack", systemImage: "square.and.arrow.down")
+                // v0.21.7: relabeled drop overlay to plain English.
+                Label("Import tracker config", systemImage: "square.and.arrow.down")
                     .padding(10)
                     .background(.regularMaterial)
                     .clipShape(RoundedRectangle(cornerRadius: 8))

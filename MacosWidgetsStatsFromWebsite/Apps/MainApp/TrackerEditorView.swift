@@ -106,25 +106,6 @@ struct TrackerEditorView: View {
                             .foregroundStyle(.secondary)
                     }
 
-                    HStack {
-                        TextField("SF Symbol", text: $draft.icon)
-                        Image(systemName: draft.icon.isEmpty ? Tracker.defaultIcon : draft.icon)
-                            .frame(width: 24)
-                    }
-
-                    ColorPicker("Accent color", selection: $accentColor, supportsOpacity: false)
-
-                    // Gradient mode colors the big-number value in text-style
-                    // widget templates from green to red based on the parsed
-                    // numeric reading. Default `.none` preserves the existing
-                    // primary text color for trackers that don't fit a 0-100
-                    // health metric model (e.g. raw currency, follower counts).
-                    Picker("Value gradient", selection: $draft.gradientMode) {
-                        ForEach(GradientMode.allCases, id: \.self) { mode in
-                            Text(mode.displayName).tag(mode)
-                        }
-                    }
-
                     // Value transform optionally rewrites the numeric reading
                     // before display + gradient interpolation. e.g. for a
                     // "Claude weekly usage: 1%" reading, `.invertFromHundred`
@@ -137,7 +118,18 @@ struct TrackerEditorView: View {
                         }
                     }
                 } header: {
-                    Text("Presentation")
+                    Text("Display")
+                } footer: {
+                    // v0.21.7: SF Symbol, accent color, and value gradient
+                    // moved to the Widget Configuration editor — they only
+                    // affect how a tracker is RENDERED in a widget, so they
+                    // belong in the per-widget editor, not the per-tracker
+                    // form. The underlying storage is still on Tracker so
+                    // the same tracker reused across two widgets keeps a
+                    // consistent look.
+                    Text("Visual options (icon, accent color, gradient) moved to the Widgets section.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
 
                 Section {
