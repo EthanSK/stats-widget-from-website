@@ -18,13 +18,24 @@ enum AppNavigationEvents {
     /// new files immediately while the app IS running.
     static let drainPendingScrapeRequestsNotification = Notification.Name("AppNavigationEvents.drainPendingScrapeRequests")
     private static var pendingTrackerID: UUID?
+    /// One-shot flag captured alongside `pendingTrackerID`. When set, the
+    /// editor that opens for the queued tracker auto-fires its Identify
+    /// Element flow on appearance — this is the wire-up for the
+    /// "tap login-required row → re-identify" action on the trackers
+    /// list page (v0.21.6). It clears after consumption so a later edit
+    /// click doesn't surprise the user by reopening Chromium.
+    private static var pendingShouldStartIdentify: Bool = false
 
-    static func openTrackerSettings(trackerID: UUID) {
+    static func openTrackerSettings(trackerID: UUID, startIdentify: Bool = false) {
         pendingTrackerID = trackerID
+        pendingShouldStartIdentify = startIdentify
         NotificationCenter.default.post(
             name: openTrackerSettingsNotification,
             object: nil,
-            userInfo: ["trackerID": trackerID]
+            userInfo: [
+                "trackerID": trackerID,
+                "startIdentify": startIdentify
+            ]
         )
     }
 
@@ -32,5 +43,11 @@ enum AppNavigationEvents {
         let trackerID = pendingTrackerID
         pendingTrackerID = nil
         return trackerID
+    }
+
+    static func consumePendingShouldStartIdentify() -> Bool {
+        let flag = pendingShouldStartIdentify
+        pendingShouldStartIdentify = false
+        return flag
     }
 }

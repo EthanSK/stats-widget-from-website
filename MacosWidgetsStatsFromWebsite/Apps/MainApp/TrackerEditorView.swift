@@ -27,10 +27,17 @@ struct TrackerEditorView: View {
     @State private var refreshIntervalUnit: RefreshIntervalUnit = .minutes
 
     let mode: Mode
+    let autoStartIdentify: Bool
     let onSave: (Tracker) -> Void
 
-    init(mode: Mode, tracker: Tracker, onSave: @escaping (Tracker) -> Void) {
+    init(
+        mode: Mode,
+        tracker: Tracker,
+        autoStartIdentify: Bool = false,
+        onSave: @escaping (Tracker) -> Void
+    ) {
         self.mode = mode
+        self.autoStartIdentify = autoStartIdentify
         self.onSave = onSave
         _draft = State(initialValue: tracker)
         _labelText = State(initialValue: tracker.label ?? "")
@@ -238,6 +245,15 @@ struct TrackerEditorView: View {
         }
         .onAppear {
             chromiumAvailable = ChromeBrowserProfile.shared.chromiumIsAvailable()
+            // Caller (e.g. trackers-list "Tap to re-identify" hint) asked for
+            // the Identify flow to fire as soon as the editor is on screen.
+            // Defer a tick so the sheet animation has finished before the
+            // Chromium launch shifts focus.
+            if autoStartIdentify, chromiumAvailable, validatedURL != nil {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                    openIdentifyBrowser()
+                }
+            }
         }
         .onReceive(NotificationCenter.default.publisher(for: ChromeBrowserProfile.chromiumAvailabilityDidChangeNotification)) { _ in
             chromiumAvailable = ChromeBrowserProfile.shared.chromiumIsAvailable()

@@ -46,7 +46,8 @@ struct TrackersListView: View {
                             tracker: tracker,
                             isRefreshing: backgroundScheduler.inFlightTrackerIDs.contains(tracker.id),
                             onEdit: { edit(tracker) },
-                            onRefresh: { backgroundScheduler.triggerScrapeNow(trackerID: tracker.id) }
+                            onRefresh: { backgroundScheduler.triggerScrapeNow(trackerID: tracker.id) },
+                            onReIdentify: { reIdentify(tracker) }
                         )
                         .tag(tracker.id)
                         .contentShape(Rectangle())
@@ -113,7 +114,11 @@ struct TrackersListView: View {
             }
         }
         .sheet(item: $editorPresentation) { presentation in
-            TrackerEditorView(mode: presentation.mode, tracker: presentation.tracker) { savedTracker in
+            TrackerEditorView(
+                mode: presentation.mode,
+                tracker: presentation.tracker,
+                autoStartIdentify: presentation.autoStartIdentify
+            ) { savedTracker in
                 store.upsertTracker(savedTracker)
                 selectedTrackerID = savedTracker.id
             }
@@ -121,15 +126,16 @@ struct TrackersListView: View {
         }
         .onAppear {
             if let trackerID = AppNavigationEvents.consumePendingTrackerID() {
-                openTrackerSettings(trackerID: trackerID)
+                let startIdentify = AppNavigationEvents.consumePendingShouldStartIdentify()
+                openTrackerSettings(trackerID: trackerID, startIdentify: startIdentify)
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: AppNavigationEvents.openTrackerSettingsNotification)) { notification in
             guard let trackerID = notification.userInfo?["trackerID"] as? UUID else {
                 return
             }
-
-            openTrackerSettings(trackerID: trackerID)
+            let startIdentify = (notification.userInfo?["startIdentify"] as? Bool) ?? false
+            openTrackerSettings(trackerID: trackerID, startIdentify: startIdentify)
         }
         .overlay(alignment: .bottomLeading) {
             VStack(alignment: .leading, spacing: 6) {
@@ -229,6 +235,21 @@ struct TrackersListView: View {
         editorPresentation = TrackerEditorPresentation(mode: .edit, tracker: tracker)
     }
 
+    /// Opens the tracker editor with the Identify-in-Chrome flow already
+    /// armed to fire. Used by the trackers-list "Tap to re-identify" hint
+    /// surfaced under a tracker whose last scrape failed with a
+    /// login-required / selector-not-found classification. The flag is
+    /// consumed by `TrackerEditorView.onAppear` after a short delay so the
+    /// sheet has time to settle before Chromium launches.
+    private func reIdentify(_ tracker: Tracker) {
+        selectedTrackerID = tracker.id
+        editorPresentation = TrackerEditorPresentation(
+            mode: .edit,
+            tracker: tracker,
+            autoStartIdentify: true
+        )
+    }
+
     private func delete(_ tracker: Tracker) {
         if selectedTrackerID == tracker.id {
             selectedTrackerID = nil
@@ -237,13 +258,17 @@ struct TrackersListView: View {
         store.deleteTracker(id: tracker.id)
     }
 
-    private func openTrackerSettings(trackerID: UUID) {
+    private func openTrackerSettings(trackerID: UUID, startIdentify: Bool = false) {
         guard let tracker = store.trackers.first(where: { $0.id == trackerID }) else {
             return
         }
 
         selectedTrackerID = trackerID
-        editorPresentation = TrackerEditorPresentation(mode: .edit, tracker: tracker)
+        editorPresentation = TrackerEditorPresentation(
+            mode: .edit,
+            tracker: tracker,
+            autoStartIdentify: startIdentify
+        )
     }
 }
 
@@ -252,6 +277,7 @@ private struct TrackerRowView: View {
     let isRefreshing: Bool
     let onEdit: () -> Void
     let onRefresh: () -> Void
+    let onReIdentify: () -> Void
 
     @State private var reading: TrackerReading?
 
@@ -270,6 +296,17 @@ private struct TrackerRowView: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                     .truncationMode(.middle)
+                // Failure-status subtitle (v0.21.6). Surfaces a short
+                // user-actionable label like "Login required — Tap to
+                // re-identify" right under the URL so the user doesn't
+                // have to open the editor to learn what's wrong. For
+                // kinds that benefit from re-identifying the element
+                // (login walls + missing selectors) we wrap the row in a
+                // tap gesture that opens the editor with the Identify
+                // flow pre-armed.
+                if let failureKind = currentFailureKind {
+                    failureSubtitle(failureKind)
+                }
             }
 
             Spacer(minLength: 12)
@@ -342,6 +379,76 @@ private struct TrackerRowView: View {
         }
     }
 
+    /// Latest failure classification for this row. Returns nil when the
+    /// tracker is currently in the .ok state — keeps the row clean for
+    /// healthy trackers.
+    private var currentFailureKind: TrackerFailureKind? {
+        guard let reading else { return nil }
+        return TrackerFailureKind.classify(reading: reading)
+    }
+
+    @ViewBuilder
+    private func failureSubtitle(_ kind: TrackerFailureKind) -> some View {
+        // Wrap the headline + action hint in a single HStack so the user's
+        // tap target is obvious. For kinds where re-identifying makes
+        // sense, we add a tap gesture that surfaces the Identify flow.
+        let color: Color = {
+            switch reading?.status {
+            case .broken: return .red
+            case .stale: return .orange
+            default: return .secondary
+            }
+        }()
+
+        HStack(spacing: 6) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.caption2)
+                .foregroundStyle(color)
+            Text(kind.headline)
+                .font(.caption.weight(.medium))
+                .foregroundStyle(color)
+                .lineLimit(1)
+            if let hint = kind.actionHint {
+                Text("— \(hint)")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(Color.accentColor)
+                    .underline()
+                    .lineLimit(1)
+            }
+        }
+        .padding(.top, 1)
+        // Only intercept taps when there's a re-identify action to fire.
+        // Without this guard the row swallows the parent's "tap to edit"
+        // gesture for OK trackers too.
+        .contentShape(Rectangle())
+        .onTapGesture {
+            if kind.benefitsFromReIdentify {
+                onReIdentify()
+            } else {
+                onEdit()
+            }
+        }
+        .help(detailedHelpText(for: kind))
+    }
+
+    /// Tooltip text for the failure subtitle. Keeps the on-screen label
+    /// short while the hover-help exposes the raw error message for power
+    /// users / bug reporters.
+    private func detailedHelpText(for kind: TrackerFailureKind) -> String {
+        switch kind {
+        case .loginRequired:
+            return "The tracker's URL needs sign-in inside the app's Chromium profile. Tap to open Identify in Chrome and re-capture the selector once you're logged in."
+        case .selectorNotFound:
+            return "The saved CSS selector no longer matches anything on the page. Tap to re-capture it via Identify in Chrome."
+        case .pageTimeout:
+            return "Chromium took too long to load the tracker URL. Open Edit to inspect or change the refresh interval."
+        case .staleSuccess:
+            return "The last scrape succeeded but the next refresh is overdue. The background scheduler will retry shortly."
+        case .other(let message):
+            return message
+        }
+    }
+
     private var displayedValue: String {
         if let value = reading?.currentValue, !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return value
@@ -380,4 +487,5 @@ private struct TrackerEditorPresentation: Identifiable {
     let id = UUID()
     let mode: TrackerEditorView.Mode
     let tracker: Tracker
+    var autoStartIdentify: Bool = false
 }

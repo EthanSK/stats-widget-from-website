@@ -13,6 +13,103 @@ enum TrackerStatus: String, Codable, Equatable {
     case broken
 }
 
+/// Classifies a tracker's last failure into a small set of user-actionable
+/// buckets so the trackers-list UI can surface a concrete next step instead
+/// of just a generic warning icon. Derived from `lastError` text so we don't
+/// have to break the on-disk schema by piping a Swift error enum through
+/// the JSON file — `lastError` already contains the LocalizedError
+/// description string from each scrape failure path.
+enum TrackerFailureKind {
+    case loginRequired
+    case selectorNotFound
+    case pageTimeout
+    case staleSuccess
+    case other(String)
+
+    /// Short noun phrase used as the per-row status label.
+    var headline: String {
+        switch self {
+        case .loginRequired:
+            return "Login required"
+        case .selectorNotFound:
+            return "Element not found"
+        case .pageTimeout:
+            return "Page timeout"
+        case .staleSuccess:
+            return "Stale"
+        case .other:
+            return "Error"
+        }
+    }
+
+    /// Optional tappable hint shown next to the headline. Returning a
+    /// non-nil string is the cue for the trackers-list row to treat the
+    /// status block as interactive ("tap to re-identify"). Login-required
+    /// is the only failure that's reliably user-fixable in one click, so
+    /// it's the only kind that gets a tap-action hint by default.
+    var actionHint: String? {
+        switch self {
+        case .loginRequired:
+            return "Tap to re-identify"
+        case .selectorNotFound:
+            return "Tap to re-identify"
+        case .pageTimeout, .staleSuccess, .other:
+            return nil
+        }
+    }
+
+    /// True when this kind benefits from re-running the Identify Element
+    /// flow — i.e. the user needs to either log in inside the bundled
+    /// Chromium and re-capture the selector, or pick a fresh selector.
+    var benefitsFromReIdentify: Bool {
+        switch self {
+        case .loginRequired, .selectorNotFound:
+            return true
+        case .pageTimeout, .staleSuccess, .other:
+            return false
+        }
+    }
+
+    /// Best-effort classifier. Looks at `lastError` text for known
+    /// scraper-error fingerprints (the LocalizedError descriptions in
+    /// SelectorExtractionError + ScraperError) and falls back to
+    /// `.staleSuccess` when the reading is stale but has no error
+    /// message — i.e. the LaunchAgent never even got a chance to scrape.
+    static func classify(reading: TrackerReading) -> TrackerFailureKind? {
+        // OK readings never have a failure kind. The list row stays clean.
+        if reading.status == .ok {
+            return nil
+        }
+
+        if let message = reading.lastError?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !message.isEmpty {
+            let lowered = message.lowercased()
+            // SelectorExtractionError.loginRequired.errorDescription
+            // matches "Login appears to be required …".
+            if lowered.contains("login") || lowered.contains("sign in") || lowered.contains("password") {
+                return .loginRequired
+            }
+            // SelectorExtractionError.selectorDidNotMatch / .invalidSelector
+            if lowered.contains("selector did not match") || lowered.contains("selector is invalid") {
+                return .selectorNotFound
+            }
+            // ScraperError.selectedElementHasNoText / .selectedElementHasNoVisibleRect
+            if lowered.contains("selected element has no") {
+                return .selectorNotFound
+            }
+            // ScraperError.navigationFailed("Timed out loading …")
+            if lowered.contains("timed out") || lowered.contains("timeout") {
+                return .pageTimeout
+            }
+            return .other(message)
+        }
+
+        // No lastError but status != ok ⇒ stale because the LaunchAgent
+        // hasn't refreshed in time but the last reading was actually fine.
+        return .staleSuccess
+    }
+}
+
 struct TrackerReading: Codable, Equatable {
     var currentValue: String?
     var currentNumeric: Double?

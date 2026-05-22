@@ -317,6 +317,15 @@ final class ChromeIdentifyElementCoordinator {
     private var didComplete = false
     private var didInjectOverlay = false
     private var isValidatingPick = false
+    /// Tracks whether the tab in use was created by THIS identify flow
+    /// (vs. reused from an existing CDP target). Set in handleTarget /
+    /// handleExistingTargetLookup so cleanupAndClose can REST-close the
+    /// tab on terminal exit only when we know we created it. Reusing a
+    /// tab and then closing it would defeat the point of preserving the
+    /// user's logged-in session (Ethan voice 3775 — tab leak fix v0.21.6).
+    private var didCreateNewTab = false
+    private var currentTarget: ChromeBrowserTarget?
+    private var currentConfiguration: ChromeBrowserLaunchConfiguration?
 
     init(
         renderMode: RenderMode,
@@ -383,12 +392,19 @@ final class ChromeIdentifyElementCoordinator {
         fallbackURL: URL
     ) {
         guard !didComplete else { return }
+        currentConfiguration = configuration
 
         switch result {
         case .success(let target):
+            // Reused — DO NOT close on exit; preserves the user's
+            // logged-in session.
+            didCreateNewTab = false
             onNotice("Reusing the existing CDP browser tab so the logged-in profile/session is preserved.")
             handleTarget(.success(target))
         case .failure:
+            // Created — flag for cleanup so we don't leak the
+            // identify-launched tab once the user finishes (Ethan voice 3775).
+            didCreateNewTab = true
             let safeURL = ChromeBrowserProfile.safeInitialURL(for: fallbackURL)
             ChromeBrowserProfile.shared.openTab(url: safeURL, configuration: configuration) { [weak self] result in
                 DispatchQueue.main.async {
@@ -403,6 +419,7 @@ final class ChromeIdentifyElementCoordinator {
 
         switch result {
         case .success(let target):
+            currentTarget = target
             onTargetSelected(target.id)
             let client = ChromeCDPClient(webSocketURL: target.webSocketDebuggerURL)
             self.client = client
@@ -677,6 +694,12 @@ final class ChromeIdentifyElementCoordinator {
         didComplete = true
         timeout?.cancel()
         client?.close()
+        // Close the tab on the success path too — when we created a new
+        // tab for identify, the preview sheet already snapshotted what
+        // the user needs and the tab serves no further purpose. Reused
+        // tabs are NOT closed so the user's existing session stays intact
+        // (Ethan voice 3775 tab-leak fix).
+        closeCreatedTabIfNeeded()
         onPreviewReady(preview)
     }
 
@@ -693,16 +716,43 @@ final class ChromeIdentifyElementCoordinator {
         didComplete = true
         timeout?.cancel()
         client?.close()
+        closeCreatedTabIfNeeded()
         onCancelled()
     }
 
     private func cleanupAndClose() {
-        guard let client else { return }
-        client.evaluate("window.__statsWidgetInspectCleanup && window.__statsWidgetInspectCleanup();", returnByValue: false) { _ in
-            client.close()
+        if let client {
+            client.evaluate("window.__statsWidgetInspectCleanup && window.__statsWidgetInspectCleanup();", returnByValue: false) { _ in
+                client.close()
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+                client.close()
+            }
         }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
-            client.close()
+        closeCreatedTabIfNeeded()
+    }
+
+    /// REST-closes the page target we created in this identify flow, but
+    /// only when `didCreateNewTab == true`. Reused tabs are never closed.
+    /// Best-effort + idempotent (Chromium returns 404 for an already-
+    /// closed target, which closeTarget() logs but treats as success).
+    private func closeCreatedTabIfNeeded() {
+        guard didCreateNewTab,
+              let target = currentTarget,
+              let configuration = currentConfiguration else {
+            return
+        }
+        ChromeBrowserProfile.shared.closeTarget(id: target.id, configuration: configuration)
+        // Belt-and-suspenders: schedule an orphan sweep on the same CDP
+        // port so any side-effect tabs (OAuth redirect bounces, etc.)
+        // that landed on about:blank get nuked too.
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 1.0) {
+            ChromeBrowserProfile.shared.closeOrphanPageTargets(
+                configuration: configuration,
+                keepURLs: [],
+                maxKeep: 8,
+                completion: nil
+            )
         }
     }
 

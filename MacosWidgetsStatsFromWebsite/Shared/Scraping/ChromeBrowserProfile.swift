@@ -1383,6 +1383,154 @@ final class ChromeBrowserProfile {
         return URLSession(configuration: config)
     }()
 
+    /// Public-to-the-target wrapper for the same logic. Used by the
+    /// tab-count diagnostic logging in ChromeCDPScraper + the orphan-tab
+    /// sweep added in v0.21.6 (Ethan voice 3775 — "so many tabs open in
+    /// this Chromium"). Keeps the original private implementation
+    /// untouched so existing callers continue to compile.
+    func listPageTargetsPublic(
+        configuration: ChromeBrowserLaunchConfiguration,
+        completion: @escaping (Result<[ChromeBrowserPageTarget], Error>) -> Void
+    ) {
+        listPageTargets(configuration: configuration, completion: completion)
+    }
+
+    /// Diagnostic: best-effort tab count for the given CDP port. Falls
+    /// through to the completion with nil on any error so the scrape
+    /// pipeline never blocks on the count probe.
+    func pageTargetCount(
+        configuration: ChromeBrowserLaunchConfiguration,
+        completion: @escaping (Int?) -> Void
+    ) {
+        listPageTargets(configuration: configuration) { result in
+            switch result {
+            case .success(let targets):
+                completion(targets.count)
+            case .failure:
+                completion(nil)
+            }
+        }
+    }
+
+    /// Closes any "orphan" page targets — about:blank / DevTools / new-tab
+    /// pages that aren't currently being used by a scrape OR by an
+    /// in-flight Identify flow. The `keepURLs` set is supplied by the
+    /// caller (typically: the set of tracker URLs that may want to be
+    /// reused for Identify, plus the URL of any tab that's currently being
+    /// scraped). When `maxKeep` is positive, the N most-recently-listed
+    /// targets matching `keepURLs` are also kept and everything else is
+    /// closed — this is the conservative path for the agent startup sweep
+    /// where we don't want to nuke a tab the user just logged into.
+    ///
+    /// Logged at info level so the activity log can attribute tab churn.
+    func closeOrphanPageTargets(
+        configuration: ChromeBrowserLaunchConfiguration,
+        keepURLs: Set<String> = [],
+        maxKeep: Int = 8,
+        completion: ((Int) -> Void)? = nil
+    ) {
+        listPageTargets(configuration: configuration) { [weak self] result in
+            switch result {
+            case .success(let targets):
+                guard let self else {
+                    completion?(0)
+                    return
+                }
+
+                // Bucket: keepable (matches a known tracker URL) vs disposable
+                // (about:blank, chrome://newtab/, mismatched).
+                let normalizedKeeps = Set(keepURLs.map(ChromeBrowserProfile.normalizedTabKey))
+                var keepers: [ChromeBrowserPageTarget] = []
+                var disposables: [ChromeBrowserPageTarget] = []
+                for target in targets {
+                    let urlString = target.url?.absoluteString ?? ""
+                    let normalized = ChromeBrowserProfile.normalizedTabKey(urlString)
+                    if ChromeBrowserProfile.isOrphanCandidate(urlString) {
+                        disposables.append(target)
+                    } else if normalizedKeeps.contains(normalized) {
+                        keepers.append(target)
+                    } else {
+                        // Unknown URL but not a blank/newtab — keep it so
+                        // user-opened tabs (signin pages, OAuth bounces,
+                        // dashboards) aren't silently destroyed.
+                        keepers.append(target)
+                    }
+                }
+
+                // Cap keepers at maxKeep (oldest-first removal). Anything
+                // beyond the cap becomes disposable.
+                if maxKeep > 0 && keepers.count > maxKeep {
+                    let excess = keepers.count - maxKeep
+                    let extra = Array(keepers.prefix(excess))
+                    disposables.append(contentsOf: extra)
+                }
+
+                if disposables.isEmpty {
+                    ActivityLogger.log("browser", "orphan tab sweep — nothing to close", metadata: [
+                        "profile": configuration.profileName,
+                        "port": "\(configuration.cdpPort)",
+                        "tabCount": "\(targets.count)"
+                    ])
+                    completion?(0)
+                    return
+                }
+
+                for target in disposables {
+                    self.closeTarget(id: target.id, configuration: configuration)
+                }
+
+                ActivityLogger.log("browser", "orphan tab sweep — closed disposable targets", metadata: [
+                    "profile": configuration.profileName,
+                    "port": "\(configuration.cdpPort)",
+                    "before": "\(targets.count)",
+                    "closed": "\(disposables.count)",
+                    "kept": "\(targets.count - disposables.count)"
+                ])
+                completion?(disposables.count)
+
+            case .failure(let error):
+                ActivityLogger.log("browser", "orphan tab sweep — list failed", metadata: [
+                    "profile": configuration.profileName,
+                    "port": "\(configuration.cdpPort)",
+                    "error": error.localizedDescription
+                ])
+                completion?(0)
+            }
+        }
+    }
+
+    /// Normalizes a URL string for tab-keep comparison: lowercased,
+    /// trailing slash stripped, fragment + query removed. Best-effort —
+    /// callers use this to coalesce "https://chat.openai.com/" and
+    /// "https://chat.openai.com/?conversation_id=foo" into the same
+    /// keepable bucket so a fresh login redirect doesn't get nuked.
+    private static func normalizedTabKey(_ urlString: String) -> String {
+        var trimmed = urlString.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if let hashRange = trimmed.range(of: "#") {
+            trimmed.removeSubrange(hashRange.lowerBound..<trimmed.endIndex)
+        }
+        if let queryRange = trimmed.range(of: "?") {
+            trimmed.removeSubrange(queryRange.lowerBound..<trimmed.endIndex)
+        }
+        while trimmed.hasSuffix("/") {
+            trimmed.removeLast()
+        }
+        return trimmed
+    }
+
+    /// Returns true for tabs that are safe to nuke unconditionally during
+    /// a sweep — blank pages, the Chromium new-tab placeholder, and the
+    /// devtools/about scheme variants.
+    private static func isOrphanCandidate(_ urlString: String) -> Bool {
+        let lowered = urlString.lowercased()
+        if lowered.isEmpty { return true }
+        if lowered == "about:blank" { return true }
+        if lowered.hasPrefix("chrome://newtab") { return true }
+        if lowered.hasPrefix("chrome-extension://") { return true }
+        if lowered.hasPrefix("devtools://") { return true }
+        return false
+    }
+
     private func listPageTargets(
         configuration: ChromeBrowserLaunchConfiguration,
         completion: @escaping (Result<[ChromeBrowserPageTarget], Error>) -> Void

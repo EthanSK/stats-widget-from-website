@@ -13,6 +13,12 @@ final class ChromeCDPScraper {
 
     private static var activeScrapers: [UUID: ChromeCDPScraper] = [:]
 
+    /// When the post-scrape tab count exceeds this, an orphan sweep fires
+    /// automatically (v0.21.6 tab-leak mitigation, Ethan voice 3775).
+    /// Healthy steady-state is 1–2 tabs (the headless about:blank
+    /// placeholder + whatever's being scraped right now).
+    static let tabCountOrphanSweepThreshold = 10
+
     private let scrapeID = UUID()
     private let tracker: Tracker
     private let completion: Completion
@@ -79,6 +85,19 @@ final class ChromeCDPScraper {
                 "tracker": tracker.id.uuidString,
                 "port": "\(configuration.cdpPort)"
             ])
+            // Diagnostic: tab count at scrape start. Paired with the
+            // "finished scrape" entry's tabCount metadata so we can spot
+            // tab leaks in the activity log (v0.21.6, Ethan voice 3775).
+            ChromeBrowserProfile.shared.pageTargetCount(configuration: configuration) { [weak self] count in
+                guard let self else { return }
+                if let count {
+                    ActivityLogger.log("scrape", "tab count at scrape start", metadata: [
+                        "tracker": self.tracker.id.uuidString,
+                        "port": "\(configuration.cdpPort)",
+                        "tabCount": "\(count)"
+                    ])
+                }
+            }
             guard let url = validatedURL(from: tracker.url) else {
                 finish(.failure(ScraperError.invalidURL))
                 return
@@ -432,6 +451,38 @@ final class ChromeCDPScraper {
                 captured.client?.close()
                 if let configuration = captured.configuration, let target = captured.target {
                     ChromeBrowserProfile.shared.closeTarget(id: target.id, configuration: configuration)
+                }
+                // Diagnostic: tab count AFTER our explicit close. Logged
+                // before endBackgroundUse so the count reflects the state
+                // when the page-close REST request reached Chromium.
+                // Best-effort, so we don't block teardown on the probe.
+                // If the count exceeds the orphan-sweep threshold (10),
+                // fire a sweep automatically so a buggy identify-tab or
+                // accidental popup doesn't snowball into the "loads of
+                // tabs open" state Ethan reported (voice 3775).
+                if let configuration = captured.configuration {
+                    ChromeBrowserProfile.shared.pageTargetCount(configuration: configuration) { count in
+                        if let count {
+                            ActivityLogger.log("scrape", "tab count at scrape end", metadata: [
+                                "tracker": captured.tracker.id.uuidString,
+                                "port": "\(configuration.cdpPort)",
+                                "tabCount": "\(count)"
+                            ])
+                            if count > ChromeCDPScraper.tabCountOrphanSweepThreshold {
+                                ActivityLogger.log("scrape", "tab count over threshold, sweeping orphan tabs", metadata: [
+                                    "port": "\(configuration.cdpPort)",
+                                    "tabCount": "\(count)",
+                                    "threshold": "\(ChromeCDPScraper.tabCountOrphanSweepThreshold)"
+                                ])
+                                ChromeBrowserProfile.shared.closeOrphanPageTargets(
+                                    configuration: configuration,
+                                    keepURLs: [],
+                                    maxKeep: 8,
+                                    completion: nil
+                                )
+                            }
+                        }
+                    }
                 }
                 if let backgroundUseConfiguration = captured.backgroundUseConfiguration {
                     ChromeBrowserProfile.shared.endBackgroundUse(configuration: backgroundUseConfiguration)

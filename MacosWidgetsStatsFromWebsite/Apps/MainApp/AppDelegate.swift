@@ -154,6 +154,65 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 MainPreferencesWindowController.shared.showWindow()
             }
         }
+
+        // v0.21.6 — agent-startup orphan tab sweep. Old installs (pre
+        // v0.17.x Page.close cleanup, pre-v0.21.6 identify-tab cleanup)
+        // can have accumulated dozens of about:blank / newtab / orphan
+        // pages inside the bundled Chromium user-data-dir. Sweep them on
+        // startup so a fresh launch returns the browser to a sane state.
+        // Conservative: keeps tabs whose URL matches a tracker URL, +
+        // up to 8 unknown-but-non-blank tabs (so the user's logged-in
+        // pages survive).
+        DispatchQueue.main.asyncAfter(deadline: .now() + 5.0) {
+            self.sweepOrphanBrowserTabsOnStartup()
+        }
+    }
+
+    /// Scans the bundled Chromium's CDP /json/list and closes any
+    /// disposable orphan tabs (about:blank, chrome://newtab, etc.)
+    /// without touching tabs the user has actively signed into. Runs
+    /// only if there are trackers configured AND the headless instance
+    /// is already running (we don't want to *cold-start* Chromium just
+    /// to sweep tabs — that'd undo the menu-bar agent's reduced-cost
+    /// model). Best-effort; failures are logged.
+    private func sweepOrphanBrowserTabsOnStartup() {
+        guard let store = AppDelegate.pendingStore, !store.trackers.isEmpty else {
+            return
+        }
+
+        // Use a transient background-use ticket so we don't hold the
+        // browser open just for the sweep. The endBackgroundUse counter
+        // ensures Chromium gets torn down again if no scrape happens to
+        // be in flight.
+        let configuration = ChromeBrowserProfile.shared.beginBackgroundUse()
+        let trackerURLs = Set(store.trackers.compactMap { tracker -> String? in
+            let trimmed = tracker.url.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : trimmed
+        })
+
+        // Soft-launch path: only sweep if CDP is already reachable. If
+        // it's not, the menu-bar agent hasn't scraped yet anyway so
+        // there's nothing to clean up.
+        ChromeBrowserProfile.shared.pageTargetCount(configuration: configuration) { count in
+            guard let count, count > 0 else {
+                ActivityLogger.log("startup", "skipped orphan tab sweep — Chromium not running yet or empty")
+                ChromeBrowserProfile.shared.endBackgroundUse(configuration: configuration)
+                return
+            }
+
+            ActivityLogger.log("startup", "running orphan tab sweep at agent startup", metadata: [
+                "tabCount": "\(count)",
+                "trackerURLCount": "\(trackerURLs.count)"
+            ])
+
+            ChromeBrowserProfile.shared.closeOrphanPageTargets(
+                configuration: configuration,
+                keepURLs: trackerURLs,
+                maxKeep: 8
+            ) { _ in
+                ChromeBrowserProfile.shared.endBackgroundUse(configuration: configuration)
+            }
+        }
     }
 
     /// Set by `MacosWidgetsStatsFromWebsiteApp.init()` after the
