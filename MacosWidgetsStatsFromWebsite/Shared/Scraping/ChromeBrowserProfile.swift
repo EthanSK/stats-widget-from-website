@@ -232,12 +232,23 @@ final class ChromeBrowserProfile {
         }
 
         if let pid = findDedicatedBrowserPID(configuration: configuration) {
-            ActivityLogger.log("browser", "previous Chrome process still alive after wait; launching anyway", metadata: [
-                "profile": configuration.profileName,
-                "port": "\(configuration.cdpPort)",
-                "pid": "\(pid)",
-                "foreground": foreground ? "true" : "false"
-            ])
+            // v0.21.5 — the previous behavior was to LOG-AND-LAUNCH-ANYWAY here,
+            // which raced a fresh Chromium against the stale one on the same
+            // `--user-data-dir` + `--remote-debugging-port`. The new instance
+            // frequently failed to bind CDP and every coalesced waiter in
+            // `pendingLaunchCompletions` failed together (observed: PID 90672
+            // wedged for ~20h, 196 consecutive scrape failures with "CDP did
+            // not become reachable on port 18987"). Now we SIGTERM the stale
+            // PID, wait for CDP to clear (or 3s deadline), then retry the
+            // launch path from the top — which will either reach CDP if the
+            // stale process is gone, or detect a no-PID state and fall
+            // through to a clean launch.
+            terminateStaleBrowser(
+                pid: pid,
+                configuration: configuration,
+                foreground: foreground
+            )
+            return
         }
 
         do {
@@ -255,6 +266,135 @@ final class ChromeBrowserProfile {
                 "error": error.localizedDescription
             ])
             finishPendingLaunch(configuration: configuration, foreground: foreground, result: .failure(error))
+        }
+    }
+
+    /// SIGTERM (escalating to SIGKILL after 1s) a stale Chromium PID that's
+    /// blocking the serialized launch path, then poll until the PID is gone
+    /// AND CDP is no longer reachable on `configuration.cdpPort` OR a 3s
+    /// deadline elapses. On clear, re-enter `startPendingLaunchWhenReady`
+    /// with a fresh deadline so it can spawn a new Chromium against the
+    /// `--user-data-dir` + `--remote-debugging-port`.
+    ///
+    /// Why TERM first: TERM lets Chromium tear down its profile lock and any
+    /// child renderer/utility processes cleanly. KILL after 1s is the
+    /// escape hatch for a hung parent process that ignores TERM.
+    private func terminateStaleBrowser(
+        pid: pid_t,
+        configuration: ChromeBrowserLaunchConfiguration,
+        foreground: Bool
+    ) {
+        ActivityLogger.log("browser", "terminating stale Chrome before relaunch", metadata: [
+            "profile": configuration.profileName,
+            "port": "\(configuration.cdpPort)",
+            "pid": "\(pid)",
+            "foreground": foreground ? "true" : "false",
+            "signal": "SIGTERM"
+        ])
+
+        if kill(pid, SIGTERM) != 0 && errno != ESRCH {
+            ActivityLogger.log("browser", "SIGTERM to stale Chrome failed", metadata: [
+                "profile": configuration.profileName,
+                "port": "\(configuration.cdpPort)",
+                "pid": "\(pid)",
+                "errno": "\(errno)"
+            ])
+        }
+
+        let killDeadline = Date().addingTimeInterval(1.0)
+        let clearDeadline = Date().addingTimeInterval(3.0)
+        waitForStaleBrowserClear(
+            pid: pid,
+            configuration: configuration,
+            foreground: foreground,
+            killDeadline: killDeadline,
+            clearDeadline: clearDeadline,
+            sentKill: false
+        )
+    }
+
+    private func waitForStaleBrowserClear(
+        pid: pid_t,
+        configuration: ChromeBrowserLaunchConfiguration,
+        foreground: Bool,
+        killDeadline: Date,
+        clearDeadline: Date,
+        sentKill: Bool
+    ) {
+        let pidStillAlive = (kill(pid, 0) == 0)
+        let cdpStillUp = isCDPReachable(configuration: configuration)
+
+        if !pidStillAlive && !cdpStillUp {
+            ActivityLogger.log("browser", "stale Chrome cleared; relaunching", metadata: [
+                "profile": configuration.profileName,
+                "port": "\(configuration.cdpPort)",
+                "pid": "\(pid)"
+            ])
+            startPendingLaunchWhenReady(
+                configuration: configuration,
+                foreground: foreground,
+                deadline: Date().addingTimeInterval(8),
+                loggedWait: true
+            )
+            return
+        }
+
+        if Date() >= clearDeadline {
+            ActivityLogger.log("browser", "stale Chrome did not clear within deadline; relaunching anyway", metadata: [
+                "profile": configuration.profileName,
+                "port": "\(configuration.cdpPort)",
+                "pid": "\(pid)",
+                "pid_alive": pidStillAlive ? "true" : "false",
+                "cdp_reachable": cdpStillUp ? "true" : "false"
+            ])
+            // Last-resort fallthrough: drive the launch path with a fresh
+            // deadline. If CDP is still up (somehow), the launch path will
+            // detect that and succeed without spawning a new instance.
+            startPendingLaunchWhenReady(
+                configuration: configuration,
+                foreground: foreground,
+                deadline: Date().addingTimeInterval(8),
+                loggedWait: true
+            )
+            return
+        }
+
+        if pidStillAlive && !sentKill && Date() >= killDeadline {
+            ActivityLogger.log("browser", "escalating to SIGKILL on stale Chrome", metadata: [
+                "profile": configuration.profileName,
+                "port": "\(configuration.cdpPort)",
+                "pid": "\(pid)"
+            ])
+            if kill(pid, SIGKILL) != 0 && errno != ESRCH {
+                ActivityLogger.log("browser", "SIGKILL to stale Chrome failed", metadata: [
+                    "profile": configuration.profileName,
+                    "port": "\(configuration.cdpPort)",
+                    "pid": "\(pid)",
+                    "errno": "\(errno)"
+                ])
+            }
+            queue.asyncAfter(deadline: .now() + 0.2) { [weak self] in
+                self?.waitForStaleBrowserClear(
+                    pid: pid,
+                    configuration: configuration,
+                    foreground: foreground,
+                    killDeadline: killDeadline,
+                    clearDeadline: clearDeadline,
+                    sentKill: true
+                )
+            }
+            return
+        }
+
+        queue.asyncAfter(deadline: .now() + 0.2) { [weak self] in
+            self?.waitForStaleBrowserClear(
+                pid: pid,
+                configuration: configuration,
+                foreground: foreground,
+                killDeadline: killDeadline,
+                clearDeadline: clearDeadline,
+                sentKill: sentKill
+            )
         }
     }
 
@@ -801,7 +941,7 @@ final class ChromeBrowserProfile {
             return
         }
 
-        URLSession.shared.dataTask(with: url) { _, response, error in
+        ChromeBrowserProfile.cdpRequestSession.dataTask(with: url) { _, response, error in
             if let error {
                 ActivityLogger.log("browser", "REST tab close failed", metadata: [
                     "profile": configuration.profileName,
@@ -1097,13 +1237,60 @@ final class ChromeBrowserProfile {
     }
 
     private static func cdpVersionInfo(configuration: ChromeBrowserLaunchConfiguration) -> [String: Any]? {
-        guard let url = URL(string: "/json/version", relativeTo: configuration.cdpURL)?.absoluteURL,
-              let data = try? Data(contentsOf: url),
+        // v0.21.5 — replaced synchronous `Data(contentsOf:)` (which has no
+        // request timeout and can stall the caller's queue indefinitely if
+        // the CDP socket is half-open) with a bounded synchronous
+        // URLSession fetch. 5s request / 10s resource. The outer 8s wait
+        // for "previous Chrome still alive" in `startPendingLaunchWhenReady`
+        // gave the impression of a timeout, but a stuck `Data(contentsOf:)`
+        // call held the `queue.sync` lock past that deadline.
+        guard let url = URL(string: "/json/version", relativeTo: configuration.cdpURL)?.absoluteURL else {
+            return nil
+        }
+
+        guard let data = synchronousProbe(url: url, timeoutForRequest: 5, timeoutForResource: 10),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             return nil
         }
 
         return json
+    }
+
+    /// Bounded synchronous HTTP GET used by CDP-reachability probes. Returns
+    /// `nil` on any failure (timeout, network error, non-2xx). The semaphore
+    /// wait is hard-capped at `timeoutForResource + 1` so a hung URLSession
+    /// callback cannot deadlock the caller; explicit URLSession timeouts
+    /// keep the underlying fetch from outliving the resource deadline.
+    private static func synchronousProbe(
+        url: URL,
+        timeoutForRequest: TimeInterval,
+        timeoutForResource: TimeInterval
+    ) -> Data? {
+        let config = URLSessionConfiguration.ephemeral
+        config.timeoutIntervalForRequest = timeoutForRequest
+        config.timeoutIntervalForResource = timeoutForResource
+        config.waitsForConnectivity = false
+        let session = URLSession(configuration: config)
+        defer { session.finishTasksAndInvalidate() }
+
+        var resultData: Data?
+        let semaphore = DispatchSemaphore(value: 0)
+        let task = session.dataTask(with: url) { data, response, _ in
+            defer { semaphore.signal() }
+            if let httpResponse = response as? HTTPURLResponse,
+               !(200..<300).contains(httpResponse.statusCode) {
+                return
+            }
+            resultData = data
+        }
+        task.resume()
+
+        let waitResult = semaphore.wait(timeout: .now() + timeoutForResource + 1)
+        if waitResult == .timedOut {
+            task.cancel()
+            return nil
+        }
+        return resultData
     }
 
     private static func cdpBrowserWebSocketURL(configuration: ChromeBrowserLaunchConfiguration) -> URL? {
@@ -1128,14 +1315,44 @@ final class ChromeBrowserProfile {
 
         var request = URLRequest(url: requestURL)
         request.httpMethod = method
-        URLSession.shared.dataTask(with: request) { data, response, error in
+        // v0.21.5 — explicit per-request timeout so a stuck `/json/new`
+        // cannot wedge `targetCreationPortsInFlight` and back up every
+        // subsequent serialized scrape behind it. URLRequest's default is
+        // 60s, far too long given the outer 30s scraper timeout.
+        request.timeoutInterval = 10
+
+        let fallbackMethod: String? = (method == "PUT") ? "GET" : nil
+        let attemptSession = ChromeBrowserProfile.cdpRequestSession
+        let primaryTask = attemptSession.dataTask(with: request) { [weak self] data, response, error in
             if let error {
+                // v0.21.5 — restore the PUT→GET fallback that was dropped
+                // in c2aa024. Some Chromium builds reject the PUT verb on
+                // `/json/new` with an error; the legacy GET form still
+                // works as the escape hatch.
+                if let fallbackMethod, let self {
+                    self.createTargetRequest(
+                        url: targetURL,
+                        configuration: configuration,
+                        method: fallbackMethod,
+                        completion: completion
+                    )
+                    return
+                }
                 completion(.failure(error))
                 return
             }
 
             if let httpResponse = response as? HTTPURLResponse,
                !(200..<300).contains(httpResponse.statusCode) {
+                if let fallbackMethod, let self {
+                    self.createTargetRequest(
+                        url: targetURL,
+                        configuration: configuration,
+                        method: fallbackMethod,
+                        completion: completion
+                    )
+                    return
+                }
                 completion(.failure(ChromeBrowserProfileError.targetCreationFailed("CDP /json/new returned HTTP \(httpResponse.statusCode).")))
                 return
             }
@@ -1150,8 +1367,21 @@ final class ChromeBrowserProfile {
             }
 
             completion(.success(ChromeBrowserTarget(id: id, webSocketDebuggerURL: webSocketURL)))
-        }.resume()
+        }
+        primaryTask.resume()
     }
+
+    /// Shared URLSession used for short-lived CDP REST probes (`/json/new`,
+    /// `/json/list`, `/json/close`). Explicit timeouts mirror the bounded
+    /// `cdpVersionInfo` semaphore probe so a stuck CDP socket cannot
+    /// outlive the outer 30s scraper timeout.
+    private static let cdpRequestSession: URLSession = {
+        let config = URLSessionConfiguration.ephemeral
+        config.timeoutIntervalForRequest = 5
+        config.timeoutIntervalForResource = 10
+        config.waitsForConnectivity = false
+        return URLSession(configuration: config)
+    }()
 
     private func listPageTargets(
         configuration: ChromeBrowserLaunchConfiguration,
@@ -1162,7 +1392,7 @@ final class ChromeBrowserProfile {
             return
         }
 
-        URLSession.shared.dataTask(with: url) { data, response, error in
+        ChromeBrowserProfile.cdpRequestSession.dataTask(with: url) { data, response, error in
             if let error {
                 completion(.failure(error))
                 return
