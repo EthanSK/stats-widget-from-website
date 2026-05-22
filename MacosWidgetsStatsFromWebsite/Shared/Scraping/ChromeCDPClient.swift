@@ -200,7 +200,33 @@ final class ChromeCDPClient {
             return
         }
 
-        send(method: method) { [weak self] _ in
+        // v0.21.8 item #9: per-CDP-command timing for the page-prep sequence
+        // (Page.enable, Network.enable, DOM.enable, Accessibility.enable). The
+        // failure mode this catches: a Chromium that ACKs the page-target
+        // creation but then never replies to Page.enable, leaving the scrape
+        // stuck in `prepareOpenClawStylePage` until the outer 30s timeout
+        // fires with no other useful log signal.
+        let startedAt = Date()
+        ActivityLogger.log("cdp", "enableDomain started", metadata: [
+            "method": method
+        ])
+        send(method: method) { [weak self] result in
+            let elapsedMs = Int(Date().timeIntervalSince(startedAt) * 1000)
+            switch result {
+            case .success:
+                ActivityLogger.log("cdp", "enableDomain ended", metadata: [
+                    "method": method,
+                    "elapsedMs": "\(elapsedMs)",
+                    "result": "success"
+                ])
+            case .failure(let error):
+                ActivityLogger.log("cdp", "enableDomain ended", metadata: [
+                    "method": method,
+                    "elapsedMs": "\(elapsedMs)",
+                    "result": "failure",
+                    "error": error.localizedDescription
+                ])
+            }
             self?.enableDomains(Array(methods.dropFirst()), completion: completion)
         }
     }

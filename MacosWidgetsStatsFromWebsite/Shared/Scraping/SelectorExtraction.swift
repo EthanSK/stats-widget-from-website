@@ -73,6 +73,19 @@ enum SelectorExtractionJS {
             }
           })();
 
+          // v0.21.8 instrumentation-only additions: readyState, url, title.
+          // Read once into locals so the diagnostics never affect the
+          // existing payload shape (count, text, bbox, loginLikely).
+          const readyState = (() => {
+            try { return String(document.readyState || ''); } catch (_) { return ''; }
+          })();
+          const currentURL = (() => {
+            try { return String(window.location && window.location.href || ''); } catch (_) { return ''; }
+          })();
+          const docTitle = (() => {
+            try { return String(document.title || '').slice(0, 200); } catch (_) { return ''; }
+          })();
+
           try {
             const matches = document.querySelectorAll(selector);
             const element = matches[0] || null;
@@ -89,13 +102,19 @@ enum SelectorExtractionJS {
                 viewportHeight: window.innerHeight,
                 devicePixelRatio: window.devicePixelRatio || 1
               } : null,
-              loginLikely: loginLikely
+              loginLikely: loginLikely,
+              readyState: readyState,
+              url: currentURL,
+              title: docTitle
             };
           } catch (error) {
             return {
               count: -1,
               error: String(error && error.message ? error.message : error),
-              loginLikely: loginLikely
+              loginLikely: loginLikely,
+              readyState: readyState,
+              url: currentURL,
+              title: docTitle
             };
           }
         })()

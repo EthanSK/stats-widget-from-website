@@ -13,6 +13,16 @@ final class ChromeCDPScraper {
 
     private static var activeScrapers: [UUID: ChromeCDPScraper] = [:]
 
+    /// v0.21.8 observability: read-only count of in-flight scrapers so other
+    /// subsystems (browser teardown) can log whether they collided with one.
+    /// Stays main-thread because `activeScrapers` mutation goes through
+    /// `DispatchQueue.main.async` in `scrape(tracker:completion:)` and
+    /// `finish(_:)`. Worst case the count is briefly stale by ~1; that's
+    /// acceptable for diagnostic logging.
+    static var currentActiveScrapeCount: Int {
+        activeScrapers.count
+    }
+
     /// When the post-scrape tab count exceeds this, an orphan sweep fires
     /// automatically (v0.21.6 tab-leak mitigation, Ethan voice 3775).
     /// Healthy steady-state is 1–2 tabs (the headless about:blank
@@ -28,6 +38,22 @@ final class ChromeCDPScraper {
     private var client: ChromeCDPClient?
     private var timeout: DispatchWorkItem?
     private var didComplete = false
+
+    // v0.21.8 phase-level instrumentation (observability-only, no behavior change).
+    // Tracks where the scraper is in its pipeline so the 30s timeout-trip
+    // log can dump phase + elapsed-in-phase + lastCDPMethod + lastSelectorStatus.
+    // See ActivityLogger calls in start(), handleBrowserLaunch(), handleTarget(),
+    // handleSelectorPoll(), and armTimeout()'s expiration block.
+    private let scrapeStartedAt: Date = Date()
+    private var phaseStartedAt: Date = Date()
+    private var currentPhase: String = "init"
+    private var lastCDPMethod: String?
+    private var lastSelectorStatus: [String: Any]?
+    private var selectorPollAttempts: Int = 0
+    /// Cadence for selector-poll logs: emit the FIRST poll, the FINAL poll, plus
+    /// every Nth in between. Avoids spamming the activity log during normal
+    /// 2-3-poll scrapes while still giving signal on slow ones (10–60 polls).
+    private static let selectorPollLogEveryN: Int = 8
 
     static func scrape(tracker: Tracker, completion: @escaping Completion) {
         let scraper = ChromeCDPScraper(tracker: tracker, completion: completion)
@@ -66,10 +92,24 @@ final class ChromeCDPScraper {
 
         armTimeout()
         backgroundUseConfiguration = ChromeBrowserProfile.shared.beginBackgroundUse(profileName: tracker.browserProfile)
+        // v0.21.8 item #1: emit the full scrape-context at start so any later
+        // log entry can be cross-referenced via scrapeID + tracker. Replaces
+        // the prior single-line "started scrape" entry. Fields chosen to match
+        // the Codex audit recommendations (scrapeID, tracker, url, renderMode,
+        // selector hash, timeout, cdpPort).
         ActivityLogger.log("scrape", "started scrape", metadata: [
+            "scrapeID": scrapeID.uuidString,
             "tracker": tracker.id.uuidString,
-            "profile": tracker.browserProfile
+            "trackerName": tracker.name,
+            "profile": tracker.browserProfile,
+            "url": tracker.url,
+            "renderMode": tracker.renderMode.rawValue,
+            "selectorHash": Self.shortHash(tracker.selector),
+            "selectorLength": "\(tracker.selector.count)",
+            "timeoutSec": "30",
+            "cdpPort": "\(ChromeBrowserProfile.shared.configuration(profileName: tracker.browserProfile).cdpPort)"
         ])
+        beginPhase("ensureLaunched")
         ChromeBrowserProfile.shared.ensureLaunched(profileName: tracker.browserProfile) { [weak self] result in
             DispatchQueue.main.async {
                 self?.handleBrowserLaunch(result)
@@ -78,10 +118,24 @@ final class ChromeCDPScraper {
     }
 
     private func handleBrowserLaunch(_ result: Result<ChromeBrowserLaunchConfiguration, Error>) {
+        // v0.21.8 item #2: emit phase end with elapsedMs so we can tell whether
+        // a slow scrape was stuck waiting for Chrome to launch vs. stuck later
+        // in selector polling. wasCDPReachable + detectedMode are best-effort
+        // post-hoc checks against the now-running browser (probe is bounded;
+        // failure is silent so logging never affects scrape behavior).
+        let ensureElapsedMs = elapsedMsInPhase()
         switch result {
         case .success(let configuration):
             self.configuration = configuration
+            ActivityLogger.log("scrape", "ensureLaunched ended", metadata: [
+                "scrapeID": scrapeID.uuidString,
+                "tracker": tracker.id.uuidString,
+                "port": "\(configuration.cdpPort)",
+                "elapsedMs": "\(ensureElapsedMs)",
+                "result": "success"
+            ])
             ActivityLogger.log("scrape", "browser ready", metadata: [
+                "scrapeID": scrapeID.uuidString,
                 "tracker": tracker.id.uuidString,
                 "port": "\(configuration.cdpPort)"
             ])
@@ -103,13 +157,22 @@ final class ChromeCDPScraper {
                 return
             }
 
+            beginPhase("openTab")
             ChromeBrowserProfile.shared.openTab(url: url, configuration: configuration) { [weak self] result in
                 DispatchQueue.main.async {
                     self?.handleTarget(result)
                 }
             }
         case .failure(let error):
+            ActivityLogger.log("scrape", "ensureLaunched ended", metadata: [
+                "scrapeID": scrapeID.uuidString,
+                "tracker": tracker.id.uuidString,
+                "elapsedMs": "\(ensureElapsedMs)",
+                "result": "failure",
+                "error": error.localizedDescription
+            ])
             ActivityLogger.log("scrape", "browser launch failed", metadata: [
+                "scrapeID": scrapeID.uuidString,
                 "tracker": tracker.id.uuidString,
                 "error": error.localizedDescription
             ])
@@ -118,23 +181,49 @@ final class ChromeCDPScraper {
     }
 
     private func handleTarget(_ result: Result<ChromeBrowserTarget, Error>) {
+        let openTabElapsedMs = elapsedMsInPhase()
         switch result {
         case .success(let target):
             self.target = target
+            ActivityLogger.log("scrape", "openTab ended", metadata: [
+                "scrapeID": scrapeID.uuidString,
+                "tracker": tracker.id.uuidString,
+                "target": target.id,
+                "elapsedMs": "\(openTabElapsedMs)",
+                "result": "success"
+            ])
             ActivityLogger.log("scrape", "opened CDP target", metadata: [
+                "scrapeID": scrapeID.uuidString,
                 "tracker": tracker.id.uuidString,
                 "target": target.id
             ])
+            beginPhase("prepareOpenClawStylePage")
             let client = ChromeCDPClient(webSocketURL: target.webSocketDebuggerURL)
             self.client = client
             client.connect()
             client.prepareOpenClawStylePage { [weak self] in
                 DispatchQueue.main.async {
-                    self?.waitForSelector(deadline: Date().addingTimeInterval(25))
+                    guard let self else { return }
+                    let prepElapsedMs = self.elapsedMsInPhase()
+                    ActivityLogger.log("scrape", "prepareOpenClawStylePage ended", metadata: [
+                        "scrapeID": self.scrapeID.uuidString,
+                        "tracker": self.tracker.id.uuidString,
+                        "elapsedMs": "\(prepElapsedMs)"
+                    ])
+                    self.beginPhase("selectorPoll")
+                    self.waitForSelector(deadline: Date().addingTimeInterval(25))
                 }
             }
         case .failure(let error):
+            ActivityLogger.log("scrape", "openTab ended", metadata: [
+                "scrapeID": scrapeID.uuidString,
+                "tracker": tracker.id.uuidString,
+                "elapsedMs": "\(openTabElapsedMs)",
+                "result": "failure",
+                "error": error.localizedDescription
+            ])
             ActivityLogger.log("scrape", "target open failed", metadata: [
+                "scrapeID": scrapeID.uuidString,
                 "tracker": tracker.id.uuidString,
                 "error": error.localizedDescription
             ])
@@ -148,6 +237,8 @@ final class ChromeCDPScraper {
             return
         }
 
+        // v0.21.8: stamp last-CDP-method for timeout-dump cross-reference.
+        lastCDPMethod = "Runtime.evaluate(validationScript)"
         client.evaluate(SelectorExtractionJS.validationScript(for: tracker.selector)) { [weak self] result in
             DispatchQueue.main.async {
                 self?.handleSelectorPoll(result, deadline: deadline, lastStatus: lastStatus)
@@ -156,20 +247,28 @@ final class ChromeCDPScraper {
     }
 
     private func handleSelectorPoll(_ result: Result<Any?, Error>, deadline: Date, lastStatus: [String: Any]?) {
+        selectorPollAttempts += 1
+        let attempts = selectorPollAttempts
         switch result {
         case .success(let value):
             guard let status = SelectorExtractionJS.dictionary(from: value) else {
                 finish(.failure(SelectorExtractionError.invalidEvaluationResult))
                 return
             }
+            // v0.21.8 item #4: cache the most recent poll status so the
+            // timeout-trip log (armTimeout) can dump it as `lastSelectorStatus`.
+            lastSelectorStatus = status
 
             if let scriptError = status["error"] as? String, !scriptError.isEmpty {
+                logSelectorPoll(attempts: attempts, status: status, kind: "scriptError")
                 finish(.failure(SelectorExtractionError.invalidSelector(scriptError)))
                 return
             }
 
             let count = SelectorExtractionJS.intValue(status["count"]) ?? 0
             if count > 0 {
+                // Always log the "matched" poll — this is the final useful one.
+                logSelectorPoll(attempts: attempts, status: status, kind: "matched")
                 switch tracker.renderMode {
                 case .text:
                     scrapeText(from: status)
@@ -181,14 +280,32 @@ final class ChromeCDPScraper {
 
             guard Date() < deadline else {
                 let finalStatus = lastStatus ?? status
+                // Final log before giving up to fallback path.
+                logSelectorPoll(attempts: attempts, status: finalStatus, kind: "deadline")
                 attemptContentFallback(finalStatus: finalStatus)
                 return
+            }
+
+            // First poll + every Nth poll thereafter to keep log volume sane.
+            if attempts == 1 || attempts % Self.selectorPollLogEveryN == 0 {
+                logSelectorPoll(attempts: attempts, status: status, kind: "polling")
             }
 
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
                 self?.waitForSelector(deadline: deadline, lastStatus: status)
             }
         case .failure(let error):
+            // CDP evaluate failed — log every Nth (errors are rarer and noisier).
+            if attempts == 1 || attempts % Self.selectorPollLogEveryN == 0 {
+                ActivityLogger.log("scrape", "selector poll", metadata: [
+                    "scrapeID": scrapeID.uuidString,
+                    "tracker": tracker.id.uuidString,
+                    "kind": "evaluateError",
+                    "attempts": "\(attempts)",
+                    "elapsedMs": "\(elapsedMsInPhase())",
+                    "error": error.localizedDescription
+                ])
+            }
             guard Date() < deadline else {
                 finish(.failure(error))
                 return
@@ -200,12 +317,45 @@ final class ChromeCDPScraper {
         }
     }
 
+    /// v0.21.8 item #4: emit a single structured poll entry. Called for the
+    /// first poll, every Nth subsequent poll, the final "deadline" poll, and
+    /// the matched/scriptError terminal cases.
+    private func logSelectorPoll(attempts: Int, status: [String: Any], kind: String) {
+        var meta: [String: String] = [
+            "scrapeID": scrapeID.uuidString,
+            "tracker": tracker.id.uuidString,
+            "kind": kind,
+            "attempts": "\(attempts)",
+            "elapsedMs": "\(elapsedMsInPhase())"
+        ]
+        if let count = SelectorExtractionJS.intValue(status["count"]) {
+            meta["count"] = "\(count)"
+        }
+        if let readyState = status["readyState"] as? String {
+            meta["readyState"] = readyState
+        } else if let readyState = status["documentReadyState"] as? String {
+            meta["readyState"] = readyState
+        }
+        if let url = status["url"] as? String, !url.isEmpty {
+            meta["url"] = url
+        }
+        if let title = status["title"] as? String, !title.isEmpty {
+            meta["title"] = title
+        }
+        if let loginLikely = SelectorExtractionJS.boolValue(status["loginLikely"]) {
+            meta["loginLikely"] = loginLikely ? "true" : "false"
+        }
+        ActivityLogger.log("scrape", "selector poll", metadata: meta)
+    }
+
     private func attemptContentFallback(finalStatus: [String: Any]) {
         guard let client else {
             finishSelectorFailure(finalStatus: finalStatus)
             return
         }
 
+        lastCDPMethod = "Runtime.evaluate(contentFallbackScript)"
+        beginPhase("contentFallback")
         client.evaluate(
             SelectorExtractionJS.contentFallbackScript(
                 trackerName: tracker.name,
@@ -287,6 +437,8 @@ final class ChromeCDPScraper {
             return
         }
 
+        lastCDPMethod = "Runtime.evaluate(snapshotRect)"
+        beginPhase("snapshotRect")
         client.evaluate(chromeSnapshotRectScript(for: tracker.selector, hideElements: tracker.hideElements)) { [weak self] result in
             DispatchQueue.main.async {
                 self?.handleSnapshotRect(result)
@@ -328,6 +480,8 @@ final class ChromeCDPScraper {
             "scale": 1
         ]
 
+        lastCDPMethod = "Page.captureScreenshot"
+        beginPhase("captureScreenshot")
         client.captureScreenshot(clip: clip) { [weak self] result in
             DispatchQueue.main.async {
                 self?.handleSnapshotData(result)
@@ -414,10 +568,83 @@ final class ChromeCDPScraper {
     private func armTimeout() {
         let item = DispatchWorkItem { [weak self] in
             guard let self else { return }
+            // v0.21.8 item #5 (CRITICAL): when the 30s timeout fires, dump
+            // everything we know about where the scraper was stuck so the
+            // next stale-tracker incident is diagnosable. Captures: which
+            // phase we were in, how long we'd been there, total elapsed,
+            // last CDP method we issued, last selector poll status JSON
+            // (count/readyState/url/loginLikely), Chrome configuration.
+            // This is the single highest-value entry in the v0.21.8
+            // instrumentation pass — it's the log entry that should have
+            // existed during the 2026-05-22 22:11Z "claude weekly usij"
+            // stale incident.
+            var meta: [String: String] = [
+                "scrapeID": self.scrapeID.uuidString,
+                "tracker": self.tracker.id.uuidString,
+                "trackerName": self.tracker.name,
+                "url": self.tracker.url,
+                "currentPhase": self.currentPhase,
+                "phaseElapsedMs": "\(self.elapsedMsInPhase())",
+                "totalElapsedMs": "\(self.elapsedMsSinceStart())",
+                "selectorPollAttempts": "\(self.selectorPollAttempts)",
+                "lastCDPMethod": self.lastCDPMethod ?? ""
+            ]
+            if let configuration = self.configuration {
+                meta["cdpPort"] = "\(configuration.cdpPort)"
+                meta["profile"] = configuration.profileName
+            }
+            if let target = self.target {
+                meta["target"] = target.id
+            }
+            if let status = self.lastSelectorStatus {
+                if let count = SelectorExtractionJS.intValue(status["count"]) {
+                    meta["lastCount"] = "\(count)"
+                }
+                if let readyState = status["readyState"] as? String {
+                    meta["lastReadyState"] = readyState
+                }
+                if let url = status["url"] as? String, !url.isEmpty {
+                    meta["lastDocURL"] = url
+                }
+                if let loginLikely = SelectorExtractionJS.boolValue(status["loginLikely"]) {
+                    meta["lastLoginLikely"] = loginLikely ? "true" : "false"
+                }
+            }
+            ActivityLogger.log("scrape", "timeout fired", metadata: meta)
             self.finish(.failure(ScraperError.navigationFailed("Timed out loading \(self.tracker.url).")))
         }
         timeout = item
         DispatchQueue.main.asyncAfter(deadline: .now() + 30, execute: item)
+    }
+
+    // MARK: - v0.21.8 phase + helpers
+
+    /// Record entering a new pipeline phase so the timeout-trip log can
+    /// report where we were stuck. Resets `phaseStartedAt` so per-phase
+    /// elapsedMs is meaningful even after a long preceding phase.
+    private func beginPhase(_ name: String) {
+        currentPhase = name
+        phaseStartedAt = Date()
+    }
+
+    private func elapsedMsInPhase() -> Int {
+        Int(Date().timeIntervalSince(phaseStartedAt) * 1000)
+    }
+
+    private func elapsedMsSinceStart() -> Int {
+        Int(Date().timeIntervalSince(scrapeStartedAt) * 1000)
+    }
+
+    /// Stable short hash of a CSS selector, used so logs can correlate scrapes
+    /// against the same selector without spilling the full selector text into
+    /// every entry. Java's String.hashCode-style algorithm (deterministic across
+    /// machines, no Foundation dependency, no crypto needed).
+    private static func shortHash(_ value: String) -> String {
+        var hash: UInt32 = 5381
+        for byte in value.utf8 {
+            hash = (hash &* 33) &+ UInt32(byte)
+        }
+        return String(hash, radix: 16)
     }
 
     private func finish(_ result: Result<TrackerReading, Error>) {
@@ -526,8 +753,11 @@ final class ChromeCDPScraper {
 
     private func logMetadata(for result: Result<TrackerReading, Error>) -> [String: String] {
         var metadata: [String: String] = [
+            "scrapeID": scrapeID.uuidString,
             "tracker": tracker.id.uuidString,
-            "profile": tracker.browserProfile
+            "profile": tracker.browserProfile,
+            "totalElapsedMs": "\(elapsedMsSinceStart())",
+            "selectorPollAttempts": "\(selectorPollAttempts)"
         ]
 
         switch result {

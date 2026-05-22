@@ -136,6 +136,21 @@ final class ChromeBrowserProfile {
                 // but no window ever appears (the failure mode that caused v0.12.10's
                 // "identify is active but no Chrome opens" bug).
                 if isExistingInstanceHeadless(configuration: configuration) {
+                    // v0.21.8 item #6: log the foreground teardown decision
+                    // with the cross-references that matter — backgroundUseCount
+                    // (are scrapers actively using this profile?), activeScrapeCount
+                    // (will teardown collide with an in-flight scrape?), and
+                    // caller=foreground-identify so the logs distinguish this
+                    // teardown reason from end-of-scrape teardown later.
+                    let backgroundUseCount = queue.sync { backgroundUseCounts[configuration.cdpPort] ?? 0 }
+                    ActivityLogger.log("browser", "foreground teardown decision", metadata: [
+                        "profile": configuration.profileName,
+                        "port": "\(configuration.cdpPort)",
+                        "decision": "teardownHeadless",
+                        "caller": "foreground-identify",
+                        "backgroundUseCount": "\(backgroundUseCount)",
+                        "activeScrapeCount": "\(ChromeCDPScraper.currentActiveScrapeCount)"
+                    ])
                     ActivityLogger.log("browser", "tearing down headless Chrome to spawn headed instance for foreground identify", metadata: [
                         "profile": configuration.profileName,
                         "port": "\(configuration.cdpPort)"
@@ -668,6 +683,11 @@ final class ChromeBrowserProfile {
         completion: @escaping () -> Void
     ) {
         let port = configuration.cdpPort
+        // v0.21.8 items #7/#10: log teardown start so we can spot the (rare
+        // but historically painful) case of a teardown colliding with an
+        // in-flight scrape — `activeScrapers.count` is the cross-reference.
+        let startedAt = Date()
+        let activeScrapeCount = ChromeCDPScraper.currentActiveScrapeCount
 
         queue.async { [weak self] in
             guard let self else {
@@ -675,10 +695,22 @@ final class ChromeBrowserProfile {
                 return
             }
 
+            let preTrackedProcessCount = self.backgroundLaunchedProcesses.count
+            let preTrackedApplicationCount = self.backgroundLaunchedApplications.count
+
+            ActivityLogger.log("browser", "terminateHeadlessInstance started", metadata: [
+                "profile": configuration.profileName,
+                "port": "\(port)",
+                "activeScrapeCount": "\(activeScrapeCount)",
+                "trackedProcesses": "\(preTrackedProcessCount)",
+                "trackedApplications": "\(preTrackedApplicationCount)"
+            ])
+
             // Terminate any in-process tracked headless first.
             let trackedProcess = self.backgroundLaunchedProcesses.removeValue(forKey: port)
             let trackedApplication = self.backgroundLaunchedApplications.removeValue(forKey: port)
             self.backgroundUseCounts[port] = nil
+            let trackedProcessPID = (trackedProcess?.isRunning == true) ? trackedProcess?.processIdentifier : nil
 
             if let trackedProcess, trackedProcess.isRunning {
                 trackedProcess.terminate()
@@ -701,15 +733,31 @@ final class ChromeBrowserProfile {
                 self.queue.async {
                     // Non-sandbox fallback: if CDP close did not make the port go away,
                     // resolve via ps and SIGTERM the parent.
+                    var fallbackKillPID: pid_t? = nil
                     if self.isCDPReachable(configuration: configuration),
                        let pid = self.findDedicatedBrowserPID(configuration: configuration) {
+                        fallbackKillPID = pid
                         kill(pid, SIGTERM)
                     }
 
+                    let cdpGoneStartedAt = Date()
                     // Wait briefly for the CDP port to actually go down so the subsequent
                     // launch sees a non-reachable port. waitUntilCDPGone polls every 100ms
                     // up to 3s.
                     self.waitUntilCDPGone(configuration: configuration, deadline: Date().addingTimeInterval(3)) {
+                        let waitMs = Int(Date().timeIntervalSince(cdpGoneStartedAt) * 1000)
+                        let finalCDPReachable = self.isCDPReachable(configuration: configuration)
+                        let totalElapsedMs = Int(Date().timeIntervalSince(startedAt) * 1000)
+                        ActivityLogger.log("browser", "terminateHeadlessInstance ended", metadata: [
+                            "profile": configuration.profileName,
+                            "port": "\(port)",
+                            "totalElapsedMs": "\(totalElapsedMs)",
+                            "waitMsUntilCDPGone": "\(waitMs)",
+                            "finalCDPReachable": finalCDPReachable ? "true" : "false",
+                            "trackedProcessPID": trackedProcessPID.map(String.init) ?? "",
+                            "fallbackKillPID": fallbackKillPID.map(String.init) ?? "",
+                            "activeScrapeCountAtEnd": "\(ChromeCDPScraper.currentActiveScrapeCount)"
+                        ])
                         completion()
                     }
                 }
@@ -897,12 +945,28 @@ final class ChromeBrowserProfile {
         configuration: ChromeBrowserLaunchConfiguration,
         completion: @escaping (Result<ChromeBrowserTarget, Error>) -> Void
     ) {
+        // v0.21.8 item #8: requestID + queueDepth let us trace a single openTab
+        // call through the serialized target-creation pipeline. The same id is
+        // logged at enqueue and dequeue so a stuck queue (the v0.21.5 failure
+        // mode that wedged `targetCreationPortsInFlight`) shows up as an
+        // "enqueued" entry with no matching "dequeued" entry within the
+        // outer scrape's 30s timeout.
+        let requestID = UUID().uuidString.prefix(8)
         queue.async { [weak self] in
             guard let self else { return }
             let port = configuration.cdpPort
             self.pendingTargetCreations[port, default: []].append(
                 PendingTargetCreation(url: url, completion: completion)
             )
+            let queueDepth = self.pendingTargetCreations[port]?.count ?? 0
+            let inFlight = self.targetCreationPortsInFlight.contains(port)
+            ActivityLogger.log("browser", "openTab enqueued", metadata: [
+                "profile": configuration.profileName,
+                "port": "\(port)",
+                "requestID": String(requestID),
+                "queueDepth": "\(queueDepth)",
+                "inFlight": inFlight ? "true" : "false"
+            ])
             self.drainTargetCreationQueue(configuration: configuration)
         }
     }
@@ -918,6 +982,12 @@ final class ChromeBrowserProfile {
         let request = queue.removeFirst()
         pendingTargetCreations[port] = queue.isEmpty ? nil : queue
         targetCreationPortsInFlight.insert(port)
+        let remainingDepth = pendingTargetCreations[port]?.count ?? 0
+        ActivityLogger.log("browser", "openTab dequeued", metadata: [
+            "profile": configuration.profileName,
+            "port": "\(port)",
+            "remainingQueueDepth": "\(remainingDepth)"
+        ])
 
         createTargetRequest(url: request.url, configuration: configuration, method: "PUT") { [weak self] result in
             request.completion(result)
@@ -1321,10 +1391,33 @@ final class ChromeBrowserProfile {
         // 60s, far too long given the outer 30s scraper timeout.
         request.timeoutInterval = 10
 
+        // v0.21.8 item #3: per-request observability around `/json/new`. The
+        // start log lets us measure how often the PUT→GET fallback fires
+        // (some Chromium builds reject PUT). The end log captures elapsedMs +
+        // HTTP status so we can spot a Chromium that's wedged at /json/new
+        // (the failure mode that backed up `targetCreationPortsInFlight` in
+        // the v0.21.5 incident).
+        let startedAt = Date()
+        ActivityLogger.log("browser", "createTargetRequest started", metadata: [
+            "profile": configuration.profileName,
+            "port": "\(configuration.cdpPort)",
+            "method": method,
+            "url": targetURL.absoluteString
+        ])
+
         let fallbackMethod: String? = (method == "PUT") ? "GET" : nil
         let attemptSession = ChromeBrowserProfile.cdpRequestSession
         let primaryTask = attemptSession.dataTask(with: request) { [weak self] data, response, error in
+            let elapsedMs = Int(Date().timeIntervalSince(startedAt) * 1000)
             if let error {
+                ActivityLogger.log("browser", "createTargetRequest ended", metadata: [
+                    "profile": configuration.profileName,
+                    "port": "\(configuration.cdpPort)",
+                    "method": method,
+                    "elapsedMs": "\(elapsedMs)",
+                    "result": fallbackMethod != nil ? "errorWithFallback" : "errorNoFallback",
+                    "error": error.localizedDescription
+                ])
                 // v0.21.5 — restore the PUT→GET fallback that was dropped
                 // in c2aa024. Some Chromium builds reject the PUT verb on
                 // `/json/new` with an error; the legacy GET form still
@@ -1344,6 +1437,14 @@ final class ChromeBrowserProfile {
 
             if let httpResponse = response as? HTTPURLResponse,
                !(200..<300).contains(httpResponse.statusCode) {
+                ActivityLogger.log("browser", "createTargetRequest ended", metadata: [
+                    "profile": configuration.profileName,
+                    "port": "\(configuration.cdpPort)",
+                    "method": method,
+                    "elapsedMs": "\(elapsedMs)",
+                    "status": "\(httpResponse.statusCode)",
+                    "result": fallbackMethod != nil ? "httpErrorWithFallback" : "httpErrorNoFallback"
+                ])
                 if let fallbackMethod, let self {
                     self.createTargetRequest(
                         url: targetURL,
@@ -1362,10 +1463,27 @@ final class ChromeBrowserProfile {
                   let id = json["id"] as? String,
                   let webSocketString = json["webSocketDebuggerUrl"] as? String,
                   let webSocketURL = URL(string: webSocketString) else {
+                ActivityLogger.log("browser", "createTargetRequest ended", metadata: [
+                    "profile": configuration.profileName,
+                    "port": "\(configuration.cdpPort)",
+                    "method": method,
+                    "elapsedMs": "\(elapsedMs)",
+                    "status": "\((response as? HTTPURLResponse)?.statusCode ?? 0)",
+                    "result": "invalidResponse"
+                ])
                 completion(.failure(ChromeBrowserProfileError.invalidCDPResponse))
                 return
             }
 
+            ActivityLogger.log("browser", "createTargetRequest ended", metadata: [
+                "profile": configuration.profileName,
+                "port": "\(configuration.cdpPort)",
+                "method": method,
+                "elapsedMs": "\(elapsedMs)",
+                "status": "\((response as? HTTPURLResponse)?.statusCode ?? 200)",
+                "result": "success",
+                "target": id
+            ])
             completion(.success(ChromeBrowserTarget(id: id, webSocketDebuggerURL: webSocketURL)))
         }
         primaryTask.resume()
