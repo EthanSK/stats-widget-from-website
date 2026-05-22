@@ -30,6 +30,13 @@ struct DualStatCompareTemplate: View {
                         .lineLimit(1)
                         .numericValueTransition()
                         .trackerGradientStyle(item)
+                    // v0.21.9: per-slot secondary text — hidden by default.
+                    if let secondary = item.secondaryTextJoined {
+                        Text(secondary)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
+                    }
                     SparklineView(values: item.sparkline, tint: item.accent)
                         .frame(height: 28)
                     Text(item.updatedText)

@@ -1717,6 +1717,8 @@ private enum MCPToolDispatcher {
                 "onSuccess": tracker.hooks.onSuccess.map(hookPayload),
                 "onFailure": tracker.hooks.onFailure.map(hookPayload)
             ],
+            // v0.21.9: secondary elements (multi-element trackers).
+            "secondaryElements": tracker.secondaryElements.map(secondaryElementPayload),
             "reading": AppGroupStore.reading(for: tracker.id).map { readingPayload($0, includeHistory: includeHistory) } as Any? ?? NSNull()
         ]
 
@@ -1744,12 +1746,44 @@ private enum MCPToolDispatcher {
             "lastUpdatedAt": reading.lastUpdatedAt.map { ISO8601DateFormatter().string(from: $0) } as Any? ?? NSNull(),
             "status": reading.status.rawValue,
             "lastError": reading.lastError as Any? ?? NSNull(),
-            "consecutiveFailureCount": reading.consecutiveFailureCount as Any? ?? NSNull()
+            "consecutiveFailureCount": reading.consecutiveFailureCount as Any? ?? NSNull(),
+            // v0.21.9: per-element secondary values from the same scrape cycle.
+            "secondaryValues": reading.secondaryValues.mapValues(secondaryValuePayload)
         ]
         if includeHistory {
             payload["sparkline"] = reading.sparkline
         }
         return payload
+    }
+
+    /// v0.21.9: JSON payload for one secondary `TrackerElement`. Mirrors
+    /// the primary element fields exposed at the top level of trackerPayload.
+    private static func secondaryElementPayload(_ element: TrackerElement) -> [String: Any] {
+        var payload: [String: Any] = [
+            "id": element.id.uuidString,
+            "name": element.name,
+            "selector": element.selector,
+            "contentSelectorHint": element.contentSelectorHint as Any? ?? NSNull(),
+            "hideElements": element.hideElements,
+            "valueParser": [
+                "type": element.valueParser.type.rawValue,
+                "stripChars": element.valueParser.stripChars
+            ]
+        ]
+        if let box = element.elementBoundingBox {
+            payload["elementBoundingBox"] = boundingBoxPayload(box)
+        } else {
+            payload["elementBoundingBox"] = NSNull()
+        }
+        return payload
+    }
+
+    private static func secondaryValuePayload(_ value: TrackerSecondaryValue) -> [String: Any] {
+        [
+            "value": value.value as Any? ?? NSNull(),
+            "numeric": value.numeric as Any? ?? NSNull(),
+            "lastError": value.lastError as Any? ?? NSNull()
+        ]
     }
 
     private static func widgetConfigurationPayload(_ configuration: WidgetConfiguration) -> [String: Any] {
@@ -1761,7 +1795,11 @@ private enum MCPToolDispatcher {
             "layout": configuration.layout.rawValue,
             "trackerIDs": configuration.trackerIDs.map(\.uuidString),
             "showSparklines": configuration.showSparklines,
-            "showLabels": configuration.showLabels
+            "showLabels": configuration.showLabels,
+            // v0.21.9: per-slot secondary-element bindings, JSON-safe shape.
+            "secondaryElementIDsBySlot": configuration.secondaryElementIDsBySlot.mapValues { ids in
+                ids.map(\.uuidString)
+            }
         ]
     }
 

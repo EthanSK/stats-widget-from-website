@@ -422,13 +422,122 @@ final class ChromeCDPScraper {
             return
         }
 
-        let reading = TrackerReading(
+        let primaryReading = TrackerReading(
             currentValue: value,
             currentNumeric: tracker.valueParser.parseNumeric(from: value),
             lastUpdatedAt: Date(),
             status: .ok
         )
-        finish(.success(reading))
+
+        // v0.21.9: scrape any secondary elements from the same loaded DOM
+        // before completing. Single-element trackers (the default case)
+        // skip this entirely and finish exactly as before — no extra
+        // latency, no extra logging, no extra CDP traffic.
+        guard !tracker.secondaryElements.isEmpty else {
+            finish(.success(primaryReading))
+            return
+        }
+
+        scrapeSecondaryElements(primaryReading: primaryReading)
+    }
+
+    /// v0.21.9: extract every secondary element's text from the SAME loaded
+    /// page. One CDP `Runtime.evaluate` per element, run sequentially so
+    /// the activity log stays readable. Failures on individual elements
+    /// are best-effort — they get stored as `lastError` on the per-element
+    /// `TrackerSecondaryValue` but never mark the parent reading broken.
+    /// The primary already succeeded by the time we get here.
+    private func scrapeSecondaryElements(primaryReading: TrackerReading) {
+        guard let client else {
+            finish(.success(primaryReading))
+            return
+        }
+
+        beginPhase("secondaryElements")
+        ActivityLogger.log("scrape", "scraping secondary elements", metadata: [
+            "scrapeID": scrapeID.uuidString,
+            "tracker": tracker.id.uuidString,
+            "count": "\(tracker.secondaryElements.count)"
+        ])
+
+        let elements = tracker.secondaryElements
+        var collected: [String: TrackerSecondaryValue] = [:]
+        var elementIndex = 0
+
+        func processNext() {
+            guard elementIndex < elements.count else {
+                var reading = primaryReading
+                reading.secondaryValues = collected
+                finish(.success(reading))
+                return
+            }
+
+            let element = elements[elementIndex]
+            elementIndex += 1
+            lastCDPMethod = "Runtime.evaluate(secondaryElementText)"
+            client.evaluate(SelectorExtractionJS.validationScript(for: element.selector)) { result in
+                DispatchQueue.main.async {
+                    switch result {
+                    case .success(let value):
+                        guard let status = SelectorExtractionJS.dictionary(from: value) else {
+                            collected[element.id.uuidString] = TrackerSecondaryValue(
+                                lastError: "Invalid evaluation result"
+                            )
+                            processNext()
+                            return
+                        }
+                        if let scriptError = status["error"] as? String, !scriptError.isEmpty {
+                            collected[element.id.uuidString] = TrackerSecondaryValue(lastError: scriptError)
+                            processNext()
+                            return
+                        }
+                        let count = SelectorExtractionJS.intValue(status["count"]) ?? 0
+                        guard count > 0 else {
+                            collected[element.id.uuidString] = TrackerSecondaryValue(
+                                lastError: "Selector did not match"
+                            )
+                            processNext()
+                            return
+                        }
+                        let text = ((status["text"] as? String) ?? "")
+                            .trimmingCharacters(in: .whitespacesAndNewlines)
+                        guard !text.isEmpty else {
+                            collected[element.id.uuidString] = TrackerSecondaryValue(
+                                lastError: "Element has no text"
+                            )
+                            processNext()
+                            return
+                        }
+                        collected[element.id.uuidString] = TrackerSecondaryValue(
+                            value: text,
+                            numeric: element.valueParser.parseNumeric(from: text),
+                            lastError: nil
+                        )
+                        ActivityLogger.log("scrape", "secondary element scraped", metadata: [
+                            "scrapeID": self.scrapeID.uuidString,
+                            "tracker": self.tracker.id.uuidString,
+                            "elementID": element.id.uuidString,
+                            "elementName": element.name,
+                            "value": text
+                        ])
+                        processNext()
+                    case .failure(let error):
+                        collected[element.id.uuidString] = TrackerSecondaryValue(
+                            lastError: error.localizedDescription
+                        )
+                        ActivityLogger.log("scrape", "secondary element failed", metadata: [
+                            "scrapeID": self.scrapeID.uuidString,
+                            "tracker": self.tracker.id.uuidString,
+                            "elementID": element.id.uuidString,
+                            "error": error.localizedDescription
+                        ])
+                        processNext()
+                    }
+                }
+            }
+        }
+
+        processNext()
     }
 
     private func scrapeSnapshot() {

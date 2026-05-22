@@ -364,6 +364,24 @@ private struct WidgetConfigurationEditorView: View {
                                     trackers: trackers,
                                     selection: slotBinding(for: slotIndex)
                                 )
+
+                                // v0.21.9: secondary-text picker. Surfaces
+                                // the tracker's secondary elements (if any)
+                                // so the user can render extra values next
+                                // to the main one (e.g. "resets in 4d"
+                                // beside "73% used"). Hidden when the
+                                // bound tracker has zero secondary elements
+                                // — the typical case for existing trackers
+                                // so the editor stays uncluttered.
+                                if let trackerID = currentSlotTrackerID(slotIndex),
+                                   let tracker = trackers.first(where: { $0.id == trackerID }),
+                                   !tracker.secondaryElements.isEmpty {
+                                    SecondaryElementPicker(
+                                        slotIndex: slotIndex,
+                                        tracker: tracker,
+                                        selectedIDs: secondaryElementSlotBinding(for: slotIndex)
+                                    )
+                                }
                             }
                         }
                     }
@@ -530,6 +548,31 @@ private struct WidgetConfigurationEditorView: View {
         onSave(savedConfiguration)
         dismiss()
     }
+
+    /// v0.21.9: tracker ID currently bound to the given slot (or nil).
+    /// Used by the per-slot secondary-element picker to look up the
+    /// tracker and read its `secondaryElements` for the dropdown options.
+    private func currentSlotTrackerID(_ slotIndex: Int) -> UUID? {
+        guard slotIndex < draft.trackerIDs.count else { return nil }
+        return draft.trackerIDs[slotIndex]
+    }
+
+    /// v0.21.9: SwiftUI binding for the per-slot list of selected secondary
+    /// element IDs. Writes back into `draft.secondaryElementIDsBySlot`
+    /// keyed by `String(slotIndex)`. Empty list = no secondary text on
+    /// this slot.
+    private func secondaryElementSlotBinding(for slotIndex: Int) -> Binding<[UUID]> {
+        Binding<[UUID]>(
+            get: { draft.secondaryElementIDsBySlot[String(slotIndex)] ?? [] },
+            set: { newValue in
+                if newValue.isEmpty {
+                    draft.secondaryElementIDsBySlot.removeValue(forKey: String(slotIndex))
+                } else {
+                    draft.secondaryElementIDsBySlot[String(slotIndex)] = newValue
+                }
+            }
+        )
+    }
 }
 
 // MARK: - v0.21.7 helpers
@@ -597,6 +640,79 @@ private struct TrackerSlotRadioGroup: View {
         .padding(10)
         .background(Color.secondary.opacity(0.06))
         .cornerRadius(8)
+    }
+}
+
+/// v0.21.9: secondary-text picker for a single widget slot. Renders a
+/// list of toggles, one per `tracker.secondaryElements` entry, so the
+/// user can opt-in any number of secondary values to render alongside
+/// the primary on that slot. Empty selection = no secondary text on
+/// the slot (the historical behavior every existing widget gets).
+///
+/// Multiple elements can be selected; the widget rendering layer joins
+/// them with a separator. Order follows the tracker's `secondaryElements`
+/// array (the order the user added them).
+private struct SecondaryElementPicker: View {
+    let slotIndex: Int
+    let tracker: Tracker
+    @Binding var selectedIDs: [UUID]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Secondary text for slot \(slotIndex + 1)")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+            ForEach(tracker.secondaryElements) { element in
+                Toggle(isOn: bindingForElement(element.id)) {
+                    HStack(spacing: 6) {
+                        Text(element.name.isEmpty ? "Unnamed element" : element.name)
+                            .font(.caption)
+                        Text("·")
+                            .foregroundStyle(.tertiary)
+                        Text(element.selector)
+                            .font(.system(.caption2, design: .monospaced))
+                            .foregroundStyle(.tertiary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                }
+                .toggleStyle(.checkbox)
+            }
+            if tracker.secondaryElements.isEmpty {
+                Text("Tracker has no secondary elements. Add one in the tracker editor.")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+            } else {
+                Text("Picked secondary text appears beside the main value (templates that support it) or below.")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
+        }
+        .padding(8)
+        .background(Color.secondary.opacity(0.04))
+        .cornerRadius(6)
+        .padding(.leading, 10)
+    }
+
+    private func bindingForElement(_ elementID: UUID) -> Binding<Bool> {
+        Binding<Bool>(
+            get: { selectedIDs.contains(elementID) },
+            set: { isOn in
+                if isOn {
+                    if !selectedIDs.contains(elementID) {
+                        // Preserve the tracker.secondaryElements order so the
+                        // widget renders them in the same order they appear
+                        // in the tracker editor.
+                        let order = tracker.secondaryElements.map(\.id)
+                        var union = Set(selectedIDs)
+                        union.insert(elementID)
+                        selectedIDs = order.filter { union.contains($0) }
+                    }
+                } else {
+                    selectedIDs.removeAll { $0 == elementID }
+                }
+            }
+        )
     }
 }
 

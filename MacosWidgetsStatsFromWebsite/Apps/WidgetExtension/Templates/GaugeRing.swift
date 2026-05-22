@@ -28,6 +28,14 @@ struct GaugeRingTemplate: View {
                 .font(.caption)
                 .lineLimit(1)
                 .foregroundStyle(.secondary)
+            // v0.21.9: secondary text — hidden by default.
+            if let secondary = item?.secondaryTextJoined {
+                Text(secondary)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .multilineTextAlignment(.center)
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .padding(12)

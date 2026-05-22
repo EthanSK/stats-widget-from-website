@@ -73,6 +73,12 @@ struct Tracker: Codable, Identifiable {
     var url: String
     var browserProfile: String
     var renderMode: RenderMode
+    /// Primary selector — this is "element 0" in the multi-element model
+    /// introduced in v0.21.9. Existing trackers keep working unchanged
+    /// because the primary fields live at the top level of Tracker (no
+    /// wrap-in-array migration required). When the user adds a "secondary
+    /// element" via the tracker editor, it lands in `secondaryElements`
+    /// below; the primary stays here.
     var selector: String
     var contentSelectorHint: String?
     var elementBoundingBox: ElementBoundingBox?
@@ -92,6 +98,14 @@ struct Tracker: Codable, Identifiable {
     /// `applyMissingDefaultHookScaffold(_:)` in AppGroupStore for the
     /// migration that backfills it.
     var hooks: TrackerHooks
+    /// Additional elements scraped from the SAME page on each scrape cycle
+    /// (v0.21.9, Ethan voice 3797). Default empty — a tracker with no
+    /// secondary elements behaves exactly as it did pre-v0.21.9. The
+    /// primary element (top-level selector/valueParser/etc) is element 0;
+    /// these are 1, 2, 3, ... The widget config UI exposes them as
+    /// secondary-text slots so the user can pick which one to render
+    /// alongside the primary value (e.g. "claude usage 73% (resets in 4d)").
+    var secondaryElements: [TrackerElement]
 
     init(
         id: UUID = UUID(),
@@ -111,7 +125,8 @@ struct Tracker: Codable, Identifiable {
         valueParser: ValueParser = ValueParser(),
         history: TrackerHistory = TrackerHistory(),
         hideElements: [String] = [],
-        hooks: TrackerHooks? = nil
+        hooks: TrackerHooks? = nil,
+        secondaryElements: [TrackerElement] = []
     ) {
         self.id = id
         self.name = name
@@ -131,6 +146,7 @@ struct Tracker: Codable, Identifiable {
         self.history = history
         self.hideElements = hideElements
         self.hooks = hooks ?? TrackerHooks.defaultScaffold()
+        self.secondaryElements = secondaryElements
     }
 
     init(from decoder: Decoder) throws {
@@ -170,11 +186,70 @@ struct Tracker: Codable, Identifiable {
         // scaffold for existing trackers on first load (so users get the
         // self-heal benefit without opting in).
         hooks = try container.decodeIfPresent(TrackerHooks.self, forKey: .hooks) ?? TrackerHooks()
+        // secondaryElements was added in 0.21.9 (Ethan voice 3797). Pre-0.21.9
+        // trackers.json files predate the key so default to []. Backcompat-
+        // critical: an empty array means the tracker behaves exactly as it
+        // did before — single-element scrape, single-element widget binding.
+        secondaryElements = try container.decodeIfPresent([TrackerElement].self, forKey: .secondaryElements) ?? []
     }
 
     private static func normalizedContentSelectorHint(_ value: String?) -> String? {
         let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return trimmed.isEmpty ? nil : trimmed
+    }
+}
+
+/// One secondary element on a tracker (v0.21.9+). The primary element's
+/// fields live on Tracker itself (selector, valueParser, elementBoundingBox,
+/// hideElements, contentSelectorHint) for zero-migration backcompat — secondary
+/// elements get their own copy of those fields plus a stable UUID + a
+/// human-readable name the widget config UI can show in pickers.
+///
+/// All elements share the tracker's URL and browserProfile: the scrape
+/// pipeline loads the page once and then queries each element's selector
+/// against the same loaded DOM. This is the efficient one-navigation-N-
+/// extractions design Ethan asked for (no extra latency for the primary
+/// element when secondaries are present, because we'd be navigating anyway).
+struct TrackerElement: Codable, Identifiable, Equatable {
+    var id: UUID
+    /// Human-readable label shown in the widget-config secondary-text picker.
+    /// Auto-generated as "Element 2", "Element 3", ... when the user adds one
+    /// via the Identify Element flow, but they can rename it.
+    var name: String
+    var selector: String
+    var contentSelectorHint: String?
+    var elementBoundingBox: ElementBoundingBox?
+    var valueParser: ValueParser
+    var hideElements: [String]
+
+    init(
+        id: UUID = UUID(),
+        name: String = "",
+        selector: String = "",
+        contentSelectorHint: String? = nil,
+        elementBoundingBox: ElementBoundingBox? = nil,
+        valueParser: ValueParser = ValueParser(),
+        hideElements: [String] = []
+    ) {
+        self.id = id
+        self.name = name
+        self.selector = selector
+        let trimmedHint = contentSelectorHint?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        self.contentSelectorHint = trimmedHint.isEmpty ? nil : trimmedHint
+        self.elementBoundingBox = elementBoundingBox
+        self.valueParser = valueParser
+        self.hideElements = hideElements
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        name = try container.decodeIfPresent(String.self, forKey: .name) ?? ""
+        selector = try container.decodeIfPresent(String.self, forKey: .selector) ?? ""
+        contentSelectorHint = try container.decodeIfPresent(String.self, forKey: .contentSelectorHint)
+        elementBoundingBox = try container.decodeIfPresent(ElementBoundingBox.self, forKey: .elementBoundingBox)
+        valueParser = try container.decodeIfPresent(ValueParser.self, forKey: .valueParser) ?? ValueParser()
+        hideElements = try container.decodeIfPresent([String].self, forKey: .hideElements) ?? []
     }
 }
 

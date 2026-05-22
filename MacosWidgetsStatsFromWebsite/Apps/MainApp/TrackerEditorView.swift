@@ -25,6 +25,11 @@ struct TrackerEditorView: View {
     @State private var previewState: PreviewState = .idle
     @State private var previewSelector: String = ""
     @State private var refreshIntervalUnit: RefreshIntervalUnit = .minutes
+    /// v0.21.9: which element the active Identify-in-Chrome flow is
+    /// capturing for. `.primary` → the existing top-level fields; `.secondary(id)`
+    /// → append/update a secondary element. Set right before `browserPresentation`
+    /// fires; consulted by `applyCapturedElement(_:)` once Chrome returns a pick.
+    @State private var identifyTarget: IdentifyTarget = .primary
 
     let mode: Mode
     let autoStartIdentify: Bool
@@ -188,6 +193,17 @@ struct TrackerEditorView: View {
                         if !trimmedSelector.isEmpty {
                             previewSection
                         }
+
+                        // v0.21.9: secondary elements editor. Hidden until
+                        // the primary element has been captured (no point
+                        // adding "secondary text" before the main text
+                        // exists). Renders one row per element with the
+                        // selector + a rename field + a remove button, plus
+                        // a "+ Add secondary element" button that opens
+                        // Identify-in-Chrome for the new element.
+                        if !trimmedSelector.isEmpty {
+                            secondaryElementsSection
+                        }
                     }
                 } header: {
                     Text("Capture")
@@ -226,7 +242,17 @@ struct TrackerEditorView: View {
             draft.refreshIntervalSec = newMode.defaultRefreshIntervalSec
         }
         .sheet(item: $browserPresentation) { presentation in
-            ChromeElementCaptureView(url: presentation.url, renderMode: draft.renderMode) { pick in
+            // v0.21.9: secondary elements are always TEXT-mode reads (they
+            // surface short status strings like "resets in 4d"), so force
+            // .text into the capture flow when the active target is a
+            // secondary. Primary keeps the tracker's own render mode.
+            let captureMode: RenderMode = {
+                switch identifyTarget {
+                case .primary: return draft.renderMode
+                case .secondary: return .text
+                }
+            }()
+            ChromeElementCaptureView(url: presentation.url, renderMode: captureMode) { pick in
                 applyCapturedElement(pick)
             }
         }
@@ -551,13 +577,145 @@ struct TrackerEditorView: View {
             return
         }
 
+        identifyTarget = .primary
         browserPresentation = IdentifyBrowserPresentation(url: url)
     }
 
+    private func openIdentifyBrowserForSecondary(elementID: UUID) {
+        guard let url = validatedURL else {
+            return
+        }
+
+        identifyTarget = .secondary(elementID: elementID)
+        browserPresentation = IdentifyBrowserPresentation(url: url)
+    }
+
+    private func addSecondaryElement() {
+        let nextNumber = draft.secondaryElements.count + 2 // primary is "1"; first secondary is "2"
+        let new = TrackerElement(name: "Element \(nextNumber)")
+        draft.secondaryElements.append(new)
+        // Immediately open Identify-in-Chrome so the user goes straight to
+        // capture instead of staring at an empty row.
+        openIdentifyBrowserForSecondary(elementID: new.id)
+    }
+
     private func applyCapturedElement(_ pick: ElementPick) {
-        draft.selector = pick.selector
-        draft.elementBoundingBox = pick.bbox
-        capturedText = pick.text
+        switch identifyTarget {
+        case .primary:
+            draft.selector = pick.selector
+            draft.elementBoundingBox = pick.bbox
+            capturedText = pick.text
+        case .secondary(let elementID):
+            guard let index = draft.secondaryElements.firstIndex(where: { $0.id == elementID }) else {
+                return
+            }
+            draft.secondaryElements[index].selector = pick.selector
+            draft.secondaryElements[index].elementBoundingBox = pick.bbox
+            // Auto-name from the captured text on first capture if the user
+            // hasn't customized the name. Keeps "Element 2" → "73% used"
+            // discoverable in the widget picker.
+            let trimmed = pick.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty,
+               draft.secondaryElements[index].name.hasPrefix("Element ") {
+                let preview = String(trimmed.prefix(40))
+                draft.secondaryElements[index].name = preview
+            }
+        }
+        // Reset to primary so a subsequent ad-hoc tap of the main Identify
+        // button doesn't accidentally route into a secondary slot.
+        identifyTarget = .primary
+    }
+
+    @ViewBuilder
+    private var secondaryElementsSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("Secondary elements")
+                    .font(.subheadline.weight(.semibold))
+                Spacer()
+                Button {
+                    addSecondaryElement()
+                } label: {
+                    Label("Add secondary element", systemImage: "plus.circle")
+                }
+                .buttonStyle(.borderless)
+                .disabled(validatedURL == nil || !chromiumAvailable)
+                .help("Capture another element on the same page. The widget config UI lets you bind it as secondary text alongside the main value.")
+            }
+
+            if draft.secondaryElements.isEmpty {
+                Text("Add a secondary element to surface a second value from the same page (e.g. \"resets in 4d\" next to \"73% used\"). Widget configurations choose which secondary text to render.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                ForEach(draft.secondaryElements) { element in
+                    secondaryElementRow(elementID: element.id)
+                }
+            }
+        }
+        .padding(.top, 6)
+    }
+
+    @ViewBuilder
+    private func secondaryElementRow(elementID: UUID) -> some View {
+        let bindingIndex = draft.secondaryElements.firstIndex(where: { $0.id == elementID })
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                if let idx = bindingIndex {
+                    TextField("Name", text: Binding(
+                        get: { draft.secondaryElements[idx].name },
+                        set: { draft.secondaryElements[idx].name = $0 }
+                    ))
+                    .textFieldStyle(.roundedBorder)
+                }
+
+                Button {
+                    openIdentifyBrowserForSecondary(elementID: elementID)
+                } label: {
+                    if let idx = bindingIndex,
+                       draft.secondaryElements[idx].selector.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        Label("Identify", systemImage: "viewfinder")
+                    } else {
+                        Label("Re-identify", systemImage: "viewfinder")
+                    }
+                }
+                .disabled(validatedURL == nil || !chromiumAvailable)
+
+                Button(role: .destructive) {
+                    draft.secondaryElements.removeAll { $0.id == elementID }
+                } label: {
+                    Image(systemName: "trash")
+                }
+                .buttonStyle(.borderless)
+            }
+
+            if let idx = bindingIndex {
+                let selector = draft.secondaryElements[idx].selector
+                if !selector.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    Text(selector)
+                        .font(.system(.caption, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                        .textSelection(.enabled)
+                } else {
+                    Text("Not captured yet — tap Identify to pick an element.")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                }
+            }
+        }
+        .padding(8)
+        .background(Color.secondary.opacity(0.06))
+        .cornerRadius(6)
+    }
+
+    /// v0.21.9: which element a captured pick should be applied to. Set
+    /// just before opening the Chrome capture sheet and consulted on
+    /// return in `applyCapturedElement(_:)`.
+    private enum IdentifyTarget: Equatable {
+        case primary
+        case secondary(elementID: UUID)
     }
 
     // MARK: - Hooks panel (v0.18.0+)

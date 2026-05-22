@@ -488,32 +488,65 @@ struct StatsWidgetEntryView: View {
         }
 
         let tracker = entry.trackers[index]
-        return WidgetTrackerItem(tracker: tracker, reading: entry.readings[tracker.id])
+        return WidgetTrackerItem(
+            tracker: tracker,
+            reading: entry.readings[tracker.id],
+            secondaryElementIDs: secondaryIDs(forSlot: index)
+        )
     }
 
     private func items(limit: Int) -> [WidgetTrackerItem] {
-        entry.trackers.prefix(limit).map { tracker in
-            WidgetTrackerItem(tracker: tracker, reading: entry.readings[tracker.id])
+        entry.trackers.prefix(limit).enumerated().map { offset, tracker in
+            WidgetTrackerItem(
+                tracker: tracker,
+                reading: entry.readings[tracker.id],
+                secondaryElementIDs: secondaryIDs(forSlot: offset)
+            )
         }
     }
 
     private func snapshotItem() -> WidgetTrackerItem? {
-        entry.trackers
-            .map { WidgetTrackerItem(tracker: $0, reading: entry.readings[$0.id]) }
-            .first { $0.tracker.renderMode == .snapshot }
+        for (offset, tracker) in entry.trackers.enumerated() where tracker.renderMode == .snapshot {
+            return WidgetTrackerItem(
+                tracker: tracker,
+                reading: entry.readings[tracker.id],
+                secondaryElementIDs: secondaryIDs(forSlot: offset)
+            )
+        }
+        return nil
     }
 
     private func textItem(excluding excludedID: UUID?) -> WidgetTrackerItem? {
-        entry.trackers
-            .filter { $0.id != excludedID }
-            .map { WidgetTrackerItem(tracker: $0, reading: entry.readings[$0.id]) }
-            .first { $0.tracker.renderMode == .text }
+        for (offset, tracker) in entry.trackers.enumerated() where tracker.id != excludedID && tracker.renderMode == .text {
+            return WidgetTrackerItem(
+                tracker: tracker,
+                reading: entry.readings[tracker.id],
+                secondaryElementIDs: secondaryIDs(forSlot: offset)
+            )
+        }
+        return nil
     }
 
     private var firstAttentionItem: WidgetTrackerItem? {
-        entry.trackers
-            .map { WidgetTrackerItem(tracker: $0, reading: entry.readings[$0.id]) }
-            .first { $0.needsAttention }
+        for (offset, tracker) in entry.trackers.enumerated() {
+            let item = WidgetTrackerItem(
+                tracker: tracker,
+                reading: entry.readings[tracker.id],
+                secondaryElementIDs: secondaryIDs(forSlot: offset)
+            )
+            if item.needsAttention {
+                return item
+            }
+        }
+        return nil
+    }
+
+    /// v0.21.9: look up the per-slot secondary-element bindings from the
+    /// active widget configuration. Returns [] when no configuration
+    /// (placeholder/gallery preview) or when the slot has nothing bound
+    /// — both yield the existing single-value rendering.
+    private func secondaryIDs(forSlot slotIndex: Int) -> [UUID] {
+        entry.configuration?.secondaryElementIDs(forSlot: slotIndex) ?? []
     }
 }
 
@@ -567,6 +600,13 @@ extension View {
 struct WidgetTrackerItem: Identifiable {
     let tracker: Tracker
     let reading: TrackerReading?
+    /// v0.21.9: ordered list of secondary `TrackerElement.id`s the user
+    /// picked for the slot this item is rendering at. The widget
+    /// composition layer (StatsWidgetEntryView) reads the active
+    /// WidgetConfiguration's per-slot bindings and passes them in here.
+    /// Empty list = render no secondary text (the historical behavior
+    /// every existing widget gets).
+    var secondaryElementIDs: [UUID] = []
 
     var id: UUID {
         tracker.id
@@ -574,6 +614,33 @@ struct WidgetTrackerItem: Identifiable {
 
     var title: String {
         tracker.label?.isEmpty == false ? tracker.label! : tracker.name
+    }
+
+    /// v0.21.9: ordered display strings for every selected secondary
+    /// element. Pulls each value from `reading.secondaryValues` and falls
+    /// back to "—" when the element scraped but had no text yet. Returns
+    /// [] for trackers/widgets that don't use secondary elements (the
+    /// common case), so existing templates render unchanged.
+    var secondaryTexts: [String] {
+        guard !secondaryElementIDs.isEmpty else { return [] }
+        let secondaryByID = reading?.secondaryValues ?? [:]
+        return secondaryElementIDs.compactMap { elementID in
+            guard tracker.secondaryElements.contains(where: { $0.id == elementID }) else {
+                return nil
+            }
+            return secondaryByID[elementID.uuidString]?.value
+        }
+        .filter { !$0.isEmpty }
+    }
+
+    /// v0.21.9: joined " · "-separated string of secondary values, or
+    /// nil when there are none. Templates that want to render secondary
+    /// text inline pick this; templates that want one-per-line iterate
+    /// `secondaryTexts` directly.
+    var secondaryTextJoined: String? {
+        let texts = secondaryTexts
+        guard !texts.isEmpty else { return nil }
+        return texts.joined(separator: " · ")
     }
 
     var value: String {
@@ -876,6 +943,18 @@ private struct SingleBigNumberWidgetView: View {
                 .foregroundStyle(statusColor)
                 .frame(maxWidth: .infinity, alignment: .center)
 
+            // v0.21.9: secondary text(s) bound to this slot. Hidden when
+            // none are configured — single-element trackers/widgets render
+            // exactly as before.
+            if let secondary = item?.secondaryTextJoined {
+                Text(secondary)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: .infinity, alignment: .center)
+            }
+
             Spacer(minLength: 0)
 
             HStack(spacing: 4) {
@@ -921,6 +1000,12 @@ private struct NumberSparklineWidgetView: View {
                 .minimumScaleFactor(0.5)
                 .lineLimit(1)
                 .numericValueTransition()
+            if let secondary = item?.secondaryTextJoined {
+                Text(secondary)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
             SparklineView(values: item?.sparkline ?? [], tint: item?.accent ?? .accentColor)
                 .frame(height: 34)
             Text(item?.updatedText ?? "not updated")
@@ -1085,6 +1170,12 @@ private struct HeadlineSparklineWidgetView: View {
                     .minimumScaleFactor(0.45)
                     .lineLimit(1)
                     .numericValueTransition()
+                if let secondary = item?.secondaryTextJoined {
+                    Text(secondary)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
                 Text(item?.updatedText ?? "not updated")
                     .font(.caption2)
                     .foregroundStyle(.secondary)

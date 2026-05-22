@@ -23,6 +23,14 @@ struct HeroPlusDetailTemplate: View {
                     .lineLimit(1)
                     .numericValueTransition()
                     .trackerGradientStyle(item)
+                // v0.21.9: secondary text(s) bound to slot 0 (this template
+                // is single-slot). Hidden when nothing is bound.
+                if let secondary = item?.secondaryTextJoined {
+                    Text(secondary)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
             }
 
             SparklineView(values: item?.sparkline ?? [], tint: item?.accent ?? .accentColor)

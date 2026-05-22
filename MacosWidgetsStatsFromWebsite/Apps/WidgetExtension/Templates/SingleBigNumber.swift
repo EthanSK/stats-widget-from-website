@@ -27,6 +27,20 @@ struct SingleBigNumberTemplate: View {
             heroValueText
                 .frame(maxWidth: .infinity, alignment: .center)
 
+            // v0.21.9: secondary text(s) from any TrackerElement the user
+            // bound to this slot in the widget config UI. Hidden when none
+            // are selected, so single-element trackers + widgets render
+            // exactly as they did pre-v0.21.9 (no extra vertical space,
+            // no visual change).
+            if let secondary = item?.secondaryTextJoined {
+                Text(secondary)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: .infinity, alignment: .center)
+            }
+
             Spacer(minLength: 0)
 
             HStack(spacing: 4) {

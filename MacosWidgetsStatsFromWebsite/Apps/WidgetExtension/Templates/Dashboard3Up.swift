@@ -25,6 +25,13 @@ struct Dashboard3UpTemplate: View {
                         .lineLimit(1)
                         .numericValueTransition()
                         .trackerGradientStyle(item)
+                    // v0.21.9: per-slot secondary text — hidden by default.
+                    if let secondary = item.secondaryTextJoined {
+                        Text(secondary)
+                            .font(.system(size: 9))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
                     SparklineView(values: item.sparkline, tint: item.accent)
                         .frame(height: 24)
                     Text(item.updatedText)

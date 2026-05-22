@@ -21,9 +21,20 @@ struct StatsListWatchlistTemplate: View {
                         Text(item.title)
                             .font(.subheadline.weight(.medium))
                             .lineLimit(1)
-                        Text(item.updatedText)
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
+                        // v0.21.9: secondary text replaces updatedText
+                        // ("resets in 4d" is more useful than "13:42" in a
+                        // dense watchlist). Falls back to updatedText
+                        // when no secondary is bound.
+                        if let secondary = item.secondaryTextJoined {
+                            Text(secondary)
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        } else {
+                            Text(item.updatedText)
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
                     }
                     Spacer(minLength: 8)
                     SparklineView(values: item.sparkline, tint: item.accent)

@@ -22,6 +22,13 @@ struct HeadlineSparklineTemplate: View {
                     .minimumScaleFactor(0.45)
                     .lineLimit(1)
                     .trackerGradientStyle(item)
+                // v0.21.9: secondary text(s) — none = hidden.
+                if let secondary = item?.secondaryTextJoined {
+                    Text(secondary)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
                 Text(item?.updatedText ?? "not updated")
                     .font(.caption2)
                     .foregroundStyle(.secondary)

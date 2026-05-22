@@ -398,7 +398,12 @@ final class AppGroupStore: ObservableObject {
                 status: status,
                 sparkline: existing?.sparkline ?? [],
                 lastError: message,
-                consecutiveFailureCount: failureCount
+                consecutiveFailureCount: failureCount,
+                // Preserve the last-known secondary values so the widget
+                // doesn't blank out the "resets in 4d" line just because
+                // a single scrape failed. They'll get overwritten on the
+                // next successful scrape.
+                secondaryValues: existing?.secondaryValues ?? [:]
             )
 
             file.schemaVersion = currentSchemaVersion

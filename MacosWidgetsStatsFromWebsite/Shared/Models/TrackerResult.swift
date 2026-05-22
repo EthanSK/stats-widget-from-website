@@ -128,6 +128,15 @@ struct TrackerReading: Codable, Equatable {
     var sparkline: [Double]
     var lastError: String?
     var consecutiveFailureCount: Int?
+    /// Per-secondary-element scrape results (v0.21.9+, Ethan voice 3797).
+    /// Keyed by `TrackerElement.id.uuidString`. Captures the SAME scrape
+    /// cycle as `currentValue` — the scraper queries every secondary
+    /// element against the SAME loaded DOM, so all values share the same
+    /// timestamp. Empty for trackers with no secondary elements (default
+    /// for every pre-v0.21.9 tracker; no impact on existing readings).
+    /// Optional for backward compatibility with older readings.json files
+    /// — decoded as [:] when absent.
+    var secondaryValues: [String: TrackerSecondaryValue]
 
     init(
         currentValue: String? = nil,
@@ -140,7 +149,8 @@ struct TrackerReading: Codable, Equatable {
         status: TrackerStatus = .ok,
         sparkline: [Double] = [],
         lastError: String? = nil,
-        consecutiveFailureCount: Int? = 0
+        consecutiveFailureCount: Int? = 0,
+        secondaryValues: [String: TrackerSecondaryValue] = [:]
     ) {
         self.currentValue = currentValue
         self.currentNumeric = currentNumeric
@@ -153,6 +163,46 @@ struct TrackerReading: Codable, Equatable {
         self.sparkline = sparkline
         self.lastError = lastError
         self.consecutiveFailureCount = consecutiveFailureCount
+        self.secondaryValues = secondaryValues
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        currentValue = try container.decodeIfPresent(String.self, forKey: .currentValue)
+        currentNumeric = try container.decodeIfPresent(Double.self, forKey: .currentNumeric)
+        snapshotPath = try container.decodeIfPresent(String.self, forKey: .snapshotPath)
+        snapshotCacheKey = try container.decodeIfPresent(String.self, forKey: .snapshotCacheKey)
+        snapshotCapturedAt = try container.decodeIfPresent(Date.self, forKey: .snapshotCapturedAt)
+        lastUpdatedAt = try container.decodeIfPresent(Date.self, forKey: .lastUpdatedAt)
+        lastAttemptedAt = try container.decodeIfPresent(Date.self, forKey: .lastAttemptedAt)
+        status = try container.decodeIfPresent(TrackerStatus.self, forKey: .status) ?? .ok
+        sparkline = try container.decodeIfPresent([Double].self, forKey: .sparkline) ?? []
+        lastError = try container.decodeIfPresent(String.self, forKey: .lastError)
+        consecutiveFailureCount = try container.decodeIfPresent(Int.self, forKey: .consecutiveFailureCount)
+        // secondaryValues was added in 0.21.9. Pre-0.21.9 readings.json files
+        // predate the key so default to []. Backcompat-critical.
+        secondaryValues = try container.decodeIfPresent([String: TrackerSecondaryValue].self, forKey: .secondaryValues) ?? [:]
+    }
+}
+
+/// One secondary element's scrape result (v0.21.9+). Stored on TrackerReading
+/// in a dictionary keyed by the element's UUID stringified, so existing
+/// `[String: TrackerReading]` JSON encoding survives unchanged.
+struct TrackerSecondaryValue: Codable, Equatable {
+    var value: String?
+    var numeric: Double?
+    /// Failure message specific to THIS secondary element. The primary
+    /// element's failure goes on the parent `TrackerReading.lastError`
+    /// (and bumps the parent's status to .broken). A secondary element
+    /// failing does NOT mark the whole tracker broken — secondaries are
+    /// best-effort: if the "resets in" widget can't be parsed this cycle,
+    /// the primary "73% used" still renders.
+    var lastError: String?
+
+    init(value: String? = nil, numeric: Double? = nil, lastError: String? = nil) {
+        self.value = value
+        self.numeric = numeric
+        self.lastError = lastError
     }
 }
 
