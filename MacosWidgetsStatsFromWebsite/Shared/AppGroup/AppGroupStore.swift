@@ -345,7 +345,34 @@ final class AppGroupStore: ObservableObject {
             let decoder = JSONDecoder()
             decoder.dateDecodingStrategy = .iso8601
             let file = try decoder.decode(TrackerReadingsFile.self, from: data)
-            guard file.schemaVersion == currentSchemaVersion else {
+            // v0.21.10 fix (Ethan voice 3902 — "no trackers" after the v0.21.9
+            // upgrade). The previous strict `file.schemaVersion ==
+            // currentSchemaVersion` gate silently rejected every pre-v0.21.9
+            // readings.json on upgrade (currentSchemaVersion was bumped 4 → 5
+            // in v0.21.9 to signal the additive multi-element-array schema),
+            // dropping the file to `.empty` and wiping the user's tracker list
+            // from the host app + widget extension on every load.
+            //
+            // The TrackerReading decoder already uses `decodeIfPresent` with
+            // `?? [:]` defaults for the v0.21.9-added `secondaryValues` field
+            // (see TrackerResult.swift), so an older schemaVersion=4 file
+            // decodes cleanly into the current TrackerReadingsFile shape with
+            // empty new fields — no data loss, no migration logic required.
+            //
+            // The strict gate was redundant with that decoder backcompat and
+            // was the sole cause of the no-trackers regression. Relaxing to
+            // `<=` lets v4 (and any earlier) files load via the existing
+            // decoder path. NEWER files (someone downgraded after running a
+            // future schema) are still rejected — we can't promise forward
+            // compatibility with keys we don't know about, so .empty + fresh
+            // save is the safe path there.
+            //
+            // The configuration load path at decodeConfiguration() already
+            // has a migration fallback (try strict decode, then fall through
+            // to migrateConfigurationObject for older schemas), so config was
+            // surviving the upgrade — only readings were being wiped. This
+            // change brings readings into symmetry with that pattern.
+            guard file.schemaVersion <= currentSchemaVersion else {
                 return .empty
             }
             return file
