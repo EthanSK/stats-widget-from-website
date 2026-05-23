@@ -15,6 +15,42 @@ settings:
     CODE_SIGN_STYLE: Automatic
     ENABLE_HARDENED_RUNTIME: YES
     CODE_SIGNING_ALLOWED: YES
+    # ---------------------------------------------------------------------
+    # Apple Silicon only — no x86_64 / universal builds.
+    #
+    # Why (Ethan voice 6942, 2026-05-23):
+    #   Release builds were failing to ship because the bundled upstream
+    #   Chromium ships a mac-x64 subcomponent (see scripts/embed-chromium.sh
+    #   + vendor/chromium/mac-x64/...) that is NOT signed with our team's
+    #   Developer ID and cannot be re-signed cleanly during the post-build
+    #   Embed Chromium phase. As long as ARCHS included x86_64 the build
+    #   pipeline tried to assemble a universal .app containing both
+    #   mac-arm64 and mac-x64 Chromium payloads, and codesign rejected the
+    #   x64 Chromium binary every time.
+    #
+    # Why arm64-only is fine:
+    #   - The widget extension target already deploys to macOS 14, which on
+    #     macOS 14+ effectively means Apple Silicon only (Intel Macs ran out
+    #     of macOS feature parity at Sonoma 14).
+    #   - The user-facing audience is Apple Silicon: Ethan's Mac mini + MBP
+    #     fleet, and anyone on macOS 13+ who buys the app — Intel Macs are
+    #     not the target.
+    #   - Dropping x86_64 also halves the Chromium payload size in every
+    #     .app (no more mac-x64/Chromium.app inside Resources/Browsers).
+    #
+    # ARCHS=arm64 forces Xcode to skip the x86_64 slice entirely so the
+    # embed-chromium.sh script also skips the mac-x64 vendor directory
+    # (see its normalize-arches loop). EXCLUDED_ARCHS=x86_64 is a belt-
+    # and-braces guard in case any sub-target inherits a default that
+    # would re-introduce x86_64 (Sparkle's SPM packages, for example).
+    #
+    # If we ever need universal again, restore both lines to ONLY_ACTIVE_ARCH
+    # behaviour and re-test the Embed Chromium codesign step end-to-end —
+    # do NOT just delete these lines silently.
+    # ---------------------------------------------------------------------
+    ARCHS: arm64
+    EXCLUDED_ARCHS: x86_64
+    ONLY_ACTIVE_ARCH: NO
     # Single source of truth for the marketing version + CFBundleVersion build
     # number. All targets inherit these via the per-target info.properties
     # blocks below (CFBundleShortVersionString: $(MARKETING_VERSION),
@@ -23,8 +59,8 @@ settings:
     # from Bundle.main.infoDictionary at runtime, so nothing else needs touching.
     # Enforced by .githooks/pre-commit (see core.hooksPath in repo config) and
     # by scripts/validate_release_metadata.py.
-    MARKETING_VERSION: "0.21.10"
-    CURRENT_PROJECT_VERSION: "1267"
+    MARKETING_VERSION: "0.21.11"
+    CURRENT_PROJECT_VERSION: "1268"
 
 packages:
   Sparkle:
