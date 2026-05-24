@@ -386,6 +386,17 @@ struct StatsWidgetEntryView: View {
                     // Use a subtle translucent fill instead so the chip stays
                     // legible without obscuring content.
                     .background(Color.primary.opacity(0.08), in: Capsule())
+                    // Cap the chip's horizontal footprint so it can never
+                    // bleed leftward over the template's top-leading title.
+                    // The chip lives at top-trailing and uses tail truncation,
+                    // so capping the frame just truncates long names with an
+                    // ellipsis (e.g. "ChatGPT session usa..." instead of the
+                    // full string extending across the whole widget). 140pt
+                    // is roughly half the medium widget width (~330pt) and a
+                    // third of the large family — wide enough to read at a
+                    // glance, narrow enough to never collide with the title.
+                    // Fix for label-overlap bug 2026-05-24.
+                    .frame(maxWidth: 140, alignment: .trailing)
                     .padding(6)
             }
         }
@@ -397,7 +408,35 @@ struct StatsWidgetEntryView: View {
     /// Name of the selected widget configuration, when distinct from the
     /// tracker's own title. Surfaced as a small chip so the user can confirm
     /// which configuration the system picked from the Edit Widget panel.
+    ///
+    /// `.systemSmall` widgets are excluded explicitly: the small family is
+    /// only ~165pt wide and BOTH the template's top-leading title AND the
+    /// top-trailing chip are anchored at the top of the widget. When the
+    /// chip text is long (e.g. "ChatGPT session usage") it extends leftward
+    /// far enough to physically overlap the title text underneath — they
+    /// occupy the same vertical band, just at opposite horizontal anchors,
+    /// and on a narrow widget the two collide. This was especially visible
+    /// after v0.21.9 introduced widget configs whose name differs from the
+    /// underlying tracker label (multi-element trackers + per-slot secondary
+    /// bindings → "ChatGPT session usage" widget showing a tracker labeled
+    /// "5h session" with both labels overlapping at the top). On `medium`
+    /// and larger families there's enough horizontal room for the chip not
+    /// to bleed into the title, so we keep it there. Users disambiguating
+    /// multiple small widgets can still tell them apart via the configured
+    /// tracker label at top-leading; the chip's job (confirming which saved
+    /// config the system picked) is also surfaced in the Edit Widget panel.
+    /// Fix for label-overlap bug reported 2026-05-24 (Ethan screenshot of
+    /// "ChatGPT session usa..." overlapping "5h session" on bottom-row
+    /// small widgets).
     private var visibleConfigurationName: String? {
+        // Suppress the chip entirely on systemSmall — there isn't enough
+        // horizontal space for both a left-anchored title and a
+        // right-anchored chip at the top of the widget without them
+        // colliding. See the doc-comment above for the full rationale.
+        if family == .systemSmall {
+            return nil
+        }
+
         guard let configurationName = entry.configuration?.name.trimmingCharacters(in: .whitespacesAndNewlines),
               !configurationName.isEmpty else {
             return nil
