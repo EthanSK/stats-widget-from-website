@@ -18,8 +18,14 @@ from pathlib import Path
 REPO = "EthanSK/stats-widget-from-website"
 SITE_URL = "https://ethansk.github.io/stats-widget-from-website/"
 APP_NAME = "Stats Widget from Website"
-APP_BUNDLE_NAME = "MacosWidgetsStatsFromWebsite"
-LATEST_ZIP = "MacosWidgetsStatsFromWebsite-latest.zip"
+# v0.21.22: renamed the on-disk ZIP basename prefix to use URL-safe hyphens —
+# the Sparkle enclosure URL would otherwise percent-encode the spaces and
+# break a couple of download clients. The internal build product name
+# "MacosWidgetsStatsFromWebsite" still appears inside the .app's
+# Contents/MacOS/ executable (unchanged on purpose) but is no longer in
+# the ZIP filename. voice 4002 / MBP-CC bridge msg-65036391.
+APP_BUNDLE_NAME = "Stats-Widget-from-Website"
+LATEST_ZIP = "Stats-Widget-from-Website-latest.zip"
 LATEST_ZIP_URL = f"https://github.com/{REPO}/releases/latest/download/{LATEST_ZIP}"
 # Stale tokens — if any of these strings appear in release-facing files
 # the rename hasn't fully propagated. Note: the OLD bundle/app-group ID

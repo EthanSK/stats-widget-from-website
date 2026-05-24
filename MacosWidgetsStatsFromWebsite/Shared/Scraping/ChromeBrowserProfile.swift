@@ -43,7 +43,10 @@ enum ChromeBrowserProfileError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .browserNotFound:
-            return "Could not find the bundled Chromium browser inside the app bundle. Reinstall macOS Widgets Stats from Website — the build is incomplete."
+            // v0.21.22: user-facing product name renamed (voice 4002 /
+            // MBP-CC bridge msg-65036391). All localized error descriptions
+            // refer to the new wrapper name "Stats Widget from Website".
+            return "Could not find the bundled Chromium browser inside the app bundle. Reinstall Stats Widget from Website — the build is incomplete."
         case .launchFailed(let message):
             return "Could not launch the browser profile: \(message)"
         case .cdpNotReachable(let port):
@@ -1363,9 +1366,14 @@ final class ChromeBrowserProfile {
 
         guard fileManager.isExecutableFile(atPath: executableURL.path) else {
             throw ChromeBrowserProfileError.launchFailed(
+                // v0.21.22: user-facing product name renamed to
+                // "Stats Widget from Website" (voice 4002 / MBP-CC bridge
+                // msg-65036391). The MACOS_WIDGETS_STATS_CHROME_PATH env
+                // var name stays unchanged — it is a developer override
+                // keyed off the internal product slug.
                 "Browser executable at \(executableURL.path) is not executable. "
                     + "If you set MACOS_WIDGETS_STATS_CHROME_PATH, fix or unset it. Otherwise reinstall "
-                    + "macOS Widgets Stats from Website so the bundled Chromium is restored."
+                    + "Stats Widget from Website so the bundled Chromium is restored."
             )
         }
 
@@ -2074,20 +2082,35 @@ final class ChromeBrowserProfile {
 
         // Sibling-installed main app Resources — lets the CLI build inherit
         // whatever the main app has bundled.
-        let mainAppName = "MacosWidgetsStatsFromWebsite.app"
-        let mainAppLocations: [URL] = [
-            URL(fileURLWithPath: NSHomeDirectory())
-                .appendingPathComponent("Applications", isDirectory: true)
-                .appendingPathComponent(mainAppName, isDirectory: true),
-            URL(fileURLWithPath: "/Applications", isDirectory: true)
-                .appendingPathComponent(mainAppName, isDirectory: true)
+        //
+        // v0.21.22 (voice 4002 / MBP-CC bridge msg-65036391): the .app
+        // wrapper was renamed from "MacosWidgetsStatsFromWebsite.app" to
+        // "Stats Widget from Website.app". During the migration window we
+        // resolve EITHER wrapper name — fresh installs use the new name,
+        // Sparkle in-place updates from v0.21.21 preserve the legacy name
+        // (Sparkle replaces the bundle CONTENTS but doesn't rename the
+        // outer directory). Candidates are checked in order; the FIRST one
+        // that exists wins, so the renamed wrapper is preferred when both
+        // are present. Order matters — Sparkle update writes a new bundle
+        // to the legacy directory, but the user is encouraged to switch
+        // to the new wrapper, so the new name is canonical going forward.
+        let mainAppCandidates = [
+            "Stats Widget from Website.app",   // v0.21.22+ canonical
+            "MacosWidgetsStatsFromWebsite.app" // legacy, retained during migration
         ]
-        for appURL in mainAppLocations {
-            let resourcesURL = appURL
-                .appendingPathComponent("Contents", isDirectory: true)
-                .appendingPathComponent("Resources", isDirectory: true)
-            if fileManager.fileExists(atPath: resourcesURL.path) {
-                roots.append(resourcesURL)
+        let mainAppRoots: [URL] = [
+            URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Applications", isDirectory: true),
+            URL(fileURLWithPath: "/Applications", isDirectory: true)
+        ]
+        for root in mainAppRoots {
+            for candidate in mainAppCandidates {
+                let appURL = root.appendingPathComponent(candidate, isDirectory: true)
+                let resourcesURL = appURL
+                    .appendingPathComponent("Contents", isDirectory: true)
+                    .appendingPathComponent("Resources", isDirectory: true)
+                if fileManager.fileExists(atPath: resourcesURL.path) {
+                    roots.append(resourcesURL)
+                }
             }
         }
 

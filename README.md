@@ -15,7 +15,7 @@ your bank balance, anything that has a number or visual region on a page.
 Configure it once with a click-to-pick element flow, and the widget keeps
 refreshing in the background.
 
-[Website](https://ethansk.github.io/stats-widget-from-website/) · [Direct download](https://github.com/EthanSK/stats-widget-from-website/releases/latest/download/MacosWidgetsStatsFromWebsite-latest.zip) · [Architecture (PLAN.md)](PLAN.md) · [Issues](https://github.com/EthanSK/stats-widget-from-website/issues) · [Releases](https://github.com/EthanSK/stats-widget-from-website/releases)
+[Website](https://ethansk.github.io/stats-widget-from-website/) · [Direct download](https://github.com/EthanSK/stats-widget-from-website/releases/latest/download/Stats-Widget-from-Website-latest.zip) · [Architecture (PLAN.md)](PLAN.md) · [Issues](https://github.com/EthanSK/stats-widget-from-website/issues) · [Releases](https://github.com/EthanSK/stats-widget-from-website/releases)
 
 > **Status:** v0.12.4 implements the local app, widget extension, CLI, scraping,
 > snapshot rendering, widget template catalog, selector packs, MCP server,
@@ -69,7 +69,7 @@ Sparkle appcast at
 `https://ethansk.github.io/stats-widget-from-website/appcast.xml`; installed apps check
 that feed daily and can also check on demand from **Check for Updates...** in
 the app menu. GitHub Releases also keep a stable latest-download alias at
-`https://github.com/EthanSK/stats-widget-from-website/releases/latest/download/MacosWidgetsStatsFromWebsite-latest.zip`.
+`https://github.com/EthanSK/stats-widget-from-website/releases/latest/download/Stats-Widget-from-Website-latest.zip`.
 See [docs/release.md](docs/release.md) for release setup and validation gates.
 
 ## Features

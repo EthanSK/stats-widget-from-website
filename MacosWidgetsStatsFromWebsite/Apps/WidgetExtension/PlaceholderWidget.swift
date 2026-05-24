@@ -44,7 +44,12 @@ struct PlaceholderWidget: Widget {
         StaticConfiguration(kind: kind, provider: PlaceholderProvider()) { entry in
             PlaceholderWidgetEntryView(entry: entry)
         }
-        .configurationDisplayName("macOS Widgets Stats from Website")
+        // Placeholder widget display name in the widget picker — kept in
+        // sync with StatsWidget's configurationDisplayName so both entries
+        // read the renamed product name "Stats Widget from Website".
+        // Widget kind ("PlaceholderWidget") is unchanged. v0.21.22, voice
+        // 4002 / MBP-CC bridge msg-65036391.
+        .configurationDisplayName("Stats Widget from Website")
         .description("Configure widgets in the main app.")
     }
 }

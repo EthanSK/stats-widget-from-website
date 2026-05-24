@@ -12,6 +12,24 @@ settings:
     MACOSX_DEPLOYMENT_TARGET: "13.0"
     SWIFT_VERSION: "5.9"
     DEVELOPMENT_TEAM: T34G959ZG8
+    # Global default — Debug builds inherit Automatic so local Xcode runs use
+    # the developer's logged-in Apple ID. The Release config on each
+    # distributable target (main app + widget extension) overrides this to
+    # Manual Developer ID signing for the Sparkle distribution channel —
+    # see configs.Release blocks on each target below.
+    #
+    # Why manual for Release (v0.21.22, voice 4002, MBP-CC bridge
+    # msg-65036391):
+    #   v0.21.21 release.yml run failed at "Build archive" with
+    #   "Mac Development cert required for the widget extension" because
+    #   Xcode's auto-signing fallback inside the CI keychain has no Apple ID
+    #   logged in to resolve a provisioning profile, and on a Developer-ID
+    #   distribution flow there IS no Mac Development cert to fall back on.
+    #   Manual Developer ID signing fixes this — the imported P12 in the CI
+    #   keychain is the single source of identity for both the app and the
+    #   embedded widget extension. Sparkle distribution is NOT App Store, so
+    #   we don't use provisioning profiles (no PROVISIONING_PROFILE_SPECIFIER
+    #   key anywhere — Developer ID distribution is profile-free).
     CODE_SIGN_STYLE: Automatic
     ENABLE_HARDENED_RUNTIME: YES
     CODE_SIGNING_ALLOWED: YES
@@ -149,6 +167,14 @@ targets:
           ENABLE_DEBUG_DYLIB: NO
         Release:
           CODE_SIGN_ENTITLEMENTS: MacosWidgetsStatsFromWebsite/Apps/MainApp/MacosWidgetsStatsFromWebsite.entitlements
+          # Manual Developer ID signing for the Sparkle distribution channel —
+          # see settings.base comment for the full rationale. Debug intentionally
+          # stays Automatic so local developer Xcode runs work without a CI
+          # keychain. Explicitly NO PROVISIONING_PROFILE_SPECIFIER — Developer
+          # ID distribution does not use provisioning profiles. v0.21.22, voice
+          # 4002 / MBP-CC bridge msg-65036391.
+          CODE_SIGN_STYLE: Manual
+          CODE_SIGN_IDENTITY: "Developer ID Application"
     info:
       path: MacosWidgetsStatsFromWebsite/Apps/MainApp/Info.plist
       properties:
@@ -239,6 +265,17 @@ targets:
         APPLICATION_EXTENSION_API_ONLY: YES
         SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) WIDGET_EXTENSION"
         SKIP_INSTALL: YES
+      configs:
+        # The widget extension is signed Manual Developer ID for Release for
+        # the same reason as the main app — see the settings.base comment at
+        # the top of this file. v0.21.21's CI failure was specifically the
+        # widget extension being asked for a Mac Development cert that
+        # doesn't exist on the Developer-ID-only signing keychain. Debug
+        # stays Automatic so local Xcode runs continue to work. v0.21.22,
+        # voice 4002 / MBP-CC bridge msg-65036391.
+        Release:
+          CODE_SIGN_STYLE: Manual
+          CODE_SIGN_IDENTITY: "Developer ID Application"
     info:
       path: MacosWidgetsStatsFromWebsite/Apps/WidgetExtension/Info.plist
       properties:

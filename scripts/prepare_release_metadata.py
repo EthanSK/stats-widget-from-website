@@ -18,7 +18,13 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-APP_NAME = "MacosWidgetsStatsFromWebsite"
+# ASSET_PREFIX is the on-disk ZIP basename prefix — uses URL-safe hyphens
+# so the Sparkle enclosure URL doesn't percent-encode (spaces would). The
+# user-facing .app wrapper is "Stats Widget from Website.app" with spaces
+# (set in .github/workflows/release.yml's $APP_NAME), but the ZIP that
+# wraps it deliberately uses hyphens for transport. v0.21.22, voice 4002 /
+# MBP-CC bridge msg-65036391.
+ASSET_PREFIX = "Stats-Widget-from-Website"
 REPO = "EthanSK/stats-widget-from-website"
 DISPLAY_NAME = "Stats Widget from Website"
 INFO_PLISTS = [
@@ -101,8 +107,8 @@ def release_values_for_ref(version: str, base_build: int) -> dict[str, str]:
             build_number = base_build * 100000 + run_number
             release_title = f"{DISPLAY_NAME} v{version} (build {run_number})"
 
-    zip_filename = f"{APP_NAME}-{release_tag}.zip"
-    latest_zip_filename = f"{APP_NAME}-latest.zip"
+    zip_filename = f"{ASSET_PREFIX}-{release_tag}.zip"
+    latest_zip_filename = f"{ASSET_PREFIX}-latest.zip"
     release_notes_url = f"https://github.com/{REPO}/releases/tag/{release_tag}"
 
     return {

@@ -356,7 +356,11 @@ private struct ActivityLogPrefsView: View {
 private struct AboutPrefsView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("macOS Widgets Stats from Website")
+            // About panel title — matches the renamed .app wrapper from
+            // v0.21.22 (voice 4002 / MBP-CC bridge msg-65036391). The
+            // CFBundleDisplayName and AboutPrefsView header are the two
+            // most-seen user-facing product names; keep them in sync.
+            Text("Stats Widget from Website")
                 .font(.title2.weight(.semibold))
 
             VStack(alignment: .leading, spacing: 6) {

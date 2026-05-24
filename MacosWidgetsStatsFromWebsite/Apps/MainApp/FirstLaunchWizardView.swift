@@ -64,7 +64,11 @@ struct FirstLaunchWizardView: View {
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("Welcome to macOS Widgets Stats from Website")
+            // User-facing welcome header — matches the renamed .app wrapper
+            // "Stats Widget from Website.app" introduced in v0.21.22 (voice
+            // 4002 / MBP-CC bridge msg-65036391). Internal product name in
+            // build artefacts / log labels stays MacosWidgetsStatsFromWebsite.
+            Text("Welcome to Stats Widget from Website")
                 .font(.title2.weight(.semibold))
             Text(step.subtitle)
                 .foregroundStyle(.secondary)
@@ -156,7 +160,8 @@ struct FirstLaunchWizardView: View {
                             VStack(alignment: .leading, spacing: 6) {
                                 Label("Bundled Chromium is missing.", systemImage: "exclamationmark.triangle")
                                     .foregroundStyle(.orange)
-                                Text("Identify needs the Chromium browser bundled inside this app. Reinstall macOS Widgets Stats from Website to restore it.")
+                                // v0.21.22 rename: user-facing product name is "Stats Widget from Website".
+                                Text("Identify needs the Chromium browser bundled inside this app. Reinstall Stats Widget from Website to restore it.")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                                 Button {
@@ -275,9 +280,13 @@ struct FirstLaunchWizardView: View {
                 Text("Add it from the desktop widget picker:")
                     .font(.headline)
                 Text("1. Right-click the desktop and choose Edit Widgets")
-                Text("2. Search for macOS Widgets Stats from Website")
+                // v0.21.22: instruct users to look up the renamed widget name in
+                // the desktop widget picker. The system shows whatever the widget
+                // extension's configurationDisplayName resolves to (see StatsWidget
+                // + PlaceholderWidget — both renamed to "Stats Widget from Website").
+                Text("2. Search for Stats Widget from Website")
                 Text("3. Drag a \(createdWidgetConfiguration?.size.displayName.lowercased() ?? "small") widget onto the desktop")
-                Text("4. Click/right-click the placed widget and choose Edit “macOS Widgets Stats from Website”")
+                Text("4. Click/right-click the placed widget and choose Edit “Stats Widget from Website”")
                 Text("5. Choose \"\(createdWidgetConfiguration?.name ?? "your new configuration")\" from the configuration picker")
                 Text("   Desktop widgets require macOS 14 or later.")
             }

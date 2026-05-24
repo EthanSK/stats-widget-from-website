@@ -21,13 +21,19 @@ That means repeated main-branch releases stay monotonic for Sparkle without forc
 
 Each release attaches:
 
-- a versioned ZIP: `MacosWidgetsStatsFromWebsite-<release-tag>.zip`
-- a stable latest alias: `MacosWidgetsStatsFromWebsite-latest.zip`
+- a versioned ZIP: `Stats-Widget-from-Website-<release-tag>.zip`
+- a stable latest alias: `Stats-Widget-from-Website-latest.zip`
+
+The on-disk ZIP basename uses URL-safe hyphens; the .app wrapper inside is
+named `Stats Widget from Website.app` (with spaces) — the internal executable
+inside `Contents/MacOS/` stays `MacosWidgetsStatsFromWebsite` for backward
+compatibility with the LaunchAgent + sibling-resolver code paths. Renamed in
+v0.21.22 (voice 4002 / MBP-CC bridge msg-65036391).
 
 The stable user-facing URL is:
 
 ```text
-https://github.com/EthanSK/stats-widget-from-website/releases/latest/download/MacosWidgetsStatsFromWebsite-latest.zip
+https://github.com/EthanSK/stats-widget-from-website/releases/latest/download/Stats-Widget-from-Website-latest.zip
 ```
 
 Sparkle appcast URL:

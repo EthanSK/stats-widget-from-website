@@ -351,8 +351,11 @@ fi
 #
 # The CLI lives at Contents/MacOS/macos-widgets-stats-from-website inside the
 # GUI .app bundle (alongside the main GUI executable). MCP configs reference
-# this path directly, e.g.:
-#   /Applications/MacosWidgetsStatsFromWebsite.app/Contents/MacOS/macos-widgets-stats-from-website --mcp-stdio
+# this path directly, e.g. for the renamed v0.21.22+ wrapper:
+#   /Applications/Stats Widget from Website.app/Contents/MacOS/macos-widgets-stats-from-website --mcp-stdio
+# (Legacy installs that came via Sparkle in-place from v0.21.21 keep the
+# "/Applications/MacosWidgetsStatsFromWebsite.app/..." path — see the CLI
+# fallback resolver in ChromeBrowserProfile.swift's chromiumBundleCandidates.)
 # ---------------------------------------------------------------------------
 echo "=== STEP 4: embed CLI binary in GUI bundle + sign ==="
 CLI_BIN_DEST="$APP_PATH/Contents/MacOS/macos-widgets-stats-from-website"
@@ -505,9 +508,19 @@ echo "build.sh: embedded CLI smoke test passed (--mcp-stdio initialize round-tri
 # ---------------------------------------------------------------------------
 if [[ "$INSTALL_FLAG" == "1" ]]; then
   echo "=== STEP 6: install to /Applications ==="
-  INSTALLED_APP="/Applications/MacosWidgetsStatsFromWebsite.app"
+  # v0.21.22 renamed the user-facing .app wrapper to "Stats Widget from
+  # Website.app" (voice 4002 / MBP-CC bridge msg-65036391). Local Debug
+  # builds via this script install to the new wrapper name. The internal
+  # executable name inside Contents/MacOS/ is unchanged
+  # (MacosWidgetsStatsFromWebsite), so pkill -f still matches the
+  # full-path pattern (spaces in the path are fine for grep-style match
+  # — pkill -f passes the pattern straight to its regex matcher).
+  INSTALLED_APP="/Applications/Stats Widget from Website.app"
   # Best-effort terminate any running copy so the file replace doesn't fail.
   pkill -f "$INSTALLED_APP/Contents/MacOS/MacosWidgetsStatsFromWebsite" 2>/dev/null || true
+  # Also terminate any leftover copy at the legacy wrapper path — a developer
+  # may have a v0.21.21-or-earlier install still running on the same machine.
+  pkill -f "/Applications/MacosWidgetsStatsFromWebsite.app/Contents/MacOS/MacosWidgetsStatsFromWebsite" 2>/dev/null || true
   sleep 1
 
   # Remove the prior install before copying. `ditto src dst` MERGES into an

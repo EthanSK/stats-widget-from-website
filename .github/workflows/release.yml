@@ -19,8 +19,25 @@ permissions:
   contents: write
 
 env:
-  APP_NAME: MacosWidgetsStatsFromWebsite
-  LATEST_ZIP_FILENAME: MacosWidgetsStatsFromWebsite-latest.zip
+  # User-facing .app wrapper name. Internal executable + build product
+  # stay "MacosWidgetsStatsFromWebsite" — xcodebuild outputs
+  # MacosWidgetsStatsFromWebsite.app from build/Export/, and we rename
+  # the wrapper directory to "Stats Widget from Website.app" after
+  # exportArchive (see "Rename exported .app wrapper" step). All
+  # downstream notarize/staple/zip/sparkle steps then reference the
+  # renamed wrapper via $APP_NAME with quotes for the embedded spaces.
+  # v0.21.22, voice 4002 / MBP-CC bridge msg-65036391.
+  APP_NAME: Stats Widget from Website
+  # ZIP filename uses URL-safe hyphens — spaces would percent-encode in
+  # the Sparkle enclosure URL and break some download clients. Note
+  # validate_release_metadata.py + update_appcast.py both check for the
+  # new "Stats-Widget-from-Website" token, NOT the old internal name.
+  LATEST_ZIP_FILENAME: Stats-Widget-from-Website-latest.zip
+  # The exported .xcarchive's Products/Applications subdirectory still
+  # uses the internal build product name — that's what xcodebuild emits
+  # before our rename ceremony. Used by the rename step and notarize
+  # validation only.
+  EXPORTED_APP_FILENAME: MacosWidgetsStatsFromWebsite.app
   SPARKLE_VERSION: 2.6.4
   DEVELOPMENT_TEAM_FALLBACK: T34G959ZG8
 
@@ -263,6 +280,39 @@ jobs:
             -archivePath build/MacosWidgetsStatsFromWebsite.xcarchive \
             -exportOptionsPlist scripts/ExportOptions.plist \
             -exportPath build/Export
+
+      # Rename the .app wrapper from the internal build product name
+      # ("MacosWidgetsStatsFromWebsite.app") to the user-facing name
+      # ("Stats Widget from Website.app"). Internal executable + bundle
+      # identifier + Info.plist all stay unchanged — this is purely a
+      # filesystem-level rename of the .app directory. Done AFTER
+      # exportArchive because xcodebuild emits the bundle under the
+      # productName set in project.yml, which intentionally stays as the
+      # internal name so local Debug builds keep working. v0.21.22, voice
+      # 4002 / MBP-CC bridge msg-65036391.
+      - name: Rename exported .app wrapper
+        run: |
+          set -euo pipefail
+          SOURCE="build/Export/$EXPORTED_APP_FILENAME"
+          DEST="build/Export/$APP_NAME.app"
+          if [ ! -d "$SOURCE" ]; then
+            echo "::error::Expected exported .app at $SOURCE; export step did not produce it."
+            ls -la build/Export || true
+            exit 1
+          fi
+          mv "$SOURCE" "$DEST"
+          # Sanity-verify the embedded executable name did NOT change —
+          # only the wrapper directory's name changed. The executable
+          # inside Contents/MacOS/ is the build's CFBundleExecutable
+          # (resolved at build time from PRODUCT_NAME) and must remain
+          # "MacosWidgetsStatsFromWebsite" for the LaunchAgent + CLI
+          # fallback resolver to work without further changes.
+          if [ ! -x "$DEST/Contents/MacOS/MacosWidgetsStatsFromWebsite" ]; then
+            echo "::error::Renamed .app is missing internal executable Contents/MacOS/MacosWidgetsStatsFromWebsite"
+            ls -la "$DEST/Contents/MacOS/" || true
+            exit 1
+          fi
+          echo "Renamed $SOURCE -> $DEST (internal executable preserved)"
 
       - name: Download Sparkle tools
         env:

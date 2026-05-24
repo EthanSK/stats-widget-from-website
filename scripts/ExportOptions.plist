@@ -1,13 +1,23 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
+<!--
+  Sparkle distribution export options. Pairs with project.yml's
+  configs.Release Manual signing on the main app + widget extension
+  targets. Developer ID distribution is profile-free — no
+  provisioningProfiles key is needed (or wanted; xcodebuild rejects
+  empty/missing-key combinations differently per Xcode version, so we
+  omit it cleanly). v0.21.22, voice 4002 / MBP-CC bridge msg-65036391.
+-->
 <dict>
 	<key>destination</key>
 	<string>export</string>
 	<key>method</key>
 	<string>developer-id</string>
 	<key>signingStyle</key>
-	<string>automatic</string>
+	<string>manual</string>
+	<key>signingCertificate</key>
+	<string>Developer ID Application</string>
 	<key>stripSwiftSymbols</key>
 	<true/>
 	<key>teamID</key>

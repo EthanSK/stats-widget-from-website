@@ -30,7 +30,12 @@ struct StatsWidgetEntry: TimelineEntry {
             return item.accessibilityDescription
         }
         .joined(separator: ", ")
-        return Text(values.isEmpty ? "macOS Widgets Stats from Website, no trackers configured" : values)
+        // VoiceOver / accessibility label when no trackers configured. The
+        // user-facing product name was renamed to "Stats Widget from
+        // Website" in v0.21.22 (voice 4002 / MBP-CC bridge msg-65036391),
+        // and we softened the empty-state wording (em dash + "yet") so a
+        // first-launch widget sounds like guidance rather than an error.
+        return Text(values.isEmpty ? "Stats Widget from Website — no trackers configured yet" : values)
     }
 }
 
@@ -601,7 +606,13 @@ struct StatsWidget: Widget {
         AppIntentConfiguration(kind: Self.kind, intent: StatsWidgetConfigurationIntent.self, provider: StatsWidgetProvider()) { entry in
             StatsWidgetEntryView(entry: entry)
         }
-        .configurationDisplayName("macOS Widgets Stats from Website")
+        // WidgetKit display name in the macOS widget picker. WidgetKit
+        // `kind` ("MacosWidgetsStatsFromWebsite", set above) is the stable
+        // identifier and must NOT change — that's how the system pairs
+        // existing placed widgets with the extension after an update.
+        // Only the user-facing display name was renamed in v0.21.22
+        // (voice 4002 / MBP-CC bridge msg-65036391).
+        .configurationDisplayName("Stats Widget from Website")
         .description("Shows a saved tracker/widget configuration from the main app.")
         .supportedFamilies(supportedFamilies)
     }

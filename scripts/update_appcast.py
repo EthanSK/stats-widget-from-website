@@ -67,7 +67,11 @@ def validate_release_inputs(
         die(f"RELEASE_TAG {release_tag!r} must start with v{version}")
     if "/" in zip_filename or not zip_filename.endswith(".zip"):
         die(f"ZIP_FILENAME must be a release ZIP basename, got {zip_filename!r}")
-    if "MacosWidgetsStatsFromWebsite" not in zip_filename:
+    # v0.21.22 renamed the release ZIP from "MacosWidgetsStatsFromWebsite-*.zip"
+    # to "Stats-Widget-from-Website-*.zip" (URL-safe hyphens — spaces would
+    # percent-encode in the Sparkle enclosure URL and break some download
+    # clients). voice 4002 / MBP-CC bridge msg-65036391.
+    if "Stats-Widget-from-Website" not in zip_filename:
         die(f"ZIP_FILENAME must use the renamed app bundle name, got {zip_filename!r}")
     if not zip_size.isdigit() or int(zip_size) <= 0:
         die(f"ZIP_SIZE must be a positive byte count, got {zip_size!r}")
