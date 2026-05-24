@@ -675,7 +675,41 @@ private enum MCPToolCatalog {
         tool("delete_tracker_hook", "Delete a tracker hook. Idempotent — succeeds when the hook is already gone.", [
             "trackerId": stringSchema("Tracker UUID"),
             "hookId": stringSchema("Hook UUID")
-        ], required: ["trackerId", "hookId"])
+        ], required: ["trackerId", "hookId"]),
+        // ---------------------------------------------------------
+        // Sparkle update tools (v0.21.15+, Ethan voice 3991, 2026-05-24)
+        //
+        // These three tools let an agent end-to-end-verify a Sparkle
+        // release pipeline: push tag → CI builds + signs → appcast
+        // updates → running app probe sees the new version via
+        // `check_for_updates` → agent triggers install via
+        // `install_pending_update`. `get_version` is the cheap "what
+        // am I running right now" readout that the bump-and-tag script
+        // (Sub B) calls before AND after the release to confirm
+        // propagation across the fleet.
+        //
+        // All three require the MainApp socket transport — they go
+        // through `MCPUpdateBridge.handler` which is populated by
+        // `UpdateController.start()` in the menu-bar host. From CLI
+        // stdio (which doesn't link Sparkle and is a one-shot process)
+        // they return a clear validation error, same pattern as
+        // identify_element guarding the interactive-browser path.
+        // ---------------------------------------------------------
+        tool(
+            "check_for_updates",
+            "Programmatically probe Sparkle for a newer appcast version. Does NOT show any UI — uses Sparkle's `checkForUpdateInformation` probing path. Returns currentVersion (CFBundleShortVersionString of the running binary), latestAppcastVersion (most recent version Sparkle has fetched from the feed, may be null until the first check completes), and installPending (true iff a valid update is queued for install). Requires the MainApp socket transport.",
+            [:]
+        ),
+        tool(
+            "install_pending_update",
+            "Trigger install of the pending Sparkle update if one is queued. NOTE: Sparkle's standard user driver surfaces an 'install now / later' dialog on the running app — there is no fully-headless install path on the standard updater. Returns scheduled (true iff an update was found + install was dispatched) and pendingVersion (the version that will be installed). If nothing is pending, returns scheduled=false. Requires the MainApp socket transport.",
+            [:]
+        ),
+        tool(
+            "get_version",
+            "Read the running binary's version metadata synchronously from Bundle.main.infoDictionary. Returns marketingVersion (CFBundleShortVersionString), buildNumber (CFBundleVersion), and bundleId (CFBundleIdentifier). Cheap probe used by the bump-and-tag release flow to confirm propagation. Works on any MCP transport (stdio or socket) — no Sparkle dependency.",
+            [:]
+        )
     ]
 
     private static func tool(
@@ -821,6 +855,18 @@ private enum MCPToolDispatcher {
             return try updateTrackerHook(arguments)
         case "delete_tracker_hook":
             return try deleteTrackerHook(arguments)
+        // Sparkle update tools — see catalog block above for rationale.
+        // All three route through MCPUpdateBridge.handler which the
+        // MainApp's UpdateController installs at startup. CLI stdio
+        // builds (which don't link Sparkle) leave the bridge nil and
+        // these tools throw a clear "transport doesn't support this"
+        // error.
+        case "check_for_updates":
+            return try checkForUpdates()
+        case "install_pending_update":
+            return try installPendingUpdate()
+        case "get_version":
+            return getVersion()
         default:
             throw MCPError.toolNotFound(name)
         }
@@ -2073,6 +2119,108 @@ private enum MCPToolDispatcher {
         }
 
         return "\(range.lowerBound)-\(range.upperBound) trackers"
+    }
+
+    // MARK: - Sparkle update tools (Ethan voice 3991, 2026-05-24)
+    //
+    // These three implementations sit BEHIND the MCPUpdateBridge handler
+    // (see MCPUpdateBridge.swift) so this file does not have to
+    // `import Sparkle`. Sparkle is not linked into the CLI target —
+    // routing through the bridge keeps MCPServer.swift compilable in
+    // both MainApp (Sparkle present) and CLI (Sparkle absent) targets.
+    //
+    // `check_for_updates` and `install_pending_update` are async on the
+    // Sparkle side (must hop to the main queue + wait for delegate
+    // callbacks). The MCP dispatcher contract is synchronous-return,
+    // so we use a DispatchSemaphore to bridge — with a generous
+    // timeout so a hung Sparkle network call cannot pin an MCP
+    // session forever. The timeout still falls back to the cached
+    // state from prior delegate hooks rather than throwing, matching
+    // the documented behaviour: "latestAppcastVersion may be null if
+    // not yet checked".
+
+    /// Maximum time to wait for Sparkle's main-thread delegate hop +
+    /// network probe to complete before returning the cached state.
+    /// Larger than a typical HTTPS appcast fetch (sub-second on a
+    /// healthy network) but small enough that a flaky network cannot
+    /// stall the MCP session forever.
+    private static let updateBridgeTimeoutSeconds: TimeInterval = 10
+
+    private static func checkForUpdates() throws -> Any {
+        // Bridge handler is installed by UpdateController.start() on
+        // the MainApp side. Absent ⇒ we're running in a transport
+        // (CLI stdio) or process state (pre-startup) that does not
+        // expose Sparkle. Throw validation so the agent gets a clear
+        // signal, matching the identify_element guard pattern.
+        guard let handler = MCPUpdateBridge.handler else {
+            throw MCPError.validation("check_for_updates requires the running app's MCP socket — Sparkle is not linked into the CLI stdio MCP transport. Connect to the app's mcp.sock.")
+        }
+
+        let semaphore = DispatchSemaphore(value: 0)
+        var captured: MCPUpdateCheckResult?
+        handler.checkForUpdates { result in
+            captured = result
+            semaphore.signal()
+        }
+        _ = semaphore.wait(timeout: .now() + updateBridgeTimeoutSeconds)
+
+        // Even on timeout, return what we have so the agent can move
+        // forward — bridge's snapshot() always returns the running
+        // binary's currentVersion (it never blocks on the network),
+        // so on timeout we surface currentVersion + null fields.
+        let result = captured ?? MCPUpdateCheckResult(
+            currentVersion: (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "unknown",
+            latestAppcastVersion: nil,
+            installPending: false
+        )
+
+        return [
+            "currentVersion": result.currentVersion,
+            // NSNull keeps the JSON shape stable — clients see
+            // `"latestAppcastVersion": null` instead of the field
+            // being absent, which makes the agent's branching easier.
+            // The `as Any` cast silences the Swift implicit-coercion
+            // warning when the operands of `??` are `String?` + `NSNull`.
+            "latestAppcastVersion": (result.latestAppcastVersion as Any?) ?? NSNull(),
+            "installPending": result.installPending
+        ]
+    }
+
+    private static func installPendingUpdate() throws -> Any {
+        guard let handler = MCPUpdateBridge.handler else {
+            throw MCPError.validation("install_pending_update requires the running app's MCP socket — Sparkle is not linked into the CLI stdio MCP transport. Connect to the app's mcp.sock.")
+        }
+
+        let semaphore = DispatchSemaphore(value: 0)
+        var captured: MCPUpdateInstallResult?
+        handler.installPendingUpdate { result in
+            captured = result
+            semaphore.signal()
+        }
+        _ = semaphore.wait(timeout: .now() + updateBridgeTimeoutSeconds)
+
+        let result = captured ?? MCPUpdateInstallResult(scheduled: false, pendingVersion: nil)
+
+        return [
+            "scheduled": result.scheduled,
+            // Cast through Any? so the `??` operands type-check against
+            // NSNull (the dictionary's value type is Any, so we need
+            // a uniform fallback for the null case).
+            "pendingVersion": (result.pendingVersion as Any?) ?? NSNull()
+        ]
+    }
+
+    private static func getVersion() -> Any {
+        // Synchronous Bundle.main.infoDictionary readout — no Sparkle
+        // dependency, works on every MCP transport. This is the cheap
+        // "what am I running right now" probe that the bump-and-tag
+        // release flow uses to confirm propagation across the fleet.
+        let info = Bundle.main.infoDictionary
+        return [
+            "marketingVersion": (info?["CFBundleShortVersionString"] as? String) ?? "unknown",
+            "buildNumber": (info?["CFBundleVersion"] as? String) ?? "unknown",
+            "bundleId": (info?["CFBundleIdentifier"] as? String) ?? "unknown"
+        ]
     }
 }
 
