@@ -90,10 +90,13 @@ def check_repo(root: Path) -> None:
             assert_no_old_tokens(relative, text)
 
     workflow = read_text(root / ".github/workflows/release.yml")
+    # release.yml is tag-only as of commit ebc9198 (voice 3991, 2026-05-24) —
+    # branch pushes no longer publish a release; only `vX.Y.Z` tag pushes do.
+    # Required snippets match the new trigger shape: `tags:` + `'v*'` instead
+    # of the old `branches: main/master`.
     required_snippets = [
-        "branches:",
-        "main",
-        "master",
+        "tags:",
+        "'v*'",
         "make_latest: true",
         LATEST_ZIP,
         "softprops/action-gh-release@v2",
