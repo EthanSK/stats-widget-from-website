@@ -55,45 +55,79 @@ jobs:
         if: github.event_name == 'push' && startsWith(github.ref, 'refs/heads/')
         uses: actions/github-script@v7
         with:
+          # FINDING 2 follow-up (Codex re-review of 09ee493, voice 3991):
+          # the single-snapshot version of this check raced against
+          # bump-and-tag.sh's "push branch THEN push tag" sequence — the
+          # branch-triggered workflow could reach this check before the
+          # tag push hit GitHub, see no tag, set should_skip=false, and
+          # publish a duplicate release. Fix: poll with bounded retries.
+          # We wait UP TO ~30s total for the tag to appear, then proceed
+          # if it still doesn't. 30s is comfortably longer than the
+          # typical bump-and-tag.sh tag-push latency (sub-second on a
+          # healthy network) but short enough that a genuine "branch
+          # push without subsequent tag push" path (e.g. a regular
+          # non-release commit to main, or a re-merged feature branch)
+          # is not unduly delayed. Workflow_dispatch and direct tag
+          # pushes skip this check entirely (the outer `if` guards on
+          # branch pushes only).
           script: |
-            // Only branch pushes can race a tag push at the same SHA —
-            // workflow_dispatch and direct tag pushes go straight through.
             const sha = context.sha;
-            core.info(`Checking for v* tags pointing at ${sha}...`);
-            try {
-              // List ALL tag refs starting with "tags/v" in one paginated
-              // call, then filter client-side by object.sha. listMatchingRefs
-              // with ref="tags/v" uses prefix semantics, so this is cheap
-              // even on repos with many tags.
-              const refs = await github.paginate(
-                github.rest.git.listMatchingRefs,
-                {
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  ref: 'tags/v',
-                  per_page: 100,
-                }
-              );
-              const matchingTag = refs.find(r => r.object && r.object.sha === sha);
-              if (matchingTag) {
-                core.notice(
-                  `Skipping branch-push release run: tag ${matchingTag.ref} ` +
-                  `already points at ${sha}. The tag-push run will publish.`
+            const maxAttempts = 6;          // 6 attempts ≈ 30s total
+            const delayMs = 5000;           // 5s between attempts
+            const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+            core.info(`Checking for v* tags pointing at ${sha} (up to ${maxAttempts} attempts)...`);
+            for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+              try {
+                // Paginate "tags/v" prefix-match refs and look for one
+                // whose object.sha equals the current commit. Cheap on
+                // repos with O(100s) of tags; we'd need to rethink for
+                // O(10k+) tags but that's not in the cards here.
+                const refs = await github.paginate(
+                  github.rest.git.listMatchingRefs,
+                  {
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    ref: 'tags/v',
+                    per_page: 100,
+                  }
                 );
-                core.setOutput('should_skip', 'true');
-              } else {
-                core.info(`No v* tag at ${sha}; proceeding with branch-push release.`);
+                const matchingTag = refs.find(r => r.object && r.object.sha === sha);
+                if (matchingTag) {
+                  core.notice(
+                    `Skipping branch-push release run: tag ${matchingTag.ref} ` +
+                    `already points at ${sha} (attempt ${attempt}/${maxAttempts}). ` +
+                    `The tag-push run will publish.`
+                  );
+                  core.setOutput('should_skip', 'true');
+                  return;
+                }
+                if (attempt < maxAttempts) {
+                  core.info(
+                    `No v* tag at ${sha} yet (attempt ${attempt}/${maxAttempts}); ` +
+                    `waiting ${delayMs / 1000}s before retry...`
+                  );
+                  await sleep(delayMs);
+                }
+              } catch (err) {
+                // Fail-soft per Codex finding — do not break the build
+                // on an API hiccup. Log + proceed.
+                core.warning(
+                  `Tag-race check failed on attempt ${attempt}/${maxAttempts} ` +
+                  `(${err.message}); proceeding with release. ` +
+                  `If two runs race, the later one will overwrite the gh-pages appcast.`
+                );
                 core.setOutput('should_skip', 'false');
+                return;
               }
-            } catch (err) {
-              // Fail-soft per Codex finding — do not break the build on
-              // an API hiccup. Log + proceed.
-              core.warning(
-                `Tag-race check failed (${err.message}); proceeding with release. ` +
-                `If two runs race, the later one will overwrite the gh-pages appcast.`
-              );
-              core.setOutput('should_skip', 'false');
             }
+            // Exhausted all attempts without finding a matching tag.
+            // This is the legitimate "real branch push, no concurrent
+            // tag push" path — proceed with the release.
+            core.info(
+              `No v* tag at ${sha} after ${maxAttempts} attempts; ` +
+              `proceeding with branch-push release.`
+            );
+            core.setOutput('should_skip', 'false');
 
   release:
     name: Build, notarize, publish

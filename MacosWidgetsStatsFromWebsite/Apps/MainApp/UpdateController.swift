@@ -309,33 +309,61 @@ extension UpdateController: MCPUpdateBridgeHandler {
     /// the early-return paths in `checkForUpdates` share one source of
     /// truth for the shape.
     ///
-    /// HIGH 3 (Codex xhigh review, voice 3991): `installPending` is now
-    /// derived from `currentVersion != latestAppcastVersion`, NOT from
-    /// `currentItem != nil`. Old behaviour: any cached appcast item
-    /// implied "install pending", which was wrong when the user was
-    /// already on the latest (Sparkle's `updaterDidNotFindUpdate` case
-    /// where userInfo still contains the appcast item). New behaviour:
-    /// the appcast version is reported truthfully, and pending-ness is
-    /// computed from version comparison. Result: callers can confirm
-    /// "I'm on the newest" by checking `currentVersion == latestAppcastVersion`
-    /// AND `installPending == false`, instead of inferring from null fields.
+    /// HIGH 3 (Codex xhigh review, voice 3991): the appcast version is
+    /// preserved even when current == latest. Old behaviour: any cached
+    /// appcast item implied "install pending"; we now compute pending-ness
+    /// from a version comparison so callers can confirm "I'm on the newest"
+    /// via currentVersion == latestAppcastVersion && installPending=false.
+    ///
+    /// FINDING 1 follow-up (Codex re-review of 09ee493, voice 3991):
+    /// `installPending` MUST be computed using Sparkle's
+    /// `SUAppcastItem.versionString` (which corresponds to CFBundleVersion
+    /// — the monotonic build number) against the running binary's
+    /// `CFBundleVersion`, NOT against `displayVersionString` /
+    /// `CFBundleShortVersionString`. This repo intentionally ships
+    /// `v<version>-build.<run_number>` releases that keep the marketing
+    /// version stable while bumping the build number (see
+    /// prepare_release_metadata.py line ~94). Comparing display strings
+    /// would mark a legitimate higher-build update as "not pending".
+    /// Sparkle's documentation is explicit: "versionString is what Sparkle
+    /// uses to compare update items" (= CFBundleVersion).
+    /// `latestAppcastVersion` in the JSON response stays as the
+    /// human-readable `displayVersionString` because that is what agents
+    /// quote in user-facing release notes.
     private static func snapshot(currentItem: SUAppcastItem?) -> MCPUpdateCheckResult {
-        let current = (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "unknown"
-        let latest = currentItem?.displayVersionString
-        // installPending iff Sparkle gave us an appcast item AND that
-        // item's version differs from what we are currently running. If
-        // we have an item but versions match → user is up to date.
-        // If we have no item at all → no probe has succeeded yet, so
-        // we cannot claim a pending install.
+        let info = Bundle.main.infoDictionary
+        // displayVersion = CFBundleShortVersionString (e.g. "0.21.16") —
+        // for human-facing display only.
+        let displayVersion = (info?["CFBundleShortVersionString"] as? String) ?? "unknown"
+        // buildVersion = CFBundleVersion (e.g. "1273") — the monotonic
+        // build number Sparkle ACTUALLY compares against versionString.
+        // Cast as String since CFBundleVersion is stored as a string in
+        // the plist even though it's numeric in practice.
+        let currentBuild = (info?["CFBundleVersion"] as? String) ?? ""
+        let latestDisplay = currentItem?.displayVersionString
+        let latestBuild = currentItem?.versionString
+        // installPending iff Sparkle's appcast build version differs
+        // from our running build number. This correctly catches both
+        // marketing-version bumps (which always bump build too) AND
+        // build-only "vX.Y.Z-build.N" releases where the marketing
+        // version stays put.
+        //
+        // We compare strings, not parsed ints, because Sparkle
+        // tolerates non-numeric build identifiers (e.g. "1273.beta").
+        // A pure string comparison may classify a legitimate downgrade
+        // appcast as "pending" — that's acceptable because Sparkle's
+        // own install path will refuse a downgrade unless explicitly
+        // allowed. The MCP "pending" flag is an availability signal,
+        // not a "Sparkle will definitely apply this" guarantee.
         let pending: Bool
-        if let latest, latest != current {
+        if let latestBuild, !currentBuild.isEmpty, latestBuild != currentBuild {
             pending = true
         } else {
             pending = false
         }
         return MCPUpdateCheckResult(
-            currentVersion: current,
-            latestAppcastVersion: latest,
+            currentVersion: displayVersion,
+            latestAppcastVersion: latestDisplay,
             installPending: pending
         )
     }
