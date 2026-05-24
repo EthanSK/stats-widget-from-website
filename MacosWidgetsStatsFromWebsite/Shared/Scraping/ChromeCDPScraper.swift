@@ -75,9 +75,33 @@ final class ChromeCDPScraper {
 
     static func scrape(tracker: Tracker, completion: @escaping Completion) {
         let scraper = ChromeCDPScraper(tracker: tracker, completion: completion)
-        DispatchQueue.main.async {
+
+        // v0.21.14 — stagger scrape kickoffs on the same profile by at
+        // least `ChromeBrowserProfile.minScrapeStartGap` seconds (15s).
+        // `reserveScrapeStart` atomically advances the per-profile
+        // watermark BEFORE returning the delay, so concurrent callers
+        // race-correctly serialize (see ChromeBrowserProfile.reserveScrapeStart
+        // docstring for race-correctness rationale).
+        //
+        // Fixes the multi-tracker CDP parallel-scrape flake (Ethan voice
+        // 3988): the MBP-side activity.log was showing intermittent
+        // `CDP websocket disconnected` + `scrape failed` storms whenever
+        // two trackers' NSBackgroundActivityScheduler windows fired
+        // within a second of each other. Layered ON TOP OF v0.21.12's
+        // `pinnedActiveScrapeTargets` orphan-sweep pin, which handles
+        // the residual case where two starts still happen to overlap
+        // (e.g. one already in flight when the next is forced via
+        // Scrape Now).
+        let delay = ChromeBrowserProfile.shared.reserveScrapeStart(profileName: tracker.browserProfile)
+
+        let kickoff = {
             activeScrapers[scraper.scrapeID] = scraper
             scraper.start()
+        }
+        if delay > 0 {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: kickoff)
+        } else {
+            DispatchQueue.main.async(execute: kickoff)
         }
     }
 

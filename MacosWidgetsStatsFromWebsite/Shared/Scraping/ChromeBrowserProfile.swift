@@ -73,6 +73,38 @@ final class ChromeBrowserProfile {
     private var pendingTargetCreations: [Int: [PendingTargetCreation]] = [:]
     private var targetCreationPortsInFlight: Set<Int> = []
 
+    /// v0.21.14 — per-profile scrape-start watermark for the 15s min-gap
+    /// stagger introduced to fix the multi-tracker CDP parallel-scrape
+    /// flake (Ethan voice 3988, MBP-side activity.log was showing
+    /// `CDP websocket disconnected` + `scrape failed` storms whenever
+    /// two trackers on the same profile fired their NSBackgroundActivityScheduler
+    /// windows within a second of each other).
+    ///
+    /// Layered ON TOP OF v0.21.12's `pinnedActiveScrapeTargets` orphan-sweep
+    /// pin — that fix prevents parallel scrapes from race-killing each
+    /// other's tabs WHEN they DO overlap. This stagger prevents the
+    /// overlap from happening in the first place, which is the cheaper
+    /// path (no tab churn, no CDP socket bring-up while another scrape
+    /// is mid-flight, no concurrent target creation on the same CDP port).
+    ///
+    /// Keyed by `cdpPort` (one profile = one port, matches the keying
+    /// of `backgroundUseCounts` / `pendingTargetCreations` etc.).
+    /// The value stored is the PROJECTED scrape-start time (now + computed
+    /// delay), NOT `Date()` at call time — required for race-correctness
+    /// when N scrapes arrive simultaneously: each successive caller sees
+    /// the cumulative projected gap so they all stagger correctly rather
+    /// than all delaying by the same amount and landing in lockstep.
+    private var lastScrapeStartedAt: [Int: Date] = [:]
+
+    /// Minimum gap between any two scrape STARTS on the same profile.
+    /// 15s chosen empirically — the CDP target-creation + WebSocket
+    /// handshake + initial Page.navigate round-trip typically completes
+    /// in <5s on a healthy profile, with a tail out to ~10s on cold
+    /// starts. 15s gives ~5s of headroom over the worst-case warmup
+    /// to ensure the prior scrape is genuinely past the websocket-
+    /// open phase (where the flake manifests) before the next one starts.
+    static let minScrapeStartGap: TimeInterval = 15.0
+
     private init() {}
 
     func configuration(profileName: String = ChromeBrowserProfile.defaultProfileName) -> ChromeBrowserLaunchConfiguration {
@@ -840,6 +872,76 @@ final class ChromeBrowserProfile {
             backgroundUseCounts[configuration.cdpPort, default: 0] += 1
         }
         return configuration
+    }
+
+    /// v0.21.14 — atomically reserves a scrape-start slot for the given
+    /// profile and returns the delay (seconds) the caller must wait
+    /// before actually beginning the scrape. Returns 0 when no stagger
+    /// is needed.
+    ///
+    /// Race-correctness: the watermark is advanced INSIDE the same
+    /// queue.sync that reads the previous value, BEFORE returning to
+    /// the caller. This guarantees that if N callers race in, they
+    /// each see the cumulative projected start time of all prior
+    /// reservations and stagger correctly. Without this, two callers
+    /// arriving simultaneously could both read the same "last start"
+    /// and compute the same delay, then both fire after that delay
+    /// and stomp on each other (the exact failure mode this fix
+    /// targets — voice 3988).
+    ///
+    /// The structured "staggering scrape" log line lets MBP-CC grep
+    /// activity.log for stagger events during the 10-cycle verification:
+    ///   grep "staggering scrape: profile=" activity.log
+    func reserveScrapeStart(profileName: String = ChromeBrowserProfile.defaultProfileName) -> TimeInterval {
+        let configuration = configuration(profileName: profileName)
+        let port = configuration.cdpPort
+        let now = Date()
+
+        let (delay, projectedStart, sinceLast): (TimeInterval, Date, TimeInterval?) = queue.sync {
+            let last = lastScrapeStartedAt[port]
+            let sinceLast = last.map { now.timeIntervalSince($0) }
+
+            // Compute delay: if last scrape was T seconds ago (or no prior),
+            // wait max(0, minGap - T). If `last` is in the FUTURE (because
+            // a prior reservation pushed the watermark beyond now), wait
+            // until that future time PLUS the full minGap.
+            let projectedStart: Date
+            let delay: TimeInterval
+            if let last {
+                // If last is in the future, the previous reserver scheduled
+                // a start at `last`; this new reservation must come at
+                // least minGap AFTER that point.
+                let earliestNextStart = last.addingTimeInterval(Self.minScrapeStartGap)
+                if earliestNextStart > now {
+                    projectedStart = earliestNextStart
+                    delay = earliestNextStart.timeIntervalSince(now)
+                } else {
+                    projectedStart = now
+                    delay = 0
+                }
+            } else {
+                projectedStart = now
+                delay = 0
+            }
+
+            lastScrapeStartedAt[port] = projectedStart
+            return (delay, projectedStart, sinceLast)
+        }
+
+        if delay > 0 {
+            // Structured log line — keep field names stable so MBP-CC
+            // (and any other consumer) can grep for `staggering scrape: profile=`.
+            ActivityLogger.log("scheduler", "staggering scrape", metadata: [
+                "profile": profileName,
+                "port": "\(port)",
+                "gapSec": String(format: "%.1f", delay),
+                "sinceLastSec": sinceLast.map { String(format: "%.1f", $0) } ?? "(none)",
+                "projectedStartIso": ISO8601DateFormatter().string(from: projectedStart),
+                "minGapSec": String(format: "%.0f", Self.minScrapeStartGap)
+            ])
+        }
+
+        return delay
     }
 
     func endBackgroundUse(configuration: ChromeBrowserLaunchConfiguration) {
