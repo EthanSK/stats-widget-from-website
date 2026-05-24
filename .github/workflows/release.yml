@@ -19,8 +19,86 @@ env:
   DEVELOPMENT_TEAM_FALLBACK: T34G959ZG8
 
 jobs:
+  # HIGH 1 — double-trigger race guard (Codex xhigh review, voice 3991).
+  #
+  # Problem: this workflow fires on BOTH `push: branches: main` AND
+  # `push: tags: v*`. scripts/bump-and-tag.sh's "push branch then push tag"
+  # therefore queues TWO release jobs that race on the same GitHub Release
+  # asset upload and gh-pages appcast commit. Worse, on the branch run
+  # scripts/prepare_release_metadata.py (line 94) PUBLISHES the canonical
+  # `v<version>` tag when it is still missing — which is exactly the tag
+  # the second run would otherwise have used as its trigger. Both runs end
+  # up pointing at the same SHA + same tag, then collide.
+  #
+  # Fix: if THIS event is a branch push AND some `v*` tag already points
+  # at the same SHA, the tag-push run is the canonical release. Exit
+  # success early so the branch-push run no-ops and the tag-push run
+  # handles the release alone.
+  #
+  # Fail-soft: any API hiccup in the lookup MUST NOT block the workflow,
+  # because the branch run can legitimately need to proceed (e.g. first
+  # release on a fresh main where the canonical tag has not been created
+  # yet — that is the path that DOES want to publish the canonical tag).
+  # On API error we log a warning and let `release` proceed.
+  #
+  # Security note: the github-script step only reads context.sha (a 40-char
+  # SHA produced by GitHub itself) — no untrusted free-form input from
+  # commit messages, PR titles, etc. Safe by construction.
+  check-tag-race:
+    name: Skip if a tag push is racing this branch push
+    runs-on: ubuntu-latest
+    outputs:
+      should_skip: ${{ steps.detect.outputs.should_skip }}
+    steps:
+      - name: Detect concurrent v* tag at same SHA
+        id: detect
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/heads/')
+        uses: actions/github-script@v7
+        with:
+          script: |
+            // Only branch pushes can race a tag push at the same SHA —
+            // workflow_dispatch and direct tag pushes go straight through.
+            const sha = context.sha;
+            core.info(`Checking for v* tags pointing at ${sha}...`);
+            try {
+              // List ALL tag refs starting with "tags/v" in one paginated
+              // call, then filter client-side by object.sha. listMatchingRefs
+              // with ref="tags/v" uses prefix semantics, so this is cheap
+              // even on repos with many tags.
+              const refs = await github.paginate(
+                github.rest.git.listMatchingRefs,
+                {
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  ref: 'tags/v',
+                  per_page: 100,
+                }
+              );
+              const matchingTag = refs.find(r => r.object && r.object.sha === sha);
+              if (matchingTag) {
+                core.notice(
+                  `Skipping branch-push release run: tag ${matchingTag.ref} ` +
+                  `already points at ${sha}. The tag-push run will publish.`
+                );
+                core.setOutput('should_skip', 'true');
+              } else {
+                core.info(`No v* tag at ${sha}; proceeding with branch-push release.`);
+                core.setOutput('should_skip', 'false');
+              }
+            } catch (err) {
+              // Fail-soft per Codex finding — do not break the build on
+              // an API hiccup. Log + proceed.
+              core.warning(
+                `Tag-race check failed (${err.message}); proceeding with release. ` +
+                `If two runs race, the later one will overwrite the gh-pages appcast.`
+              );
+              core.setOutput('should_skip', 'false');
+            }
+
   release:
     name: Build, notarize, publish
+    needs: check-tag-race
+    if: needs.check-tag-race.outputs.should_skip != 'true'
     runs-on: macos-latest
 
     steps:

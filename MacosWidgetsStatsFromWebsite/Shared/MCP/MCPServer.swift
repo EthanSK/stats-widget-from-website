@@ -697,7 +697,15 @@ private enum MCPToolCatalog {
         // ---------------------------------------------------------
         tool(
             "check_for_updates",
-            "Programmatically probe Sparkle for a newer appcast version. Does NOT show any UI — uses Sparkle's `checkForUpdateInformation` probing path. Returns currentVersion (CFBundleShortVersionString of the running binary), latestAppcastVersion (most recent version Sparkle has fetched from the feed, may be null until the first check completes), and installPending (true iff a valid update is queued for install). Requires the MainApp socket transport.",
+            // HIGH 2 + HIGH 3 (Codex xhigh review, voice 3991): the call
+            // now waits for Sparkle's actual probe completion (up to 30s)
+            // before returning, and `latestAppcastVersion` is populated
+            // even when current == latest (Sparkle exposes this via
+            // SPULatestAppcastItemFoundKey on the no-update path). Agents
+            // can confirm "I'm on the newest" via currentVersion ==
+            // latestAppcastVersion && installPending == false, instead
+            // of inferring from null fields.
+            "Programmatically probe Sparkle for a newer appcast version. Does NOT show any UI — uses Sparkle's `checkForUpdateInformation` probing path. Waits up to 30s for Sparkle's actual probe to complete (timeout falls back to cached state). Returns currentVersion (CFBundleShortVersionString of the running binary), latestAppcastVersion (latest version from the appcast feed — populated for both 'update available' AND 'already up to date' cases; null only before any probe has succeeded), installPending (true iff latestAppcastVersion differs from currentVersion), and hasUpdateAvailable (alias for installPending). Requires the MainApp socket transport.",
             [:]
         ),
         tool(
@@ -2141,10 +2149,16 @@ private enum MCPToolDispatcher {
 
     /// Maximum time to wait for Sparkle's main-thread delegate hop +
     /// network probe to complete before returning the cached state.
-    /// Larger than a typical HTTPS appcast fetch (sub-second on a
-    /// healthy network) but small enough that a flaky network cannot
-    /// stall the MCP session forever.
-    private static let updateBridgeTimeoutSeconds: TimeInterval = 10
+    ///
+    /// HIGH 2 (Codex xhigh review, voice 3991): bumped 10s → 30s. The
+    /// UpdateController now waits for Sparkle's actual probe completion
+    /// (`didFinishUpdateCycleFor`) instead of a single runloop tick,
+    /// so a real network round-trip happens within this window. 30s
+    /// matches the Codex finding's recommended ceiling — long enough
+    /// for slow networks, short enough that a flaky network cannot
+    /// stall the MCP session forever. On timeout the bridge falls back
+    /// to the cached snapshot rather than throwing.
+    private static let updateBridgeTimeoutSeconds: TimeInterval = 30
 
     private static func checkForUpdates() throws -> Any {
         // Bridge handler is installed by UpdateController.start() on

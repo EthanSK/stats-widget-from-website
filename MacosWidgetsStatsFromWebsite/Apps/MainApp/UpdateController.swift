@@ -29,11 +29,55 @@ final class UpdateController: NSObject {
     /// `updater(_:didFindValidUpdate:)` delegate hook. Stored so the
     /// MCP `check_for_updates` tool can report `latestAppcastVersion`
     /// + `installPending` without re-running the network check or
-    /// reaching into Sparkle's private state. Reset to nil when
-    /// Sparkle reports "no update found" so the bridge doesn't lie
-    /// about a stale pending update after the user has installed
-    /// out-of-band.
+    /// reaching into Sparkle's private state.
+    ///
+    /// HIGH 3 (Codex xhigh review, voice 3991): when Sparkle reports
+    /// "no update found" it may STILL include the latest appcast item
+    /// in `error.userInfo[SPULatestAppcastItemFoundKey]` (current == latest
+    /// case). The old code blindly nil-ed this on `updaterDidNotFindUpdate`,
+    /// which made `latestAppcastVersion` null on the "I'm up-to-date"
+    /// branch — caller could not confirm "I'm on the newest" without
+    /// inferring from nulls. New behaviour: preserve the appcast item
+    /// from userInfo when present, only nil it if Sparkle truly returned
+    /// nothing. See `updaterDidNotFindUpdate(_:error:)` below.
     private var lastFoundUpdate: SUAppcastItem?
+
+    // MARK: - HIGH 2 — wait-for-probe-completion plumbing
+    //
+    // Codex xhigh review (voice 3991): the previous MCP `check_for_updates`
+    // implementation called `updater.checkForUpdateInformation()` and then
+    // returned the cached state after a single runloop tick. That tick
+    // is FAR shorter than the network round-trip to fetch the appcast,
+    // so the first MCP call always returned stale data (or null, on
+    // first run). New behaviour:
+    //
+    //   1. MCP handler asks UpdateController to perform a probe.
+    //   2. UpdateController queues the caller's completion handler and
+    //      kicks off Sparkle's check.
+    //   3. When Sparkle fires `updater(_:didFinishUpdateCycleFor:error:)`
+    //      we flush all queued completions with the post-probe snapshot.
+    //   4. MCP handler waits with a 30s timeout (Codex spec) — if Sparkle's
+    //      network call dies, we still return rather than hanging the MCP
+    //      session. Cached state is the fallback.
+    //
+    // Serialisation: only ONE Sparkle probe runs at a time. Subsequent
+    // concurrent MCP callers attach their completion to the same in-flight
+    // probe and all fire together when it finishes. This avoids hammering
+    // Sparkle's scheduler with overlapping `checkForUpdateInformation()`
+    // calls (which can confuse its internal session state).
+
+    /// Queue of completion handlers waiting for the in-flight probe to
+    /// finish. Accessed only on the main queue (Sparkle is main-thread-only,
+    /// so we use that same queue as the synchronisation point — no extra
+    /// lock needed). When non-empty, a probe is in flight.
+    private var pendingProbeCompletions: [(MCPUpdateCheckResult) -> Void] = []
+
+    /// Tracks whether a Sparkle probe is currently in flight. Set true
+    /// when we kick off `checkForUpdateInformation()` and cleared in
+    /// `didFinishUpdateCycleFor`. Distinct from `pendingProbeCompletions`
+    /// non-empty because we want to know "is Sparkle currently running a
+    /// cycle" independent of whether anyone is waiting on the result.
+    private var probeInFlight = false
 
     var updater: SPUUpdater {
         updaterController.updater
@@ -62,23 +106,85 @@ extension UpdateController: SPUUpdaterDelegate {
         NSLog("Sparkle found update %@", item.displayVersionString)
         // Cache the appcast item so the MCP bridge can answer
         // `latestAppcastVersion` / `installPending` without re-checking.
+        // The `didFinishUpdateCycleFor` hook (below) is what actually
+        // flushes the MCP completions — this just primes lastFoundUpdate
+        // so the snapshot it reads is fresh.
         lastFoundUpdate = item
     }
 
     func updaterDidNotFindUpdate(_ updater: SPUUpdater, error: Error) {
         NSLog("Sparkle did not find an update: %@", error.localizedDescription)
-        // Drop any cached pending update — the latest probe says there
-        // is none, so the MCP bridge should not report one.
-        lastFoundUpdate = nil
+        // HIGH 3 (Codex xhigh review, voice 3991): when Sparkle reports
+        // "no update found" the error.userInfo MAY include the latest
+        // appcast item via SPULatestAppcastItemFoundKey (Sparkle 2.x
+        // constant — confirmed against sparkle-project.org docs:
+        // https://sparkle-project.org/documentation/publishing/).
+        // Common case: current == latest. The old code blindly nil-ed
+        // lastFoundUpdate here, which collapsed the "you are on the
+        // newest" branch to null and forced callers to infer "up-to-date"
+        // from missing fields. New behaviour: if Sparkle handed us the
+        // appcast item we just compared against, KEEP it so the MCP
+        // bridge can answer `latestAppcastVersion` truthfully even when
+        // installPending is false.
+        let userInfo = (error as NSError).userInfo
+        if let latestItem = userInfo[SPULatestAppcastItemFoundKey] as? SUAppcastItem {
+            // Preserve the item — current binary IS the latest, but we
+            // still know the appcast's latest version. installPending will
+            // be derived from currentVersion != latestVersion in the
+            // bridge snapshot, NOT from lastFoundUpdate being non-nil
+            // (which would otherwise lie about a pending install).
+            lastFoundUpdate = latestItem
+            NSLog(
+                "Sparkle no-update path preserved appcast item %@ from userInfo",
+                latestItem.displayVersionString
+            )
+        } else {
+            // Truly no information about the appcast — clear the cache
+            // so the bridge doesn't lie with stale data.
+            lastFoundUpdate = nil
+        }
     }
 
     func updater(_ updater: SPUUpdater, didAbortWithError error: Error) {
         NSLog("Sparkle update check failed: %@", error.localizedDescription)
+        // HIGH 2: an aborted cycle still needs to flush the waiters so
+        // they don't sit on the semaphore until timeout. `didFinishUpdateCycleFor`
+        // (below) is the canonical "cycle is over" hook in Sparkle 2.x —
+        // didAbortWithError is paired with it, so we rely on that single
+        // flush point rather than calling flushPendingProbeCompletions
+        // here too (would double-flush).
     }
 
     func updater(_ updater: SPUUpdater, didFinishUpdateCycleFor updateCheck: SPUUpdateCheck, error: Error?) {
         if let error {
             NSLog("Sparkle update cycle finished with error: %@", error.localizedDescription)
+        }
+        // HIGH 2 (Codex xhigh review, voice 3991): THIS is the canonical
+        // hook for "Sparkle's check cycle is over" — fires for every
+        // terminal state (found update, didn't find, aborted with error,
+        // user cancelled). All MCP callers waiting on a probe get
+        // released here with the post-cycle snapshot.
+        flushPendingProbeCompletions()
+    }
+
+    /// Drain every queued MCP probe completion handler with the current
+    /// snapshot. Runs on the main queue (Sparkle's delegate hooks all
+    /// fire on the main queue). Called exclusively from
+    /// `didFinishUpdateCycleFor` — do NOT call from `didFindValidUpdate`
+    /// / `updaterDidNotFindUpdate` directly, as those fire BEFORE the
+    /// cycle completes and the snapshot could miss any final state Sparkle
+    /// applies post-delegate.
+    private func flushPendingProbeCompletions() {
+        // Snapshot the appcast item we have, then build the result once
+        // and hand the same one to every waiter. Avoids racing with a
+        // hypothetical second probe scheduling itself in the gap between
+        // calls (defence-in-depth — serialisation already blocks that).
+        let snapshot = Self.snapshot(currentItem: lastFoundUpdate)
+        let waiters = pendingProbeCompletions
+        pendingProbeCompletions.removeAll(keepingCapacity: false)
+        probeInFlight = false
+        for completion in waiters {
+            completion(snapshot)
         }
     }
 }
@@ -100,6 +206,23 @@ extension UpdateController: MCPUpdateBridgeHandler {
     /// delegate hooks (`didFindValidUpdate` / `updaterDidNotFindUpdate`)
     /// without offering the user the standard install dialog —
     /// matches the task brief "Don't trigger UI; programmatic-only path."
+    ///
+    /// HIGH 2 (Codex xhigh review, voice 3991): waits for Sparkle's
+    /// actual probe completion (`didFinishUpdateCycleFor`) before
+    /// invoking the caller's completion. The old implementation only
+    /// waited one runloop tick — far shorter than the network round-trip
+    /// — so callers got stale/null cache on the first invocation. This
+    /// version:
+    ///
+    ///   1. Enqueues the caller's completion onto `pendingProbeCompletions`.
+    ///   2. Kicks off `checkForUpdateInformation()` IFF no probe is
+    ///      already in flight (serialisation — concurrent MCP calls share
+    ///      one Sparkle probe and all flush together when it finishes).
+    ///   3. The actual flush happens in the `didFinishUpdateCycleFor`
+    ///      delegate hook (see `flushPendingProbeCompletions`).
+    ///   4. The MCP server side (`MCPServer.swift`) holds a semaphore
+    ///      with a 30s timeout — if Sparkle's network call hangs we
+    ///      still return rather than pinning the MCP session.
     func checkForUpdates(completion: @escaping (MCPUpdateCheckResult) -> Void) {
         DispatchQueue.main.async { [weak self] in
             guard let self else {
@@ -107,27 +230,41 @@ extension UpdateController: MCPUpdateBridgeHandler {
                 return
             }
 
-            // If a check session is already in progress, return the
-            // cached state immediately — re-triggering would race
-            // Sparkle's internal scheduler. `sessionInProgress` covers
-            // appcast download, update download, and any showing of
-            // update UI; we don't want to interfere with any of those.
-            if !self.updater.sessionInProgress && self.updater.canCheckForUpdates {
-                self.updater.checkForUpdateInformation()
+            // Sparkle's session-in-progress covers appcast download,
+            // update download, and any UI showing. If a *user-driven*
+            // session is up we cannot programmatically join it — return
+            // the current cached state immediately so the agent isn't
+            // blocked waiting for a human to dismiss a dialog. The
+            // serialisation queue (probeInFlight) handles concurrent
+            // MCP probes; sessionInProgress handles concurrent user UI.
+            if self.updater.sessionInProgress && !self.probeInFlight {
+                completion(Self.snapshot(currentItem: self.lastFoundUpdate))
+                return
             }
 
-            // Wait one runloop tick so the delegate hook
-            // (`didFindValidUpdate` / `updaterDidNotFindUpdate`) has a
-            // chance to fire before we read `lastFoundUpdate`. The
-            // network round-trip itself is async and may take longer
-            // than a single tick — in that case we return the cached
-            // state from the PREVIOUS check, which is the documented
-            // behaviour ("may be null if not yet checked"). Future
-            // calls will pick up the fresher state once the network
-            // result lands.
-            DispatchQueue.main.async {
-                completion(Self.snapshot(currentItem: self.lastFoundUpdate))
+            // Queue the caller. If a probe is already in flight, just
+            // attach — the in-flight probe's didFinishUpdateCycleFor
+            // will flush us along with everyone else.
+            self.pendingProbeCompletions.append(completion)
+            if self.probeInFlight {
+                return
             }
+
+            // First caller — kick off the actual Sparkle probe.
+            guard self.updater.canCheckForUpdates else {
+                // Cannot check (e.g. updater not started, or disabled
+                // by policy). Flush ourselves with the cached state so
+                // the caller doesn't sit on the semaphore.
+                self.flushPendingProbeCompletions()
+                return
+            }
+            self.probeInFlight = true
+            self.updater.checkForUpdateInformation()
+            // The didFinishUpdateCycleFor delegate (and its
+            // flushPendingProbeCompletions call) will fire when Sparkle
+            // completes the cycle — either with a found update, no
+            // update, or an abort. The MCP semaphore on the other side
+            // bounds the wait at 30s in case Sparkle hangs.
         }
     }
 
@@ -171,12 +308,35 @@ extension UpdateController: MCPUpdateBridgeHandler {
     /// info dict + the cached appcast item. Kept as a static helper so
     /// the early-return paths in `checkForUpdates` share one source of
     /// truth for the shape.
+    ///
+    /// HIGH 3 (Codex xhigh review, voice 3991): `installPending` is now
+    /// derived from `currentVersion != latestAppcastVersion`, NOT from
+    /// `currentItem != nil`. Old behaviour: any cached appcast item
+    /// implied "install pending", which was wrong when the user was
+    /// already on the latest (Sparkle's `updaterDidNotFindUpdate` case
+    /// where userInfo still contains the appcast item). New behaviour:
+    /// the appcast version is reported truthfully, and pending-ness is
+    /// computed from version comparison. Result: callers can confirm
+    /// "I'm on the newest" by checking `currentVersion == latestAppcastVersion`
+    /// AND `installPending == false`, instead of inferring from null fields.
     private static func snapshot(currentItem: SUAppcastItem?) -> MCPUpdateCheckResult {
         let current = (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "unknown"
+        let latest = currentItem?.displayVersionString
+        // installPending iff Sparkle gave us an appcast item AND that
+        // item's version differs from what we are currently running. If
+        // we have an item but versions match → user is up to date.
+        // If we have no item at all → no probe has succeeded yet, so
+        // we cannot claim a pending install.
+        let pending: Bool
+        if let latest, latest != current {
+            pending = true
+        } else {
+            pending = false
+        }
         return MCPUpdateCheckResult(
             currentVersion: current,
-            latestAppcastVersion: currentItem?.displayVersionString,
-            installPending: currentItem != nil
+            latestAppcastVersion: latest,
+            installPending: pending
         )
     }
 }
