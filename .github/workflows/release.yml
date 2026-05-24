@@ -333,12 +333,17 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          set -euo pipefail
+          set -euxo pipefail
           mkdir -p build/sparkle
-          gh release download "$SPARKLE_VERSION" \
-            --repo sparkle-project/Sparkle \
-            --pattern "Sparkle-$SPARKLE_VERSION.tar.xz" \
-            --dir build/sparkle
+          # Use curl + the public release URL. We previously used
+          # `gh release download` which failed silently in CI with exit
+          # code 1 and no stderr — likely a rate-limit or auth-scope
+          # issue with the github.token against another org's repo.
+          # curl is unauthenticated by default and doesn't need any
+          # special scope to hit a public release asset.
+          # v0.21.23, voice 4002 follow-up.
+          curl -fLsS -o "build/sparkle/Sparkle-$SPARKLE_VERSION.tar.xz" \
+            "https://github.com/sparkle-project/Sparkle/releases/download/$SPARKLE_VERSION/Sparkle-$SPARKLE_VERSION.tar.xz"
           tar -xf "build/sparkle/Sparkle-$SPARKLE_VERSION.tar.xz" -C build/sparkle
           test -x "build/sparkle/Sparkle-$SPARKLE_VERSION/bin/sign_update"
 
