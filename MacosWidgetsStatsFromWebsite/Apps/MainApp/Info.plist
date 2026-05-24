@@ -59,7 +59,7 @@
 	<key>SUFeedURL</key>
 	<string>https://ethansk.github.io/stats-widget-from-website/appcast.xml</string>
 	<key>SUPublicEDKey</key>
-	<string>9PG32PH1UFbECc644qjE4OQtpiILuiPCOUuXvgND2tA=</string>
+	<string>DsTmWIla2YPOmLzMXodwnKdHA25Nca5XBa35mrDzilo=</string>
 	<key>SUScheduledCheckInterval</key>
 	<integer>86400</integer>
 	<key>UTExportedTypeDeclarations</key>
