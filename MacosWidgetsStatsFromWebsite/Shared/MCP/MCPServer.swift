@@ -2182,6 +2182,16 @@ private enum MCPToolDispatcher {
             // The `as Any` cast silences the Swift implicit-coercion
             // warning when the operands of `??` are `String?` + `NSNull`.
             "latestAppcastVersion": (result.latestAppcastVersion as Any?) ?? NSNull(),
+            // hasUpdateAvailable mirrors installPending semantically
+            // ("Sparkle's appcast probe found a newer version") and is
+            // exposed as a separate field so agent code can branch on
+            // a self-documenting boolean without first checking
+            // whether `latestAppcastVersion` is null. Per MBP-CC's
+            // bridge msg-86d0f1c2 (voice 3991 follow-up): "the MCP
+            // response should include both latestAppcastVersion AND
+            // hasUpdateAvailable so agent code can do 'is there an
+            // update? install it' without parsing version strings."
+            "hasUpdateAvailable": result.installPending,
             "installPending": result.installPending
         ]
     }
