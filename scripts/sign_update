@@ -22,6 +22,11 @@ fi
 find_sign_update() {
   local candidates=(
     "${SPARKLE_SIGN_UPDATE_PATH:-}"
+    # v0.21.24: Sparkle's tarball extracts FLAT — bin/sign_update lives
+    # at the root of build/sparkle/, NOT inside a Sparkle-$VERSION/
+    # wrapper directory. The wrapper-dir candidates below are kept for
+    # back-compat in case a future tarball format reintroduces them.
+    "$ROOT/build/sparkle/bin/sign_update"
     "$ROOT/build/sparkle/Sparkle-$SPARKLE_VERSION/bin/sign_update"
     "$ROOT"/build/sparkle/Sparkle-*/bin/sign_update
     "$ROOT/Frameworks/bin/sign_update"
