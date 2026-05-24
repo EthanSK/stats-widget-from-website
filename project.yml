@@ -59,7 +59,7 @@ settings:
     # from Bundle.main.infoDictionary at runtime, so nothing else needs touching.
     # Enforced by .githooks/pre-commit (see core.hooksPath in repo config) and
     # by scripts/validate_release_metadata.py.
-    MARKETING_VERSION: "0.21.18"
+    MARKETING_VERSION: "0.21.19"
     CURRENT_PROJECT_VERSION: "1275"
 
 packages:
@@ -182,7 +182,19 @@ targets:
         NSPrincipalClass: NSApplication
         SUEnableAutomaticChecks: true
         SUFeedURL: https://ethansk.github.io/stats-widget-from-website/appcast.xml
-        SUPublicEDKey: 9PG32PH1UFbECc644qjE4OQtpiILuiPCOUuXvgND2tA=
+        # Sparkle ed25519 public key — paired with the SPARKLE_ED25519_PRIVATE_KEY
+        # secret on EthanSK/stats-widget-from-website. ROTATED 2026-05-24 by
+        # Mini-OC clawdiboi2 (voice 3993): old private key was unrecoverable from
+        # Keychain (search of label `https://sparkle-project.org` found only an
+        # obscene-sparkle item, no stats-widget entry). New keypair generated via
+        # `sign_update --generate-keys` and validated against a dummy ZIP.
+        # OLD: 9PG32PH1UFbECc644qjE4OQtpiILuiPCOUuXvgND2tA=
+        # NEW: DsTmWIla2YPOmLzMXodwnKdHA25Nca5XBa35mrDzilo=
+        # Side-effect: the v0.21.14 SCP-installed builds on Ethan's MBP/Mini have
+        # the OLD public key embedded — they will NOT trust Sparkle signatures
+        # made with the new private key. First v0.21.19+ install is a one-time
+        # manual swap; subsequent versions auto-update normally via Sparkle.
+        SUPublicEDKey: DsTmWIla2YPOmLzMXodwnKdHA25Nca5XBa35mrDzilo=
         SUScheduledCheckInterval: 86400
         UTExportedTypeDeclarations:
           - UTTypeIdentifier: com.ethansk.macos-widgets-stats-from-website.selectorpack
