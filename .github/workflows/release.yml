@@ -363,23 +363,32 @@ jobs:
           DEVELOPMENT_TEAM: ${{ secrets.DEVELOPMENT_TEAM }}
         run: |
           set -euo pipefail
-          # Trim whitespace from each candidate — Apple Developer Portal
-          # has been known to copy/paste a team ID with a trailing space
-          # into GitHub secrets, and notarytool rejects "T34G959ZG8 " as
-          # "Team ID must be at least 3 characters" (it's checking the
-          # post-trim length, which can read as 0). v0.21.25, voice 4002
-          # follow-up.
-          APPLE_TEAM_ID_TRIMMED="${APPLE_TEAM_ID#"${APPLE_TEAM_ID%%[![:space:]]*}"}"
-          APPLE_TEAM_ID_TRIMMED="${APPLE_TEAM_ID_TRIMMED%"${APPLE_TEAM_ID_TRIMMED##*[![:space:]]}"}"
-          DEVELOPMENT_TEAM_TRIMMED="${DEVELOPMENT_TEAM#"${DEVELOPMENT_TEAM%%[![:space:]]*}"}"
-          DEVELOPMENT_TEAM_TRIMMED="${DEVELOPMENT_TEAM_TRIMMED%"${DEVELOPMENT_TEAM_TRIMMED##*[![:space:]]}"}"
-          TEAM_ID="${APPLE_TEAM_ID_TRIMMED:-${DEVELOPMENT_TEAM_TRIMMED:-$DEVELOPMENT_TEAM_FALLBACK}}"
-          # Print the length only — not the value, since GitHub Actions
-          # secret-masking only masks the literal secret string, not
-          # length-based diagnostics. If TEAM_ID is empty we'll see "0".
+          # Resolve team ID with malformed-secret robustness. v0.21.26
+          # found the APPLE_TEAM_ID secret was 1 character — likely
+          # accidentally set to a single asterisk or something while
+          # debugging. Apple team IDs are exactly 10 characters
+          # (alphanumeric). Fall back through the chain skipping any
+          # candidate that fails the length check.
+          # v0.21.26, voice 4002 follow-up.
+          resolve_team_id() {
+              local value="$1"
+              # Trim leading/trailing whitespace.
+              value="${value#"${value%%[![:space:]]*}"}"
+              value="${value%"${value##*[![:space:]]}"}"
+              # Apple team IDs are exactly 10 chars. Anything else is
+              # almost certainly garbage / a placeholder.
+              if [ ${#value} -eq 10 ]; then
+                  printf '%s' "$value"
+                  return 0
+              fi
+              return 1
+          }
+          TEAM_ID="$(resolve_team_id "$APPLE_TEAM_ID" || \
+                      resolve_team_id "$DEVELOPMENT_TEAM" || \
+                      resolve_team_id "$DEVELOPMENT_TEAM_FALLBACK")"
           echo "Resolved TEAM_ID length: ${#TEAM_ID}"
-          if [ ${#TEAM_ID} -lt 3 ]; then
-            echo "::error::Resolved TEAM_ID is too short (${#TEAM_ID} chars). Check APPLE_TEAM_ID secret."
+          if [ ${#TEAM_ID} -ne 10 ]; then
+            echo "::error::Resolved TEAM_ID is not exactly 10 chars (${#TEAM_ID}). Check APPLE_TEAM_ID secret."
             exit 1
           fi
           ditto -c -k --keepParent "build/Export/$APP_NAME.app" "build/$APP_NAME-notary.zip"
