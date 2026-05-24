@@ -386,6 +386,17 @@ struct StatsWidgetEntryView: View {
                     // Use a subtle translucent fill instead so the chip stays
                     // legible without obscuring content.
                     .background(Color.primary.opacity(0.08), in: Capsule())
+                    // Cap the chip's horizontal footprint so it can never
+                    // bleed leftward over the template's top-leading title.
+                    // The chip lives at top-trailing and uses tail truncation,
+                    // so capping the frame just truncates long names with an
+                    // ellipsis (e.g. "ChatGPT session usa..." instead of the
+                    // full string extending across the whole widget). 140pt
+                    // is roughly half the medium widget width (~330pt) and a
+                    // third of the large family — wide enough to read at a
+                    // glance, narrow enough to never collide with the title.
+                    // Fix for label-overlap bug 2026-05-24.
+                    .frame(maxWidth: 140, alignment: .trailing)
                     .padding(6)
             }
         }
@@ -397,7 +408,35 @@ struct StatsWidgetEntryView: View {
     /// Name of the selected widget configuration, when distinct from the
     /// tracker's own title. Surfaced as a small chip so the user can confirm
     /// which configuration the system picked from the Edit Widget panel.
+    ///
+    /// `.systemSmall` widgets are excluded explicitly: the small family is
+    /// only ~165pt wide and BOTH the template's top-leading title AND the
+    /// top-trailing chip are anchored at the top of the widget. When the
+    /// chip text is long (e.g. "ChatGPT session usage") it extends leftward
+    /// far enough to physically overlap the title text underneath — they
+    /// occupy the same vertical band, just at opposite horizontal anchors,
+    /// and on a narrow widget the two collide. This was especially visible
+    /// after v0.21.9 introduced widget configs whose name differs from the
+    /// underlying tracker label (multi-element trackers + per-slot secondary
+    /// bindings → "ChatGPT session usage" widget showing a tracker labeled
+    /// "5h session" with both labels overlapping at the top). On `medium`
+    /// and larger families there's enough horizontal room for the chip not
+    /// to bleed into the title, so we keep it there. Users disambiguating
+    /// multiple small widgets can still tell them apart via the configured
+    /// tracker label at top-leading; the chip's job (confirming which saved
+    /// config the system picked) is also surfaced in the Edit Widget panel.
+    /// Fix for label-overlap bug reported 2026-05-24 (Ethan screenshot of
+    /// "ChatGPT session usa..." overlapping "5h session" on bottom-row
+    /// small widgets).
     private var visibleConfigurationName: String? {
+        // Suppress the chip entirely on systemSmall — there isn't enough
+        // horizontal space for both a left-anchored title and a
+        // right-anchored chip at the top of the widget without them
+        // colliding. See the doc-comment above for the full rationale.
+        if family == .systemSmall {
+            return nil
+        }
+
         guard let configurationName = entry.configuration?.name.trimmingCharacters(in: .whitespacesAndNewlines),
               !configurationName.isEmpty else {
             return nil
@@ -491,7 +530,8 @@ struct StatsWidgetEntryView: View {
         return WidgetTrackerItem(
             tracker: tracker,
             reading: entry.readings[tracker.id],
-            secondaryElementIDs: secondaryIDs(forSlot: index)
+            secondaryElementIDs: secondaryIDs(forSlot: index),
+            family: family
         )
     }
 
@@ -500,7 +540,8 @@ struct StatsWidgetEntryView: View {
             WidgetTrackerItem(
                 tracker: tracker,
                 reading: entry.readings[tracker.id],
-                secondaryElementIDs: secondaryIDs(forSlot: offset)
+                secondaryElementIDs: secondaryIDs(forSlot: offset),
+                family: family
             )
         }
     }
@@ -510,7 +551,8 @@ struct StatsWidgetEntryView: View {
             return WidgetTrackerItem(
                 tracker: tracker,
                 reading: entry.readings[tracker.id],
-                secondaryElementIDs: secondaryIDs(forSlot: offset)
+                secondaryElementIDs: secondaryIDs(forSlot: offset),
+                family: family
             )
         }
         return nil
@@ -521,7 +563,8 @@ struct StatsWidgetEntryView: View {
             return WidgetTrackerItem(
                 tracker: tracker,
                 reading: entry.readings[tracker.id],
-                secondaryElementIDs: secondaryIDs(forSlot: offset)
+                secondaryElementIDs: secondaryIDs(forSlot: offset),
+                family: family
             )
         }
         return nil
@@ -532,7 +575,8 @@ struct StatsWidgetEntryView: View {
             let item = WidgetTrackerItem(
                 tracker: tracker,
                 reading: entry.readings[tracker.id],
-                secondaryElementIDs: secondaryIDs(forSlot: offset)
+                secondaryElementIDs: secondaryIDs(forSlot: offset),
+                family: family
             )
             if item.needsAttention {
                 return item
@@ -607,13 +651,59 @@ struct WidgetTrackerItem: Identifiable {
     /// Empty list = render no secondary text (the historical behavior
     /// every existing widget gets).
     var secondaryElementIDs: [UUID] = []
+    /// v0.21.13: which WidgetKit family is currently rendering this item.
+    /// Threaded down from `StatsWidgetEntryView.family` via the item
+    /// factories below so `title` can pick a family-appropriate label
+    /// (forcing the canonical tracker name on `.systemSmall`, see the
+    /// `title` doc-comment).
+    ///
+    /// Defaulted to `nil` so call sites that don't know/care (e.g. test
+    /// fixtures, the `firstAttentionItem` overlay helper which is family-
+    /// agnostic) keep working unchanged — `nil` falls back to the pre-
+    /// v0.21.13 behavior (`tracker.label ?? tracker.name`).
+    var family: WidgetFamily? = nil
 
     var id: UUID {
         tracker.id
     }
 
+    /// User-facing title for the widget body. Family-aware as of v0.21.13:
+    ///
+    /// - `.systemSmall` → ALWAYS the canonical `tracker.name`.
+    /// - everything else → the user's `tracker.label` when set, otherwise
+    ///   `tracker.name` (the historical behavior).
+    ///
+    /// Why force `tracker.name` on `.systemSmall` (Ethan voice 3983,
+    /// 2026-05-24): the system-small widget has a single top-leading
+    /// title slot and no chip (`visibleConfigurationName` already
+    /// short-circuits to `nil` on small per the v0.21.11 fix at
+    /// commit `a3ad150`). When `tracker.label` is set to a short context
+    /// hint like "5h session" / "Session" — e.g. on multi-element-array
+    /// trackers introduced in v0.21.9 where the label describes the
+    /// secondary-stat slot rather than the tracker itself — the small
+    /// widget then displays a label that doesn't identify the tracker
+    /// at all. Ethan's report: "Why is the ChatGPT title now just says
+    /// '5h session' and the Claude session just says 'Session'? That's
+    /// not the name of my trackers." The v0.21.11 a3ad150 fix
+    /// suppressed the WRONG element (the config-name chip) — the actual
+    /// regression was the label-vs-name precedence at the title slot
+    /// itself. Forcing `tracker.name` on small ensures the title
+    /// always reads as "ChatGPT session usage" / "Claude session usage"
+    /// / "claude weekly usij" — i.e. the user-recognizable tracker name
+    /// they typed when they first created it. Larger families keep the
+    /// historical label-override because they have room for both the
+    /// label AND the config-name chip without colliding, and a custom
+    /// `tracker.label` there is intentional disambiguation when many
+    /// trackers fit on the same widget canvas (dashboard, list, etc.).
     var title: String {
-        tracker.label?.isEmpty == false ? tracker.label! : tracker.name
+        if family == .systemSmall {
+            // Force the canonical tracker name on small widgets — see
+            // the doc-comment above. Falling back to the label here
+            // would re-introduce the v0.21.9 regression that voice
+            // 3983 flagged.
+            return tracker.name
+        }
+        return tracker.label?.isEmpty == false ? tracker.label! : tracker.name
     }
 
     /// v0.21.9: ordered display strings for every selected secondary

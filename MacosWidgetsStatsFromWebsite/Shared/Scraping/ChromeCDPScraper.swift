@@ -23,6 +23,24 @@ final class ChromeCDPScraper {
         activeScrapers.count
     }
 
+    /// v0.21.12 race fix: returns the Chromium CDP target IDs currently
+    /// owned by in-flight scrapers (excluding the scraper passed in
+    /// `excluding`, which is the post-teardown caller about to sweep —
+    /// its own target is already closed). The orphan-tab sweep MUST pin
+    /// these so parallel scrapes don't race-kill each other's tabs.
+    /// Read on the main queue for the same reason as
+    /// `currentActiveScrapeCount`.
+    static func activeScrapeTargetIDs(excluding excludeID: UUID? = nil) -> Set<String> {
+        var ids = Set<String>()
+        for (id, scraper) in activeScrapers {
+            if let excludeID, id == excludeID { continue }
+            if let targetID = scraper.target?.id {
+                ids.insert(targetID)
+            }
+        }
+        return ids
+    }
+
     /// When the post-scrape tab count exceeds this, an orphan sweep fires
     /// automatically (v0.21.6 tab-leak mitigation, Ethan voice 3775).
     /// Healthy steady-state is 1–2 tabs (the headless about:blank
@@ -57,9 +75,33 @@ final class ChromeCDPScraper {
 
     static func scrape(tracker: Tracker, completion: @escaping Completion) {
         let scraper = ChromeCDPScraper(tracker: tracker, completion: completion)
-        DispatchQueue.main.async {
+
+        // v0.21.14 — stagger scrape kickoffs on the same profile by at
+        // least `ChromeBrowserProfile.minScrapeStartGap` seconds (15s).
+        // `reserveScrapeStart` atomically advances the per-profile
+        // watermark BEFORE returning the delay, so concurrent callers
+        // race-correctly serialize (see ChromeBrowserProfile.reserveScrapeStart
+        // docstring for race-correctness rationale).
+        //
+        // Fixes the multi-tracker CDP parallel-scrape flake (Ethan voice
+        // 3988): the MBP-side activity.log was showing intermittent
+        // `CDP websocket disconnected` + `scrape failed` storms whenever
+        // two trackers' NSBackgroundActivityScheduler windows fired
+        // within a second of each other. Layered ON TOP OF v0.21.12's
+        // `pinnedActiveScrapeTargets` orphan-sweep pin, which handles
+        // the residual case where two starts still happen to overlap
+        // (e.g. one already in flight when the next is forced via
+        // Scrape Now).
+        let delay = ChromeBrowserProfile.shared.reserveScrapeStart(profileName: tracker.browserProfile)
+
+        let kickoff = {
             activeScrapers[scraper.scrapeID] = scraper
             scraper.start()
+        }
+        if delay > 0 {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: kickoff)
+        } else {
+            DispatchQueue.main.async(execute: kickoff)
         }
     }
 
@@ -805,14 +847,27 @@ final class ChromeCDPScraper {
                                 "tabCount": "\(count)"
                             ])
                             if count > ChromeCDPScraper.tabCountOrphanSweepThreshold {
+                                // v0.21.12 race fix: harvest the target IDs of
+                                // every OTHER in-flight scraper so the sweep
+                                // never closes a parallel scrape's live tab.
+                                // `captured.scrapeID` is the just-finishing
+                                // scraper — its target is already closed via
+                                // Page.close above and excluded from the pin
+                                // set (else we'd pin a dead ID, harmless but
+                                // misleading in logs).
+                                let pinnedIDs = ChromeCDPScraper.activeScrapeTargetIDs(
+                                    excluding: captured.scrapeID
+                                )
                                 ActivityLogger.log("scrape", "tab count over threshold, sweeping orphan tabs", metadata: [
                                     "port": "\(configuration.cdpPort)",
                                     "tabCount": "\(count)",
-                                    "threshold": "\(ChromeCDPScraper.tabCountOrphanSweepThreshold)"
+                                    "threshold": "\(ChromeCDPScraper.tabCountOrphanSweepThreshold)",
+                                    "pinnedActiveScrapeTargets": "\(pinnedIDs.count)"
                                 ])
                                 ChromeBrowserProfile.shared.closeOrphanPageTargets(
                                     configuration: configuration,
                                     keepURLs: [],
+                                    keepTargetIDs: pinnedIDs,
                                     maxKeep: 8,
                                     completion: nil
                                 )
