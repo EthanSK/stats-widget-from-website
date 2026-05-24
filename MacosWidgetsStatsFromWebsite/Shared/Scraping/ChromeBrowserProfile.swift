@@ -1540,10 +1540,22 @@ final class ChromeBrowserProfile {
     /// closed — this is the conservative path for the agent startup sweep
     /// where we don't want to nuke a tab the user just logged into.
     ///
+    /// `keepTargetIDs` is a HARD pin: any target whose Chromium target ID
+    /// matches an entry here is unconditionally kept, even if the `maxKeep`
+    /// cap would otherwise demote it to disposable. v0.21.12 flake fix
+    /// (2026-05-24, Ethan voice 3981) — when two scrapes ran in parallel,
+    /// the first one to finish would post-teardown trigger a sweep with
+    /// `keepURLs: []`, and the still-running parallel scrape's tab was
+    /// "oldest" → got nuked → its CDP websocket disconnected → 30s timeout
+    /// → widget went stale. Callers MUST now pass the IDs of every
+    /// in-flight scrape's target via `keepTargetIDs` so the sweep can never
+    /// race-kill a concurrent scrape's page.
+    ///
     /// Logged at info level so the activity log can attribute tab churn.
     func closeOrphanPageTargets(
         configuration: ChromeBrowserLaunchConfiguration,
         keepURLs: Set<String> = [],
+        keepTargetIDs: Set<String> = [],
         maxKeep: Int = 8,
         completion: ((Int) -> Void)? = nil
     ) {
@@ -1559,8 +1571,18 @@ final class ChromeBrowserProfile {
                 // (about:blank, chrome://newtab/, mismatched).
                 let normalizedKeeps = Set(keepURLs.map(ChromeBrowserProfile.normalizedTabKey))
                 var keepers: [ChromeBrowserPageTarget] = []
+                var pinnedKeepers: [ChromeBrowserPageTarget] = []
                 var disposables: [ChromeBrowserPageTarget] = []
                 for target in targets {
+                    // HARD PIN: if this target is currently owned by an
+                    // in-flight scrape (its CDP target ID is in keepTargetIDs),
+                    // it CANNOT be swept regardless of URL or maxKeep cap.
+                    // This is the critical fix for the parallel-scrape race
+                    // described in the doc comment above.
+                    if keepTargetIDs.contains(target.id) {
+                        pinnedKeepers.append(target)
+                        continue
+                    }
                     let urlString = target.url?.absoluteString ?? ""
                     let normalized = ChromeBrowserProfile.normalizedTabKey(urlString)
                     if ChromeBrowserProfile.isOrphanCandidate(urlString) {
@@ -1576,12 +1598,21 @@ final class ChromeBrowserProfile {
                 }
 
                 // Cap keepers at maxKeep (oldest-first removal). Anything
-                // beyond the cap becomes disposable.
+                // beyond the cap becomes disposable. NOTE: pinned keepers
+                // (in-flight scrape targets) are NOT included in the cap —
+                // they're always kept. So if maxKeep=8 and we have 3 pinned
+                // + 12 ordinary keepers, we keep 3 pinned + the most-recent
+                // 8 ordinary = 11 total kept, 4 closed. This guarantees
+                // sweeping never kills a live scrape no matter how busy the
+                // browser gets.
                 if maxKeep > 0 && keepers.count > maxKeep {
                     let excess = keepers.count - maxKeep
                     let extra = Array(keepers.prefix(excess))
                     disposables.append(contentsOf: extra)
                 }
+                // Fold pinned keepers back into the keeper count for logging
+                // purposes (they're already excluded from `disposables`).
+                keepers.append(contentsOf: pinnedKeepers)
 
                 if disposables.isEmpty {
                     ActivityLogger.log("browser", "orphan tab sweep — nothing to close", metadata: [

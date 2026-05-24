@@ -747,12 +747,21 @@ final class ChromeIdentifyElementCoordinator {
         // port so any side-effect tabs (OAuth redirect bounces, etc.)
         // that landed on about:blank get nuked too.
         DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 1.0) {
-            ChromeBrowserProfile.shared.closeOrphanPageTargets(
-                configuration: configuration,
-                keepURLs: [],
-                maxKeep: 8,
-                completion: nil
-            )
+            // v0.21.12 race fix: pin in-flight scrape targets so this
+            // Identify-flow teardown sweep cannot accidentally close a
+            // background scraper's live tab. activeScrapeTargetIDs must be
+            // read on main (it's gated by the same dispatch discipline as
+            // activeScrapers).
+            DispatchQueue.main.async {
+                let pinnedIDs = ChromeCDPScraper.activeScrapeTargetIDs()
+                ChromeBrowserProfile.shared.closeOrphanPageTargets(
+                    configuration: configuration,
+                    keepURLs: [],
+                    keepTargetIDs: pinnedIDs,
+                    maxKeep: 8,
+                    completion: nil
+                )
+            }
         }
     }
 

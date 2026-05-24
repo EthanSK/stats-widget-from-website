@@ -205,12 +205,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 "trackerURLCount": "\(trackerURLs.count)"
             ])
 
-            ChromeBrowserProfile.shared.closeOrphanPageTargets(
-                configuration: configuration,
-                keepURLs: trackerURLs,
-                maxKeep: 8
-            ) { _ in
-                ChromeBrowserProfile.shared.endBackgroundUse(configuration: configuration)
+            // v0.21.12 race fix: pin in-flight scrape targets so the
+            // startup sweep cannot accidentally close a scraper's live
+            // tab. By the time this runs, BackgroundScheduler may already
+            // have fired a scrape on the same headless Chromium.
+            // activeScrapeTargetIDs requires the main queue.
+            DispatchQueue.main.async {
+                let pinnedIDs = ChromeCDPScraper.activeScrapeTargetIDs()
+                ChromeBrowserProfile.shared.closeOrphanPageTargets(
+                    configuration: configuration,
+                    keepURLs: trackerURLs,
+                    keepTargetIDs: pinnedIDs,
+                    maxKeep: 8
+                ) { _ in
+                    ChromeBrowserProfile.shared.endBackgroundUse(configuration: configuration)
+                }
             }
         }
     }

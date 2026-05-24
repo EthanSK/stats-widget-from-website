@@ -23,6 +23,24 @@ final class ChromeCDPScraper {
         activeScrapers.count
     }
 
+    /// v0.21.12 race fix: returns the Chromium CDP target IDs currently
+    /// owned by in-flight scrapers (excluding the scraper passed in
+    /// `excluding`, which is the post-teardown caller about to sweep —
+    /// its own target is already closed). The orphan-tab sweep MUST pin
+    /// these so parallel scrapes don't race-kill each other's tabs.
+    /// Read on the main queue for the same reason as
+    /// `currentActiveScrapeCount`.
+    static func activeScrapeTargetIDs(excluding excludeID: UUID? = nil) -> Set<String> {
+        var ids = Set<String>()
+        for (id, scraper) in activeScrapers {
+            if let excludeID, id == excludeID { continue }
+            if let targetID = scraper.target?.id {
+                ids.insert(targetID)
+            }
+        }
+        return ids
+    }
+
     /// When the post-scrape tab count exceeds this, an orphan sweep fires
     /// automatically (v0.21.6 tab-leak mitigation, Ethan voice 3775).
     /// Healthy steady-state is 1–2 tabs (the headless about:blank
@@ -805,14 +823,27 @@ final class ChromeCDPScraper {
                                 "tabCount": "\(count)"
                             ])
                             if count > ChromeCDPScraper.tabCountOrphanSweepThreshold {
+                                // v0.21.12 race fix: harvest the target IDs of
+                                // every OTHER in-flight scraper so the sweep
+                                // never closes a parallel scrape's live tab.
+                                // `captured.scrapeID` is the just-finishing
+                                // scraper — its target is already closed via
+                                // Page.close above and excluded from the pin
+                                // set (else we'd pin a dead ID, harmless but
+                                // misleading in logs).
+                                let pinnedIDs = ChromeCDPScraper.activeScrapeTargetIDs(
+                                    excluding: captured.scrapeID
+                                )
                                 ActivityLogger.log("scrape", "tab count over threshold, sweeping orphan tabs", metadata: [
                                     "port": "\(configuration.cdpPort)",
                                     "tabCount": "\(count)",
-                                    "threshold": "\(ChromeCDPScraper.tabCountOrphanSweepThreshold)"
+                                    "threshold": "\(ChromeCDPScraper.tabCountOrphanSweepThreshold)",
+                                    "pinnedActiveScrapeTargets": "\(pinnedIDs.count)"
                                 ])
                                 ChromeBrowserProfile.shared.closeOrphanPageTargets(
                                     configuration: configuration,
                                     keepURLs: [],
+                                    keepTargetIDs: pinnedIDs,
                                     maxKeep: 8,
                                     completion: nil
                                 )
