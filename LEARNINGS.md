@@ -24,6 +24,16 @@ Each entry looks like:
 (newest first)
 
 ---
+**Date:** 2026-05-24T22:50:00Z
+**Trigger:** Voices 4019 + 4020 (2026-05-24): "Can you increase the timeout then? So let it have longer time to load. Also, maybe set the chat GPT ones to happen every ten minutes anyway, twenty minutes. What would Cloudflare not start rate limiting me on?" + "Also, can we only show the error message if, after three consecutive failed attempts, the error notification?"
+**Symptom:** ChatGPT-domain trackers were timing out at the 30s outer scrape deadline (selectorPoll deadline at ~24-25s elapsed) AND occasionally getting Cloudflare-challenged on every scrape because the 30 min default cadence sat at the edge of Cloudflare's per-IP rate-limit window. Auto-repair agent + macOS notification then fired on EVERY single transient failure, even when the next scrape recovered cleanly.
+**Root cause:** (1) Cloudflare JS-challenge on chatgpt.com / *.openai.com pages can hold the metric element offscreen for 10-20s, clipping the 25s inner selector-poll deadline. Claude pages don't have this issue. (2) Hammering ChatGPT URLs every 30 min trips Cloudflare's rate heuristic; 15 min cadence stays under the threshold. (3) HookExecutor's .onFailure trigger fired immediately on first failure with no consecutive-failure gate, even though TrackerAttentionNotifier already had a `>= 3` gate for the system notification — so the two layers were inconsistent.
+**Fix:** v0.21.29: added `Tracker.isChatGPTDomain(url:)`, `Tracker.scrapeTimeoutSec` (60s for ChatGPT, 30s otherwise), `Tracker.effectiveRefreshIntervalSec` (floors ChatGPT at 900s). ChromeCDPScraper armTimeout + inner selectorPoll deadline both derive from `tracker.scrapeTimeoutSec`. BackgroundScheduler.fireScrapeLifecycleHooks now suppresses .onFailure hooks when `consecutiveFailureCount < 3` AND logs the suppression. auto-repair-tracker.sh duplicates the gate defensively (in case a user-authored hook bypasses the Swift gate). Scheduler "rescheduled" log gains `configuredIntervalSec` + `domainCadenceFloor` so post-hoc you can tell whether the override fired.
+**Commit:** <pending — see git log>
+**Guard:** Activity-log gate: "rescheduled" log lines for ChatGPT trackers should show `intervalSec=900 domainCadenceFloor=chatgpt-15min`; "started scrape" log lines for ChatGPT trackers should show `timeoutSec=60`. Auto-repair / TrackerAttentionNotifier should both fire at the same moment (failure #3), never on failure #1.
+---
+
+---
 **Date:** 2026-05-24T02:58:22Z
 **Trigger:** Voice 3988 (2026-05-24): 'Again, I see selector needs something. What the fuck? Investigate the logs. ... Should we slow slow it down a bit, combine them, stagger them better? Maybe it needs to be staggered better.'
 **Symptom:** Stats Widget showing random warning icons (⚠) instead of tracker values + frequent 'CDP websocket disconnected' / 'Timed out loading' scrape failures across all 4 trackers (Claude session, Claude weekly, ChatGPT session, ChatGPT codex). Pre-v0.21.14 log was a continuous storm of disconnects.

@@ -170,9 +170,16 @@ final class BackgroundScheduler: ObservableObject {
         let identifier = "com.ethansk.macos-widgets-stats-from-website.scrape.\(tracker.id.uuidString)"
         let scheduler = schedulers[tracker.id] ?? NSBackgroundActivityScheduler(identifier: identifier)
         scheduler.invalidate()
-        let interval = TimeInterval(max(60, tracker.refreshIntervalSec))
+        // v0.21.29 (Ethan voice 4019): use the tracker's EFFECTIVE refresh
+        // interval, which floors ChatGPT-domain trackers at 15 min (900s)
+        // to dodge Cloudflare's per-IP rate-limit. Claude/other trackers
+        // continue to use their stored `refreshIntervalSec` unchanged.
+        // The legacy 60s minimum below still applies as a sanity floor in
+        // case someone hand-edits trackers.json to an impossible value.
+        let effectiveIntervalSec = tracker.effectiveRefreshIntervalSec
+        let interval = TimeInterval(max(60, effectiveIntervalSec))
         scheduler.interval = interval
-        scheduler.tolerance = TimeInterval(max(30, tracker.refreshIntervalSec / 5))
+        scheduler.tolerance = TimeInterval(max(30, effectiveIntervalSec / 5))
         scheduler.repeats = true
         schedulers[tracker.id] = scheduler
 
@@ -180,10 +187,17 @@ final class BackgroundScheduler: ObservableObject {
         // working without having to instrument from outside the app.
         // Filter with: `log show --predicate 'subsystem == "..."' --info`
         // or grep activity.log.
+        // v0.21.29: include `domainCadenceFloor` so we can tell at a glance
+        // whether the ChatGPT 15-min override actually kicked in for this
+        // tracker, vs the user just happening to have set a 15-min cadence.
+        let cadenceFloored = Tracker.isChatGPTDomain(url: tracker.url)
+            && tracker.refreshIntervalSec < 900
         ActivityLogger.log("scheduler", "rescheduled", metadata: [
             "trackerID": tracker.id.uuidString,
             "trackerName": tracker.name,
-            "intervalSec": "\(Int(interval))"
+            "intervalSec": "\(Int(interval))",
+            "configuredIntervalSec": "\(tracker.refreshIntervalSec)",
+            "domainCadenceFloor": cadenceFloored ? "chatgpt-15min" : "none"
         ])
 
         scheduler.schedule { [weak self] completion in
@@ -251,6 +265,31 @@ final class BackgroundScheduler: ObservableObject {
         // Re-read the tracker so we pick up any hook config updates that
         // landed between scrape-start and now (e.g. MCP add_tracker_hook).
         let latestTracker = AppGroupStore.loadSharedConfiguration().trackers.first { $0.id == tracker.id } ?? tracker
+
+        // v0.21.29 (Ethan voice 4020): suppress failure hooks (incl. the
+        // built-in Auto-repair Claude spawner) until the tracker has
+        // failed 3 times in a row. ChatGPT pages routinely have a single
+        // Cloudflare-challenge blip every few hours that recovers on the
+        // next scrape; firing the auto-repair agent + macOS notification
+        // on every transient failure was noisy + woke Ethan up. The
+        // 3-consecutive-failure floor matches the existing
+        // `notifyBrokenTracker` gate in `handlePostRecord` so the user
+        // sees both the system notification AND the agent spawn at the
+        // same threshold (consistency = fewer surprises).
+        //
+        // Success hooks are NOT gated — onSuccess fires on every healthy
+        // scrape as before (user-authored success hooks shouldn't have
+        // surprise quiet-periods).
+        let failureCount = reading.consecutiveFailureCount ?? 0
+        if trigger == .onFailure, failureCount < 3 {
+            ActivityLogger.log("hook", "failure-hooks suppressed (consecutiveFailureCount<3)", metadata: [
+                "trackerID": latestTracker.id.uuidString,
+                "trackerName": latestTracker.name,
+                "consecutiveFailureCount": "\(failureCount)"
+            ])
+            return
+        }
+
         let context = HookScrapeContext(
             trigger: trigger,
             firedAt: Date(),

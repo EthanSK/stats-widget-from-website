@@ -33,6 +33,27 @@ log() {
 
 log "auto-repair-tracker.sh fired for tracker ${TRACKER_NAME:-?} (${TRACKER_ID:-?})"
 log "  url=${TRACKER_URL:-?} selector=${TRACKER_SELECTOR:-?} error=${ERROR_MESSAGE:-?}"
+log "  consecutiveFailureCount=${CONSECUTIVE_FAILURE_COUNT:-?}"
+
+# v0.21.29 defensive gate (Ethan voice 4020): the primary gate lives in
+# BackgroundScheduler.fireScrapeLifecycleHooks() which now suppresses
+# .onFailure hooks until consecutiveFailureCount >= 3. This script
+# duplicates the check because (a) trackers.json might carry a user-
+# authored failure hook that invokes the auto-repair script directly,
+# bypassing the Swift-side gate, and (b) belt-and-braces is cheap.
+#
+# If CONSECUTIVE_FAILURE_COUNT is unset (older host app that doesn't
+# inject the env var yet), assume 3 so we DON'T silently suppress on
+# upgrade paths.
+FAILURE_COUNT="${CONSECUTIVE_FAILURE_COUNT:-3}"
+if ! [[ "$FAILURE_COUNT" =~ ^[0-9]+$ ]]; then
+    log "  WARN: CONSECUTIVE_FAILURE_COUNT=\"$FAILURE_COUNT\" not numeric; treating as 3 to avoid suppressing."
+    FAILURE_COUNT=3
+fi
+if (( FAILURE_COUNT < 3 )); then
+    log "  suppressing auto-repair (consecutiveFailureCount=$FAILURE_COUNT < 3, voice 4020)"
+    exit 0
+fi
 
 # Locate Claude Code on PATH or in well-known install spots. We don't
 # hard-fail when it's missing; the agent might be installed in a

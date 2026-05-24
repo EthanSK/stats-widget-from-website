@@ -148,7 +148,11 @@ final class ChromeCDPScraper {
             "renderMode": tracker.renderMode.rawValue,
             "selectorHash": Self.shortHash(tracker.selector),
             "selectorLength": "\(tracker.selector.count)",
-            "timeoutSec": "30",
+            // v0.21.29 (Ethan voice 4019): per-domain timeout. ChatGPT
+            // trackers get 60s (Cloudflare challenge headroom); everything
+            // else stays on 30s. Log the actual value so post-hoc forensics
+            // can tell which path a stuck scrape took.
+            "timeoutSec": "\(tracker.scrapeTimeoutSec)",
             "cdpPort": "\(ChromeBrowserProfile.shared.configuration(profileName: tracker.browserProfile).cdpPort)"
         ])
         beginPhase("ensureLaunched")
@@ -253,7 +257,16 @@ final class ChromeCDPScraper {
                         "elapsedMs": "\(prepElapsedMs)"
                     ])
                     self.beginPhase("selectorPoll")
-                    self.waitForSelector(deadline: Date().addingTimeInterval(25))
+                    // v0.21.29 (voice 4019): selector-poll deadline tracks
+                    // the outer scrape timeout. We keep a 5s buffer so the
+                    // inner deadline expires first and we hit the proper
+                    // "selectorPoll deadline" fallback path (which dumps
+                    // lastSelectorStatus into the activity log) instead of
+                    // racing the outer DispatchSource timer. ChatGPT
+                    // trackers get 55s here (60s outer - 5s buffer);
+                    // Claude trackers stay on 25s (30s outer - 5s buffer).
+                    let selectorPollBudget = TimeInterval(self.tracker.scrapeTimeoutSec - 5)
+                    self.waitForSelector(deadline: Date().addingTimeInterval(selectorPollBudget))
                 }
             }
         case .failure(let error):
@@ -765,7 +778,13 @@ final class ChromeCDPScraper {
             self.finish(.failure(ScraperError.navigationFailed("Timed out loading \(self.tracker.url).")))
         }
         timeout = item
-        DispatchQueue.main.asyncAfter(deadline: .now() + 30, execute: item)
+        // v0.21.29 (voice 4019): per-tracker outer timeout. ChatGPT-domain
+        // trackers get 60s (Cloudflare JS-challenge headroom); everything
+        // else stays on the original 30s. Computed from the same helper
+        // (Tracker.scrapeTimeoutSec) the "started scrape" log entry uses
+        // so the activity log + actual fire time can never disagree.
+        let outerTimeoutSec = TimeInterval(tracker.scrapeTimeoutSec)
+        DispatchQueue.main.asyncAfter(deadline: .now() + outerTimeoutSec, execute: item)
     }
 
     // MARK: - v0.21.8 phase + helpers
