@@ -167,14 +167,36 @@ targets:
           ENABLE_DEBUG_DYLIB: NO
         Release:
           CODE_SIGN_ENTITLEMENTS: MacosWidgetsStatsFromWebsite/Apps/MainApp/MacosWidgetsStatsFromWebsite.entitlements
-          # Manual Developer ID signing for the Sparkle distribution channel —
-          # see settings.base comment for the full rationale. Debug intentionally
-          # stays Automatic so local developer Xcode runs work without a CI
-          # keychain. Explicitly NO PROVISIONING_PROFILE_SPECIFIER — Developer
-          # ID distribution does not use provisioning profiles. v0.21.22, voice
-          # 4002 / MBP-CC bridge msg-65036391.
+          # Archive-then-resign pattern (v0.21.22, voice 4002 / MBP-CC
+          # bridge msg-65036391). The Release archive is built with the
+          # ad-hoc identity ("-"); the post-archive resign pass in
+          # scripts/sign-release.sh walks the .app inside-out and applies
+          # the real "Developer ID Application" identity with each
+          # nested bundle's own entitlements (widget extension keeps its
+          # sandbox-enabled entitlements, Sparkle XPCs keep theirs,
+          # embedded Chromium keeps its inherited team identity).
+          #
+          # Why we can't use a single xcodebuild signing pass:
+          #   1. Manual + Developer ID Application fails archive because
+          #      the App Groups + keychain-access-groups entitlements
+          #      legitimately require a provisioning profile under
+          #      Xcode 16+, and Developer ID distribution is
+          #      profile-free.
+          #   2. Automatic + Developer ID Application is an explicit
+          #      Xcode conflict ("conflicting code signing identity
+          #      Developer ID Application has been manually specified").
+          #   3. Automatic on its own (Apple Development cert) fails
+          #      under CI because the keychain has no logged-in Apple
+          #      ID, and on a Developer-ID-only signing keychain the
+          #      Mac Development cert doesn't exist (this is the
+          #      v0.21.21 failure that motivated the whole rename).
+          #
+          # Debug intentionally stays Automatic so local Xcode runs
+          # work with the developer's logged-in Apple ID without
+          # manual cert management.
           CODE_SIGN_STYLE: Manual
-          CODE_SIGN_IDENTITY: "Developer ID Application"
+          CODE_SIGN_IDENTITY: "-"
+          DEVELOPMENT_TEAM: T34G959ZG8
     info:
       path: MacosWidgetsStatsFromWebsite/Apps/MainApp/Info.plist
       properties:
@@ -266,16 +288,16 @@ targets:
         SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) WIDGET_EXTENSION"
         SKIP_INSTALL: YES
       configs:
-        # The widget extension is signed Manual Developer ID for Release for
-        # the same reason as the main app — see the settings.base comment at
-        # the top of this file. v0.21.21's CI failure was specifically the
-        # widget extension being asked for a Mac Development cert that
-        # doesn't exist on the Developer-ID-only signing keychain. Debug
-        # stays Automatic so local Xcode runs continue to work. v0.21.22,
-        # voice 4002 / MBP-CC bridge msg-65036391.
+        # Same archive-then-resign pattern as the main app — see that
+        # block's comment for the rationale. The widget extension's
+        # sandbox-enabled entitlements are applied by scripts/sign-release.sh
+        # during the post-archive deep-sign walk (NOT the same entitlements
+        # as the outer .app). v0.21.22, voice 4002 / MBP-CC bridge
+        # msg-65036391.
         Release:
           CODE_SIGN_STYLE: Manual
-          CODE_SIGN_IDENTITY: "Developer ID Application"
+          CODE_SIGN_IDENTITY: "-"
+          DEVELOPMENT_TEAM: T34G959ZG8
     info:
       path: MacosWidgetsStatsFromWebsite/Apps/WidgetExtension/Info.plist
       properties:

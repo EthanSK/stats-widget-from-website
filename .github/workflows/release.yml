@@ -258,13 +258,20 @@ jobs:
       # or stale vendor/chromium snapshots and re-signs the embedded browser
       # before the archive is exported/notarized.
 
-      - name: Build archive
+      - name: Build archive (ad-hoc signed)
         env:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           DEVELOPMENT_TEAM: ${{ secrets.DEVELOPMENT_TEAM }}
         run: |
           set -euo pipefail
           TEAM_ID="${APPLE_TEAM_ID:-${DEVELOPMENT_TEAM:-$DEVELOPMENT_TEAM_FALLBACK}}"
+          # v0.21.22 (voice 4002 / MBP-CC bridge msg-65036391): archive
+          # runs with CODE_SIGN_IDENTITY="-" (ad-hoc) — see project.yml's
+          # configs.Release block for the full rationale. The Developer ID
+          # signature is applied by scripts/sign-release.sh in the next
+          # step, which deep-walks the .app and signs each nested bundle
+          # (widget extension, Sparkle, Chromium, outer .app) with the
+          # correct per-bundle entitlements.
           xcodebuild archive \
             -project MacosWidgetsStatsFromWebsite.xcodeproj \
             -scheme MacosWidgetsStatsFromWebsite \
@@ -274,45 +281,53 @@ jobs:
             -scmProvider system \
             DEVELOPMENT_TEAM="$TEAM_ID"
 
-      - name: Export archive
-        run: |
-          xcodebuild -exportArchive \
-            -archivePath build/MacosWidgetsStatsFromWebsite.xcarchive \
-            -exportOptionsPlist scripts/ExportOptions.plist \
-            -exportPath build/Export
-
-      # Rename the .app wrapper from the internal build product name
-      # ("MacosWidgetsStatsFromWebsite.app") to the user-facing name
-      # ("Stats Widget from Website.app"). Internal executable + bundle
-      # identifier + Info.plist all stay unchanged — this is purely a
-      # filesystem-level rename of the .app directory. Done AFTER
-      # exportArchive because xcodebuild emits the bundle under the
-      # productName set in project.yml, which intentionally stays as the
-      # internal name so local Debug builds keep working. v0.21.22, voice
-      # 4002 / MBP-CC bridge msg-65036391.
-      - name: Rename exported .app wrapper
+      # Walk the archived .app inside-out and re-sign every nested bundle
+      # (widget extension with its own sandbox-enabled entitlements;
+      # Sparkle XPCs / Autoupdate / Updater.app; embedded Chromium tree;
+      # outer .app last with the main-app entitlements) using the imported
+      # Developer ID Application identity. See the script's header for
+      # the full rationale. v0.21.22.
+      - name: Deep-sign archive with Developer ID
         run: |
           set -euo pipefail
-          SOURCE="build/Export/$EXPORTED_APP_FILENAME"
+          ./scripts/sign-release.sh build/MacosWidgetsStatsFromWebsite.xcarchive
+
+      # Copy the deep-signed .app out of the archive into build/Export/
+      # and rename the wrapper directory to the user-facing name
+      # ("Stats Widget from Website.app"). We deliberately do NOT use
+      # xcodebuild -exportArchive — that would try to redo signing with
+      # the ExportOptions.plist, and any mismatch between our post-archive
+      # deep-sign and xcodebuild's re-sign attempt produces a broken
+      # bundle. The .app inside the .xcarchive is already a complete,
+      # properly-signed product. v0.21.22, voice 4002 / MBP-CC bridge
+      # msg-65036391.
+      - name: Copy + rename .app for distribution
+        run: |
+          set -euo pipefail
+          mkdir -p build/Export
+          SOURCE="build/MacosWidgetsStatsFromWebsite.xcarchive/Products/Applications/$EXPORTED_APP_FILENAME"
           DEST="build/Export/$APP_NAME.app"
           if [ ! -d "$SOURCE" ]; then
-            echo "::error::Expected exported .app at $SOURCE; export step did not produce it."
-            ls -la build/Export || true
+            echo "::error::Expected signed .app at $SOURCE; archive step did not produce it."
+            ls -la build/MacosWidgetsStatsFromWebsite.xcarchive/Products/Applications/ || true
             exit 1
           fi
-          mv "$SOURCE" "$DEST"
-          # Sanity-verify the embedded executable name did NOT change —
-          # only the wrapper directory's name changed. The executable
-          # inside Contents/MacOS/ is the build's CFBundleExecutable
-          # (resolved at build time from PRODUCT_NAME) and must remain
-          # "MacosWidgetsStatsFromWebsite" for the LaunchAgent + CLI
-          # fallback resolver to work without further changes.
+          # ditto preserves extended attributes + signatures.
+          ditto "$SOURCE" "$DEST"
+          # Internal executable name MUST NOT change — only the wrapper
+          # directory's filename changes. The executable inside
+          # Contents/MacOS/ stays "MacosWidgetsStatsFromWebsite" so the
+          # LaunchAgent + CLI fallback resolver keep working.
           if [ ! -x "$DEST/Contents/MacOS/MacosWidgetsStatsFromWebsite" ]; then
             echo "::error::Renamed .app is missing internal executable Contents/MacOS/MacosWidgetsStatsFromWebsite"
             ls -la "$DEST/Contents/MacOS/" || true
             exit 1
           fi
-          echo "Renamed $SOURCE -> $DEST (internal executable preserved)"
+          # Re-verify signature after the copy — ditto preserves the
+          # signature but the renamed wrapper has a different parent path,
+          # so the seal check has to pass on the final filesystem path.
+          /usr/bin/codesign --verify --deep --strict --verbose=2 "$DEST"
+          echo "Copied + renamed $SOURCE -> $DEST"
 
       - name: Download Sparkle tools
         env:
