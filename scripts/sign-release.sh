@@ -88,6 +88,23 @@ if [[ -d "$CHROMIUM_APP" ]]; then
     while IFS= read -r -d '' dylib; do
         sign "$dylib"
     done < <(find "$CHROMIUM_APP/Contents/Frameworks" -name "*.dylib" -print0 2>/dev/null)
+    # Chromium also ships a few loose helper executables directly under
+    # Chromium Framework.framework/Versions/<rev>/Helpers/ (for example
+    # chrome_crashpad_handler, app_mode_loader, and web_app_shortcut_copier).
+    # They are not .app/.xpc bundles and not .dylibs, so the older signing
+    # walk missed them even though codesign --deep verified the outer tree.
+    # Apple notarization v0.21.30 rejected exactly these helpers for lacking
+    # our Developer ID signature + secure timestamp; sign each executable
+    # helper explicitly before sealing the framework wrapper.
+    while IFS= read -r -d '' helper_tool; do
+        sign "$helper_tool"
+    done < <(
+        find "$CHROMIUM_APP/Contents/Frameworks/Chromium Framework.framework/Versions" \
+            -path "*/Helpers/*" \
+            -type f \
+            -perm -111 \
+            -print0 2>/dev/null
+    )
     # Sign nested helper bundles (helpers run as separate processes)
     while IFS= read -r -d '' helper; do
         sign "$helper"
