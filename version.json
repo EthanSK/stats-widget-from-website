@@ -1,8 +1,8 @@
 {
-  "version": "0.17.10",
+  "version": "0.21.30",
   "channel": "stable",
-  "updated_at": "2026-05-14T00:00:00Z",
+  "updated_at": "2026-05-25T22:11:13Z",
   "release_url": "https://github.com/EthanSK/stats-widget-from-website/releases/latest",
   "appcast_url": "https://ethansk.github.io/stats-widget-from-website/appcast.xml",
-  "download_url": "https://github.com/EthanSK/stats-widget-from-website/releases/latest/download/MacosWidgetsStatsFromWebsite-latest.zip"
+  "download_url": "https://github.com/EthanSK/stats-widget-from-website/releases/latest/download/Stats-Widget-from-Website-latest.zip"
 }
