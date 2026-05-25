@@ -400,7 +400,30 @@ jobs:
 
       - name: Staple app
         run: |
-          xcrun stapler staple "build/Export/$APP_NAME.app"
+          set -euo pipefail
+
+          # Apple can report a notarization as Accepted before the stapling
+          # ticket is visible through the CloudKit lookup that `stapler`
+          # performs. v0.21.30 proved that race: notarytool accepted the
+          # upload, then an immediate stapler call failed with
+          # "Record not found". Retry with a short bounded backoff so a
+          # transient ticket-propagation lag does not abort an otherwise
+          # valid release.
+          for attempt in {1..10}; do
+            if xcrun stapler staple "build/Export/$APP_NAME.app"; then
+              break
+            fi
+
+            if [ "$attempt" -eq 10 ]; then
+              echo "::error::Stapling failed after $attempt attempts."
+              exit 65
+            fi
+
+            sleep_seconds=$((attempt * 15))
+            echo "Stapling ticket not visible yet; retrying in ${sleep_seconds}s (attempt ${attempt}/10)."
+            sleep "$sleep_seconds"
+          done
+
           xcrun stapler validate "build/Export/$APP_NAME.app"
 
       - name: Create release ZIPs
