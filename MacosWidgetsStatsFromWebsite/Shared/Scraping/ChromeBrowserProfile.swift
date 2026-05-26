@@ -1189,7 +1189,12 @@ final class ChromeBrowserProfile {
             "--disable-sync",
             "--disable-background-networking",
             "--disable-component-update",
-            "--disable-features=Translate,MediaRouter",
+            // NOTE: The original "--disable-features=Translate,MediaRouter"
+            // gate moved DOWN into the consolidated --disable-features
+            // bundle in the v0.21.45 second-wave defensive block below.
+            // Chromium only honors a SINGLE --disable-features flag value
+            // (the last one wins on duplicates), so to add more features
+            // we have to merge — not append a second flag.
             "--disable-session-crashed-bubble",
             "--hide-crash-restore-bubble",
             "--no-proxy-server",
@@ -1256,7 +1261,92 @@ final class ChromeBrowserProfile {
             "--disable-speech-synthesis-api",
             "--mute-audio",
             "--disable-audio-output",
-            "--disable-notifications"
+            "--disable-notifications",
+            // Crash fix (v0.21.45): SECOND-WAVE defensive disables for a NEW
+            // Tahoe browser-main crash signature that survived the v0.21.40
+            // speech-API patch. Two crashes 18:15:59 + 18:48:59 BST 2026-05-26
+            // landed at imageOffset 0x6816050 — 448 bytes BEYOND the original
+            // 0x6816010 speech-API crash, i.e. a sibling Chromium-150
+            // browser-init code path that we hadn't yet muzzled. The unified
+            // log around both crashes shows the SAME bursts of macOS API
+            // probes in the seconds before SIGTRAP:
+            //   • CoreLocation / CLLocationManager init + authorization
+            //     check (returns NotDetermined → triggers Tahoe TCC path)
+            //   • LocalAuthentication / Biometry — `canEvaluatePolicy:4`
+            //     LAContext create/dealloc cycles (Touch-ID / passkey /
+            //     WebAuthn platform-authenticator probe). 18:15 crash
+            //     showed FIVE LAContext allocations in <100 ms.
+            //   • TCC kTCCServiceMicrophone + kTCCServiceCamera requests
+            //     (getUserMedia / MediaDevices.enumerateDevices probe).
+            //     18:48 crash showed mic + 2x camera TCC IPC sync calls
+            //     ~5 s before SIGTRAP.
+            //   • SafariServices SFUniversalLink "Process not entitled"
+            //     repeatedly (cosmetic but burns startup time).
+            // The previous --mute-audio / --disable-audio-output gate
+            // disabled audio OUTPUT (page-driven playback) but did NOT
+            // disable audio/video INPUT (capture) — Chromium 150 still
+            // initializes MediaDevices, MediaStream, WebRTC peer-connection
+            // factory at startup which probes Camera+Mic TCC. Similarly we
+            // had no flag covering Geolocation (CLLocationManager) or
+            // WebAuthn/PublicKeyCredentials (Biometry). All three were
+            // hitting Tahoe-changed permission daemons and one of them is
+            // landing the IMMEDIATE_CRASH/CHECK at 0x6816050.
+            //
+            // Cumulative defensive bundle below — none of these APIs are
+            // ever exercised by the scraper (we read DOM via CDP, full
+            // stop), so disabling them is free.
+            //
+            //   --use-fake-ui-for-media-stream   → auto-deny getUserMedia
+            //                                      prompts (we won't ever
+            //                                      hit this codepath but
+            //                                      belt-and-suspenders)
+            //   --use-fake-device-for-media-stream → return fake camera /
+            //                                      mic descriptors instead
+            //                                      of probing real ones via
+            //                                      AVCaptureDevice → TCC
+            //   --disable-features=... blob below → master kill-switch for
+            //                                      the specific Chromium
+            //                                      subsystems that init at
+            //                                      browser-main and hit the
+            //                                      crashing code path
+            //
+            // Feature kill-list rationale (one line per feature):
+            //   MediaSession,HardwareMediaKeyHandling — kills NowPlaying /
+            //     media-key registration (system audio-route + media-key
+            //     hooks). Tahoe rewrote MPNowPlayingInfoCenter; common
+            //     SIGTRAP source on early Tahoe builds.
+            //   NotificationTriggers,WebNotifications — kills UserNotifications
+            //     framework probe at init, on top of existing
+            //     --disable-notifications (different layer; that flag
+            //     gates web-API surface, this gates the macOS bridge).
+            //   MediaCapture,WebAudio,WebRtcPipeWireCapturer,
+            //     AudioServiceOutOfProcess — kills the entire AV-capture
+            //     subsystem so MediaDevices.enumerateDevices doesn't
+            //     enumerate AVCaptureDevice list at startup.
+            //   WebMidi,WebUSB,WebBluetooth,WebHid,WebSerial,WebNFC —
+            //     all hit macOS permission daemons. We do NONE of these.
+            //   Geolocation,DeviceOrientationEvents — kills
+            //     CLLocationManager init + motion-coprocessor probe.
+            //   AmbientAuthenticationInPrivateModes,WebAuthentication —
+            //     kills LocalAuthentication / Biometry probe path. Note
+            //     the WebAuthentication flag has historically been
+            //     "WebAuthentication" / "U2F" in Chromium; we cover both
+            //     names defensively.
+            //   IdleDetection,Serial,ContactsAPI — niche perm probes.
+            //   Translate,MediaRouter — already in the --disable-features
+            //     above; included again here in the consolidated list for
+            //     readability (Chromium dedupes feature names internally).
+            //
+            // CAUTION: `--disable-features` only accepts ONE comma-list.
+            // We REPLACE the earlier "--disable-features=Translate,MediaRouter"
+            // entry (also above) with one combined comma-list below.
+            // Refs: crash reports ~/Library/Logs/DiagnosticReports/
+            //       Chromium-2026-05-26-{181559,184859}.ips
+            //       (frame#0 imageOffset = 109142480 = 0x6816050)
+            //       LEARNINGS.md "chromium-tahoe-26-browser-main-crash"
+            "--use-fake-ui-for-media-stream",
+            "--use-fake-device-for-media-stream",
+            "--disable-features=Translate,MediaRouter,MediaSession,HardwareMediaKeyHandling,NotificationTriggers,WebNotifications,Notifications,MediaCapture,WebAudio,WebRtcPipeWireCapturer,AudioServiceOutOfProcess,WebMidi,WebUSB,WebBluetooth,WebHid,WebSerial,WebNFC,Geolocation,DeviceOrientationEvents,DeviceMotionEvents,AmbientAuthenticationInPrivateModes,WebAuthentication,U2F,IdleDetection,Serial,ContactsAPI,DigitalGoods"
         ]
 
         if headless {

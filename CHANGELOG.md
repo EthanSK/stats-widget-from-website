@@ -5,6 +5,40 @@ Release-by-release notes for the Stats Widget from Website project.
 Format: each entry is dated, lists the user-visible changes first, then the
 under-the-hood / signing / packaging changes. Newest first.
 
+## v0.21.45 — 2026-05-26
+
+### User-facing — second-wave Chromium crash fix (Tahoe 26)
+
+- **Stop the new browser-init SIGTRAP on macOS 26 Tahoe.** v0.21.40
+  patched the original CrBrowserMain crash at imageOffset 0x6816010 by
+  disabling the Web Speech API + audio output + notifications. Two new
+  crashes on 2026-05-26 (18:15 + 18:48 BST) landed at imageOffset
+  **0x6816050** — a sibling Chromium-150 browser-init code path 448
+  bytes beyond the original. Unified system log captured a flurry of
+  macOS API probes seconds before each SIGTRAP: CoreLocation
+  (`CLLocationManager` init + authorization check), LocalAuthentication
+  (5× `LAContext canEvaluatePolicy` calls, the Touch-ID / WebAuthn
+  platform-authenticator probe), and TCC requests for
+  `kTCCServiceMicrophone` + `kTCCServiceCamera` (`getUserMedia` /
+  `MediaDevices.enumerateDevices` probe). We now disable ALL of these
+  Chromium subsystems at launch — Geolocation, WebAuthn, MediaCapture,
+  WebMIDI, WebUSB, WebBluetooth, WebHID, WebSerial, WebNFC, MediaSession,
+  HardwareMediaKeyHandling, IdleDetection, ContactsAPI — none of which
+  are ever used by the DOM-only scraper.
+
+### Under the hood
+
+- Added a single consolidated `--disable-features=...` comma-list in
+  `ChromeBrowserProfile.swift::buildChromeLaunchArguments` (Chromium
+  only honors one `--disable-features` flag — the last one wins, so
+  the earlier `Translate,MediaRouter` gate was MERGED into the new
+  list). Also added `--use-fake-ui-for-media-stream` +
+  `--use-fake-device-for-media-stream` as belt-and-suspenders to
+  prevent any AVCaptureDevice enumeration in case the feature flags
+  miss a code path. Heavily commented at the launch-args site with
+  the exact crash imageOffsets + the unified-log signals each flag
+  is mitigating.
+
 ## v0.21.44 — 2026-05-26
 
 ### User-facing — no more stale widgets after a Sparkle install
