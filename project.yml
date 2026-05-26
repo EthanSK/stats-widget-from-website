@@ -77,8 +77,8 @@ settings:
     # from Bundle.main.infoDictionary at runtime, so nothing else needs touching.
     # Enforced by .githooks/pre-commit (see core.hooksPath in repo config) and
     # by scripts/validate_release_metadata.py.
-    MARKETING_VERSION: "0.21.32"
-    CURRENT_PROJECT_VERSION: "1288"
+    MARKETING_VERSION: "0.21.33"
+    CURRENT_PROJECT_VERSION: "1289"
 
 packages:
   Sparkle:
@@ -221,12 +221,30 @@ targets:
               - macos-widgets-stats-from-website
         LSApplicationCategoryType: public.app-category.utilities
         LSMinimumSystemVersion: $(MACOSX_DEPLOYMENT_TARGET)
-        # v0.21.0 — LSUIElement makes the app a menu-bar agent: no Dock
-        # icon at launch, no menu bar, no auto-presented window. The
-        # NSStatusItem in MenuBarController is the only persistent UI.
-        # Preferences window is shown on demand (briefly bumps the
-        # activation policy to .regular while open).
-        LSUIElement: true
+        # v0.21.32 — hybrid UX: LSUIElement=false makes this a normal
+        # Mac app (Dock icon visible, auto-opens prefs window on launch,
+        # Cmd-Tab discoverable). The MenuBarController NSStatusItem
+        # stays installed alongside the Dock icon — same pattern as
+        # Bartender / Time Out / iStat Menus.
+        #
+        # Why flipping LSUIElement off doesn't hurt the widget budget:
+        # the chronod ~40-70 timeline reloads/day budget for non-
+        # foreground apps applies the same to Dock-visible-background
+        # apps as it does to LSUIElement agents. What gets us the
+        # widget budget benefit is (a) host-process longevity (host
+        # stays alive via the host-watchdog LaunchAgent's KeepAlive)
+        # and (b) the 30 min scrape cadence in BackgroundScheduler.
+        # Neither depends on LSUIElement. See LEARNINGS.md v0.21.32
+        # entry. The xcodegen-merged Info.plist takes precedence over
+        # the raw source Info.plist, so this is the SOURCE OF TRUTH —
+        # don't add LSUIElement back here.
+        #
+        # NOTE: this key is intentionally OMITTED from the merged
+        # Info.plist (rather than set to false) so the absence is
+        # semantically equivalent to "no, this app is NOT a menu-bar
+        # agent" — LSUIElement defaults to false when absent, but
+        # being explicit avoids any future xcodegen merge weirdness.
+        LSUIElement: false
         NSPrincipalClass: NSApplication
         SUEnableAutomaticChecks: true
         SUFeedURL: https://ethansk.github.io/stats-widget-from-website/appcast.xml
