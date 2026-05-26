@@ -24,6 +24,16 @@ Each entry looks like:
 (newest first)
 
 ---
+**Date:** 2026-05-26T23:51:55Z
+**Trigger:** MBP-CC voice 4256: 'I just got Chromium crashed investigate. I think it was stats widget.'
+**Symptom:** Chromium 150 SIGTRAP at 0x6816xxx region still firing ~5/hour after v0.21.45 defensive bundle; ~13 crashes in 3 hours post-install
+**Root cause:** v0.21.45 disabled only the subsystems we had unified-log evidence for (CoreLocation, LocalAuthentication, MediaCapture/Capture). The Tahoe-26 Chromium 150 browser-init still probes other crashy subsystems (PiP, ScreenCapture, WebOTP, BackgroundFetch, FedCm, ScreenAI, etc) and the crash region is wider than any single feature flag covers. Plus: browser init runs once per scrape because we spawn fresh Chromium every cycle, so even a 1% per-launch crash rate amplifies to ~5/hour on a 4-tracker config
+**Fix:** v0.21.46 ChromeBrowserProfile.swift: (PRONG A) consolidated --disable-features comma-list grown from 27 to 56 features, plus ~22 new individual command-line flags (--disable-3d-apis, --disable-webgl, --disable-vulkan, --no-experiments, --disable-back-forward-cache, --disable-component-extensions-with-background-pages, etc). (PRONG B) added static persistentBrowserMode (default true); endBackgroundUse short-circuits before terminate when on, keeping Chromium alive between scrapes. Init-crash exposure drops from once-per-scrape to once-per-app-session
+**Commit:** ff607f7
+**Guard:** Heavily commented at the launch-args site naming each flag's purpose; persistentBrowserMode is a single static toggle for emergency rollback without code surgery. CHANGELOG entry names both prongs. If a future agent thinks of adding a second --disable-features flag, the inline comment explicitly warns Chromium only honors ONE such flag (last-wins) so all new features must be appended to the SAME comma-list
+---
+
+---
 **Date:** 2026-05-26T18:50:00Z
 **Trigger:** Crash bursts 2026-05-26 18:15:59 + 18:48:59 BST. Ethan on v0.21.43 (already had v0.21.40 speech-API patch). Two NEW SIGTRAP at imageOffset 0x6816050 — 448 bytes BEYOND the original 0x6816010 speech-API offset. Spec note: investigate + mitigate within 45 min, ship v0.21.45 with broader Chromium feature kill-list.
 **Symptom:** Chromium 150 EXC_BREAKPOINT / SIGTRAP on CrBrowserMain queue com.apple.main-thread, ~10s after launch under macOS 26.4.1 Tahoe. Frame#0 imageOffset 109142480 (0x6816050). Lower-frame trampoline pattern shifted ~1000 bytes vs the 0x6816010 speech-API crash, indicating a sibling browser-init code path. Crash reports `~/Library/Logs/DiagnosticReports/Chromium-2026-05-26-{181559,184859}.ips`.
