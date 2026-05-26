@@ -14,10 +14,29 @@
 //
 
 import AppKit
+import Combine
 import Sparkle
 
-final class UpdateController: NSObject {
+// v0.21.39 — switched from NSObject to a class also conforming to
+// ObservableObject so SwiftUI views (AboutPrefsView's "Last checked"
+// row) can re-render when Sparkle's lastUpdateCheckDate changes. Sparkle
+// drops the timestamp on `SPUUpdater.lastUpdateCheckDate` after every
+// terminal cycle, but that property is NOT KVO-observable in a way that
+// plays nicely with SwiftUI — we publish a snapshot ourselves from the
+// `didFinishUpdateCycleFor` delegate hook.
+final class UpdateController: NSObject, ObservableObject {
     static let shared = UpdateController()
+
+    /// Snapshot of the last time Sparkle ran a check cycle (any terminal
+    /// state — found update, no update, aborted). Published so the About
+    /// section can show "Last checked X ago". Nil until the first cycle
+    /// completes.
+    @Published private(set) var lastCheckDate: Date?
+
+    /// Convenience flag the About section reads to disable the button while
+    /// Sparkle is running a probe — prevents double-clicks from queueing
+    /// extra cycles. Mirrors `probeInFlight` but exposed as `@Published`.
+    @Published private(set) var isCheckingForUpdates: Bool = false
 
     private lazy var updaterController = SPUStandardUpdaterController(
         startingUpdater: false,
@@ -90,9 +109,23 @@ final class UpdateController: NSObject {
         // `startUpdater` so `updater.canCheckForUpdates` is meaningful
         // by the time the first MCP request arrives over the socket.
         MCPUpdateBridge.handler = self
+        // Prime the last-check timestamp from Sparkle's own bookkeeping
+        // so the About section shows a real value even if no cycle has
+        // run during THIS session. Sparkle keeps the timestamp in
+        // SUUpdaterLastUpdateCheckDate in NSUserDefaults.
+        if let stored = updaterController.updater.lastUpdateCheckDate {
+            lastCheckDate = stored
+        }
     }
 
     @objc func checkForUpdates(_ sender: Any? = nil) {
+        // The standard updater's checkForUpdates() shows the user-driver
+        // UI. Flip the in-flight flag so views can disable the button
+        // until didFinishUpdateCycleFor flushes us back to idle. We don't
+        // try to be perfectly precise here — the worst case is the button
+        // stays disabled an extra moment if the user cancels Sparkle's
+        // dialog, which is harmless.
+        isCheckingForUpdates = true
         updaterController.checkForUpdates(sender)
     }
 }
@@ -183,6 +216,14 @@ extension UpdateController: SPUUpdaterDelegate {
         let waiters = pendingProbeCompletions
         pendingProbeCompletions.removeAll(keepingCapacity: false)
         probeInFlight = false
+        // v0.21.39 — publish the cycle-completion timestamp so the
+        // About section's "Last checked" line refreshes. Prefer the
+        // updater's own bookkeeping (more accurate — Sparkle records
+        // this after the network exchange finishes) and fall back to
+        // now() if Sparkle hasn't set it yet. Also clear the
+        // user-driven "is checking" flag — the cycle is over either way.
+        lastCheckDate = updaterController.updater.lastUpdateCheckDate ?? Date()
+        isCheckingForUpdates = false
         for completion in waiters {
             completion(snapshot)
         }

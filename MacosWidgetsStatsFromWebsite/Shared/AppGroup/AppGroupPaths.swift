@@ -155,7 +155,36 @@ enum AppGroupPaths {
         return baseURL.appendingPathComponent("MacosWidgetsStatsFromWebsite", isDirectory: true)
     }
 
+    // v0.21.39 — MCP socket path moved out of the Group Container.
+    //
+    // BUG (silent since v0.21.0): the previous socket location lived under
+    //   ~/Library/Group Containers/T34G959ZG8.group.com.ethansk.macos-widgets-stats-from-website/mcp.sock
+    // which is 122 bytes — well over the macOS Unix-domain `sun_path` cap
+    // of 104 bytes (sys/un.h: `char sun_path[104]`). Every host launch since
+    // v0.21.0 was hitting `socket_path_too_long` in MCPServer.runSocketServer()
+    // and silently failing to bind. The MCP log under
+    //   ~/Library/Logs/macOS Widgets Stats from Website/mcp.log
+    // has been logging this error continuously for months (every host
+    // launch + every reload). Result: ALL external MCP-over-socket access
+    // has been broken since v0.21.0. Stdio mode (`--mcp-stdio`) still works
+    // because it bypasses the bind entirely. See LEARNINGS.md for the full
+    // arc.
+    //
+    // Fix: route the socket through NSTemporaryDirectory() which on macOS
+    // resolves to the per-user darwin-userspace tmp dir
+    //   /var/folders/<XX>/<YY>/T/
+    // i.e. ~49 bytes. Adding `mcp.sock` (8 bytes) lands at ~57 bytes total —
+    // well under the 104 cap with headroom for unusually-long user UUIDs.
+    // The dir is per-user and inherits the same posix permissions as the
+    // current process (effectively 0700 for the user), so an unprivileged
+    // attacker on the same machine still can't pre-create a spoofed socket.
+    //
+    // We DELIBERATELY do NOT relocate the App Group Container itself — that
+    // dir holds user data (trackers.json, readings.json, logs) and renaming
+    // it would orphan every install's state. Only the socket — which is
+    // ephemeral, recreated on every launch, and not user-visible — moves.
     static func mcpSocketURL() -> URL {
-        mcpApplicationSupportURL().appendingPathComponent(mcpSocketFileName, isDirectory: false)
+        let tmpDir = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+        return tmpDir.appendingPathComponent(mcpSocketFileName, isDirectory: false)
     }
 }

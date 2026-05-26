@@ -354,8 +354,14 @@ private struct ActivityLogPrefsView: View {
 }
 
 private struct AboutPrefsView: View {
+    // v0.21.39 — observe UpdateController so the "Last checked"
+    // timestamp + "Check for Updates…" button reflect Sparkle's
+    // live state. The shared instance is started by AppDelegate at
+    // launch, so it's safe to depend on it from here.
+    @ObservedObject private var updateController = UpdateController.shared
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 16) {
             // About panel title — matches the renamed .app wrapper from
             // v0.21.22 (voice 4002 / MBP-CC bridge msg-65036391). The
             // CFBundleDisplayName and AboutPrefsView header are the two
@@ -373,6 +379,62 @@ private struct AboutPrefsView: View {
             Text("Use these version/build numbers to confirm macOS is loading the latest app and widget extension.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+
+            // v0.21.39 — new "Updates" section.
+            //
+            // Voice 4196: Ethan asked where the "Check for Updates"
+            // button lives. It DID exist in the menu-bar status item
+            // (MenuBarController.swift), but the menu-bar menu only
+            // appears when he clicks the status icon — which he didn't
+            // realise. Surface the same control here so opening the
+            // About pane is also a valid path. The button calls into
+            // the SAME UpdateController.checkForUpdates() entry point
+            // the menu-bar item uses, so behaviour is identical
+            // (Sparkle's standard "no update / install now" dialog).
+            Divider()
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Updates")
+                    .font(.headline)
+
+                HStack(spacing: 12) {
+                    Button {
+                        // No sender — UpdateController.checkForUpdates
+                        // accepts Any? so passing nil is fine and
+                        // matches the menu-bar invocation path.
+                        UpdateController.shared.checkForUpdates(nil)
+                    } label: {
+                        Label("Check for Updates…", systemImage: "arrow.down.circle")
+                    }
+                    // Disable while a probe is mid-flight so rapid
+                    // clicks don't queue extra Sparkle cycles. The
+                    // controller flips this back on cycle completion.
+                    .disabled(updateController.isCheckingForUpdates)
+                    .help("Ask Sparkle to look for a newer version on the appcast.")
+
+                    if updateController.isCheckingForUpdates {
+                        ProgressView()
+                            .controlSize(.small)
+                    }
+                }
+
+                // Last-checked timestamp. Uses a relative date format so
+                // it reads as "moments ago" / "5 minutes ago" / "2 hours
+                // ago" — easier to skim than an absolute timestamp. If
+                // Sparkle has never run a cycle in this user-defaults
+                // namespace we fall back to "Never" so there's no
+                // confusion about whether the system is wired up.
+                LabeledContent("Last checked") {
+                    Text(lastCheckedText)
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                }
+
+                Text("Updates are installed automatically in the background.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .textSelection(.enabled)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .padding(28)
@@ -390,6 +452,20 @@ private struct AboutPrefsView: View {
         }
 
         return BundleVersion(bundle: widgetBundle)
+    }
+
+    /// Human-readable rendering of the most recent Sparkle check
+    /// timestamp. Returns "Never" if Sparkle has not yet completed a
+    /// cycle on this account (typical: fresh install). Uses
+    /// RelativeDateTimeFormatter for "5 minutes ago"-style output, which
+    /// is what users actually want to skim.
+    private var lastCheckedText: String {
+        guard let date = updateController.lastCheckDate else {
+            return "Never"
+        }
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .full
+        return formatter.localizedString(for: date, relativeTo: Date())
     }
 }
 

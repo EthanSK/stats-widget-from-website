@@ -96,5 +96,25 @@ struct MacosWidgetsStatsFromWebsiteApp: App {
         Settings {
             EmptyView()
         }
+        // v0.21.39 — inject a "Check for Updates…" menu item right after
+        // the system-provided "About…" entry in the App menu (the one
+        // named after the app — "Stats Widget from Website"). Voice
+        // 4196: Ethan asked where the Check for Updates button is —
+        // the menu-bar status item already had one, and About now has
+        // one (PreferencesWindow.swift > AboutPrefsView), but the
+        // canonical macOS UX is also the App menu. CommandGroup with
+        // `after: .appInfo` slots us in immediately below "About Stats
+        // Widget from Website".
+        //
+        // We call UpdateController.shared.checkForUpdates(_:) — same
+        // path the menu-bar item + About button use — so behaviour is
+        // identical across all three entry points.
+        .commands {
+            CommandGroup(after: .appInfo) {
+                Button("Check for Updates…") {
+                    UpdateController.shared.checkForUpdates(nil)
+                }
+            }
+        }
     }
 }
