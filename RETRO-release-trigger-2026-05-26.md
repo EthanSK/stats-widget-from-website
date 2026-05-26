@@ -80,3 +80,12 @@ So the divergence wasn't a missing capability; it was a deliberately-disabled ca
 ## Lesson for next agent
 
 If you see a commit attribution like `(voice NNNN follow-up)` and you're touching that area, **open the actual voice transcript** (search `~/.claude/projects/-Users-ethansarif-kattan/*.jsonl` for `message_id="NNNN"` and adjacent assistant turns) before treating the attribution as ground truth. Past agents will sometimes attach a voice number to a decision the voice never made, and the attribution survives multiple commits unchallenged.
+
+## Verification of the fix (2026-05-26)
+
+- Commit `4e3604a` flipped the trigger back to PP-style and bumped to 0.21.34.
+- v0.21.34 tag pushed → CI run 26452824289 succeeded → `Stats Widget from Website v0.21.34` published as the canonical GitHub release.
+- Concurrent main-branch push run 26452818379 also fired (proving the dual-trigger is live) and succeeded → `v0.21.34-build.74` published as a secondary build-tagged release.
+- gh-pages appcast updated to include v0.21.34 (CDN propagation pending at install time).
+- MBP `/Applications/Stats Widget from Website.app` upgraded to v0.21.34 + verified `spctl --assess: accepted source=Notarized Developer ID`.
+- This retro file appended after the verification round to capture the outcome.
