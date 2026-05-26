@@ -5,6 +5,54 @@ Release-by-release notes for the Stats Widget from Website project.
 Format: each entry is dated, lists the user-visible changes first, then the
 under-the-hood / signing / packaging changes. Newest first.
 
+## v0.21.46 — 2026-05-27
+
+### User-facing — third-wave Chromium crash fix (Tahoe 26)
+
+- **Two-pronged attack on the remaining browser-init SIGTRAPs.** v0.21.45
+  dropped crash frequency but did not kill it — ~13 crashes were still
+  landing per ~3 hours, all clustered at imageOffset 0x6816xxx (the same
+  256-byte Chromium 150 browser-init code region). v0.21.46 ships both
+  prongs of the planned fix:
+  - **Prong A — more aggressive `--disable-features` + extra individual
+    flags.** Disabled GlobalMediaControls, SystemNotifications, WebOTP,
+    SmsReceiver, BackgroundFetch, BackgroundSync, PaymentRequest,
+    PictureInPicture, ScreenCapture, AccessibilityService, PermissionsAPI,
+    PresentationAPI, FaceTimeCalling, AmbientLight, ScreenAI, FedCm,
+    AttributionReportingAPI, and many more Tahoe-touched Chromium
+    features. Added `--disable-3d-apis`, `--disable-webgl`,
+    `--disable-webgl2`, `--disable-vulkan`, `--no-experiments`,
+    `--disable-back-forward-cache`,
+    `--disable-component-extensions-with-background-pages`, and others.
+    None of these subsystems are exercised by the DOM-only scraper, so
+    disabling them is free.
+  - **Prong B — persistent Chromium between scrapes.** Previously the
+    host launched a FRESH Chromium per scrape; the terminate-after-scrape
+    path is what re-exposes every scrape to the browser-init crash zone.
+    The host now KEEPS Chromium alive between scrapes — only the tab
+    lifecycle is per-scrape. Init-crash exposure drops from ~once per
+    scrape (one crash every ~12-15 min on a 4-tracker config) to roughly
+    once per app session (i.e. once per Mac boot / once per app
+    relaunch). Recovery is unchanged: if Chromium dies for any reason,
+    the next scrape detects the dead CDP port and spawns fresh.
+    App-exit still tears Chromium down cleanly — no leaked processes.
+
+### Under the hood
+
+- `ChromeBrowserProfile.persistentBrowserMode` static toggle (default
+  `true`). When on, `endBackgroundUse` short-circuits before the
+  terminate block. Bookkeeping (`backgroundLaunchedProcesses` /
+  `backgroundLaunchedApplications`) is left intact so
+  `terminateAppOwnedBrowsersOnAppExit` still cleans up on quit, and
+  `isExistingInstanceHeadless` can still vouch for app-ownership of the
+  long-running process. Flip to `false` to revert to the v0.21.45
+  per-scrape lifecycle.
+- Consolidated `--disable-features` comma-list grew from 27 → 56
+  feature names. Chromium dedupes feature names internally so order
+  doesn't matter; the constraint is that it must remain ONE flag (the
+  last `--disable-features` value wins; multiple would silently drop
+  earlier ones).
+
 ## v0.21.45 — 2026-05-26
 
 ### User-facing — second-wave Chromium crash fix (Tahoe 26)

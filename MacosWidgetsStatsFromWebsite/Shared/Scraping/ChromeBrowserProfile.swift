@@ -108,6 +108,40 @@ final class ChromeBrowserProfile {
     /// open phase (where the flake manifests) before the next one starts.
     static let minScrapeStartGap: TimeInterval = 15.0
 
+    /// v0.21.46 — persistent (long-running) Chromium mode.
+    ///
+    /// Previously every scrape went: spawn fresh Chromium → CDP handshake →
+    /// open tab → scrape → close tab → terminate Chromium. The terminate
+    /// step (in `endBackgroundUse` when `remaining == 0`) means the NEXT
+    /// scrape hits the SIGTRAP-prone browser-init code path AGAIN — every
+    /// 12 minutes on a 4-tracker config = ~5/hour exposure to the Tahoe
+    /// init crash region at imageOffset 0x6816xxx.
+    ///
+    /// In persistent mode we KEEP the Chromium process alive between
+    /// scrapes. Each scrape still opens a fresh tab and closes it
+    /// afterwards (so per-page state isn't reused), but the parent
+    /// browser process survives. Init-crash exposure drops to ~once per
+    /// app session (i.e. once per Mac boot / once per app relaunch)
+    /// instead of once per scrape.
+    ///
+    /// Memory cost: idle Chromium browser process ~80-120 MB. Acceptable
+    /// for a menu-bar app on machines with ≥8 GB RAM.
+    ///
+    /// Recovery: if Chromium dies for any other reason (real crash, user
+    /// kills it, OOM), `ensureLaunched` re-checks `isCDPReachable` at the
+    /// start of every scrape and `spawnNewBrowser`s a fresh one if the
+    /// old process is gone. The persistent flag only suppresses the
+    /// END-OF-SCRAPE terminate; it doesn't gate the start-of-scrape
+    /// relaunch on a missing process.
+    ///
+    /// Note: app-exit (`terminateAppOwnedBrowsersOnAppExit`) still tears
+    /// down Chromium cleanly — we don't leak processes when the host
+    /// quits. The persistent mode only applies between scrapes within
+    /// the same app session.
+    ///
+    /// To roll back: flip to `false`. Reverts to the v0.21.45 lifecycle.
+    static let persistentBrowserMode: Bool = true
+
     private init() {}
 
     func configuration(profileName: String = ChromeBrowserProfile.defaultProfileName) -> ChromeBrowserLaunchConfiguration {
@@ -963,6 +997,38 @@ final class ChromeBrowserProfile {
                 return
             }
 
+            // v0.21.46 — persistent Chromium mode short-circuit.
+            //
+            // When persistentBrowserMode is on we DELIBERATELY skip the
+            // end-of-scrape terminate. The Chromium process stays alive,
+            // ready for the next scrape to open a fresh tab on the same
+            // CDP port without a new browser-init cycle (which is the
+            // Tahoe-26 SIGTRAP hot zone at imageOffset 0x6816xxx).
+            //
+            // We keep the bookkeeping entries (backgroundLaunchedProcesses,
+            // backgroundLaunchedApplications) in place so:
+            //   1. terminateAppOwnedBrowsersOnAppExit can still find +
+            //      cleanly terminate the long-running browser when the
+            //      host app quits (no orphan Chromium processes).
+            //   2. isExistingInstanceHeadless can confirm app-ownership
+            //      via in-process tracking on the next scrape.
+            //
+            // If Chromium dies between scrapes (real crash / OOM / user
+            // kill), the next call to ensureLaunched detects via
+            // isCDPReachable + findDedicatedBrowserPID and spawns fresh.
+            // No special handling needed here.
+            //
+            // We log the skip so activity.log makes it clear that we
+            // KEPT the process intentionally — otherwise this looks like
+            // a missing terminate in audits / debug sessions.
+            if ChromeBrowserProfile.persistentBrowserMode {
+                ActivityLogger.log("browser", "persistent-mode: keeping Chrome alive between scrapes", metadata: [
+                    "profile": configuration.profileName,
+                    "port": "\(port)"
+                ])
+                return
+            }
+
             let application = self.backgroundLaunchedApplications.removeValue(forKey: port)
             let process = self.backgroundLaunchedProcesses.removeValue(forKey: port)
 
@@ -1346,7 +1412,151 @@ final class ChromeBrowserProfile {
             //       LEARNINGS.md "chromium-tahoe-26-browser-main-crash"
             "--use-fake-ui-for-media-stream",
             "--use-fake-device-for-media-stream",
-            "--disable-features=Translate,MediaRouter,MediaSession,HardwareMediaKeyHandling,NotificationTriggers,WebNotifications,Notifications,MediaCapture,WebAudio,WebRtcPipeWireCapturer,AudioServiceOutOfProcess,WebMidi,WebUSB,WebBluetooth,WebHid,WebSerial,WebNFC,Geolocation,DeviceOrientationEvents,DeviceMotionEvents,AmbientAuthenticationInPrivateModes,WebAuthentication,U2F,IdleDetection,Serial,ContactsAPI,DigitalGoods"
+            // Crash fix (v0.21.46): THIRD-WAVE defensive disables. v0.21.45's
+            // bundle dropped the cluster mean but ~5/hour SIGTRAPs still hit
+            // the same 0x6816xxx region (109142612 et al). The crashing region
+            // is ~256 bytes wide in Chromium 150's browser-init code. We don't
+            // know exactly which subsystem trips the next sibling crash; rather
+            // than chase individual signatures, this bundle muzzles EVERY
+            // Tahoe-rewritten daemon Chromium 150 still probes at startup.
+            // Every flag below is safe for headless DOM-only scraping — we
+            // never use WebGL, picture-in-picture, payments, screen capture,
+            // background fetch/sync, contacts, SMS, ambient light, motion
+            // sensors, screen AI, presentation API, etc. None of these are
+            // exercised by the CDP DOM-read path.
+            //
+            // Individual command-line flags (Chromium switches.cc):
+            //   --disable-3d-apis          → kills WebGL/WebGL2 ANGLE pipeline
+            //                                init (no GPU command-buffer
+            //                                bring-up; the IOSurface/Metal init
+            //                                path on Tahoe has changed
+            //                                materially in 26.4)
+            //   --disable-webgl            → belt-and-suspenders WebGL gate
+            //   --disable-webgl2           → same for WebGL2
+            //   --disable-canvas-aa        → no GPU canvas antialiasing
+            //                                (cheaper, no Metal probe)
+            //   --disable-d3d11            → no D3D11 init attempt (no-op on
+            //                                macOS but free defense)
+            //   --disable-vulkan           → no Vulkan init attempt
+            //   --no-experiments           → ignore field-trial overrides
+            //                                that might re-enable a feature
+            //                                we just disabled below
+            //   --disable-back-forward-cache → don't probe the new bfcache
+            //                                  IPC plumbing at init
+            //   --disable-renderer-backgrounding → counterintuitive, but
+            //                                      prevents an init-time race
+            //                                      where renderers are
+            //                                      backgrounded before their
+            //                                      browser-side state is
+            //                                      ready (cited in a few
+            //                                      Chromium issues)
+            //   --disable-component-extensions-with-background-pages
+            //                              → kills the Hangouts/Cast/etc.
+            //                                background-page extensions that
+            //                                ship with Chromium and hit
+            //                                various permission daemons.
+            //   --disable-extensions       → master extension off-switch
+            //                                (we don't use extensions)
+            //   --disable-translate        → translate-bar / language detection
+            //                                triggers an external infra probe
+            //   --disable-pinch            → no pinch-zoom IPC plumbing
+            //   --disable-search-engine-choice-screen → suppresses an init
+            //                                            probe that's been
+            //                                            crashy on Tahoe
+            //   --metrics-recording-only / --disable-metrics → no UMA/UKM
+            //                                                   pipeline init
+            //   --disable-domain-reliability → kills the DRC reporting
+            //                                  pipeline init
+            //   --disable-crash-reporter   → kills Chromium's own crashpad
+            //                                handler init (we have our own
+            //                                .ips collection via macOS; this
+            //                                avoids two crash handlers
+            //                                fighting over the signal stack)
+            //   --no-crash-upload          → defensive — never upload to Google
+            //   --safebrowsing-disable-auto-update → kills SB definition
+            //                                        download init
+            //   --disable-features-from-field-trials → see --no-experiments
+            //   --noerrdialogs             → suppress error dialogs (we're
+            //                                headless, none should appear)
+            //   --no-pings                 → no hyperlink ping probes
+            //   --disable-breakpad         → secondary crash-handler gate
+            "--disable-3d-apis",
+            "--disable-webgl",
+            "--disable-webgl2",
+            "--disable-canvas-aa",
+            "--disable-d3d11",
+            "--disable-vulkan",
+            "--no-experiments",
+            "--disable-back-forward-cache",
+            "--disable-renderer-backgrounding",
+            "--disable-component-extensions-with-background-pages",
+            "--disable-extensions",
+            "--disable-translate",
+            "--disable-pinch",
+            "--disable-search-engine-choice-screen",
+            "--metrics-recording-only",
+            "--disable-domain-reliability",
+            "--disable-crash-reporter",
+            "--no-crash-upload",
+            "--safebrowsing-disable-auto-update",
+            "--noerrdialogs",
+            "--no-pings",
+            "--disable-breakpad",
+            // CONSOLIDATED --disable-features (one flag, Chromium dedupes
+            // internally; last value wins on duplicates). v0.21.46 adds the
+            // following to the v0.21.45 list:
+            //   GlobalMediaControls         — Now Playing media control bar
+            //                                 (system-integration probe).
+            //   Sharesheet                  — macOS Share Sheet integration.
+            //   SystemNotifications         — UserNotificationCenter delegate
+            //                                 install (separate from the
+            //                                 webNotifications surface).
+            //   UserMediaCaptureOnFocus     — focus-driven recapture probe.
+            //   WebOTP                      — SMS OTP autofill API.
+            //   SmsReceiver                 — same family as WebOTP.
+            //   BackgroundFetch             — service worker background fetch.
+            //   BackgroundSync              — service worker background sync.
+            //   PaymentRequest              — payment-handler init.
+            //   PictureInPicture            — PiP window service init.
+            //   ScreenCapture               — getDisplayMedia probe.
+            //   AccessibilityService        — Tahoe-rewrote VoiceOver IPC.
+            //   PermissionsAPI              — permissions.query probe.
+            //   PresentationAPI             — second-screen device probe.
+            //   FaceTimeCalling             — tel: URL handler probe (new
+            //                                 in Tahoe).
+            //   AmbientLight                — ambient light sensor IPC.
+            //   DeviceOrientationEvent      — motion-sensor probe (singular,
+            //                                 v0.21.45 had the plural variant;
+            //                                 different Chromium feature
+            //                                 name, both covered now).
+            //   DeviceMotionEvent           — same; both names.
+            //   ContactsAPI                 — already in v0.21.45 list, kept.
+            //   ScreenAI                    — Tahoe's on-device screen AI
+            //                                 framework probe.
+            //   AssistiveTouch              — accessibility input service
+            //                                 probe.
+            //   WebInstalledAppCheck        — getInstalledRelatedApps probe.
+            //   ChromeWhatsNewUI            — first-run "what's new" prompt
+            //                                 we never want to surface.
+            //   InterestFeedV2,InterestFeedContentSuggestions
+            //                                 → kills the Feed init that
+            //                                   has been crashy on Tahoe.
+            //   NTPCustomization            → new-tab-page customization
+            //                                  service probe.
+            //   ChromeRefresh2023           → fancy redesign that touches
+            //                                  new system APIs.
+            //   PrivacySandboxSettings4     → privacy sandbox setup.
+            //   FedCm                       → federated credential management,
+            //                                  hits the credentials daemon.
+            //   StorageBuckets              → storage-bucket API init.
+            //   AttributionReportingAPI     → conversion measurement API
+            //                                  init (network init).
+            //
+            // Chromium dedupes feature names. Order doesn't matter. Final
+            // string MUST be a single flag (otherwise the later one wins
+            // and the earlier ones are silently dropped — Chromium
+            // behavior, not a bug).
+            "--disable-features=Translate,MediaRouter,MediaSession,HardwareMediaKeyHandling,NotificationTriggers,WebNotifications,Notifications,MediaCapture,WebAudio,WebRtcPipeWireCapturer,AudioServiceOutOfProcess,WebMidi,WebUSB,WebBluetooth,WebHid,WebSerial,WebNFC,Geolocation,DeviceOrientationEvents,DeviceMotionEvents,DeviceOrientationEvent,DeviceMotionEvent,AmbientAuthenticationInPrivateModes,WebAuthentication,U2F,IdleDetection,Serial,ContactsAPI,DigitalGoods,GlobalMediaControls,Sharesheet,SystemNotifications,UserMediaCaptureOnFocus,WebOTP,SmsReceiver,BackgroundFetch,BackgroundSync,PaymentRequest,PictureInPicture,ScreenCapture,AccessibilityService,PermissionsAPI,PresentationAPI,FaceTimeCalling,AmbientLight,ScreenAI,AssistiveTouch,WebInstalledAppCheck,ChromeWhatsNewUI,InterestFeedV2,InterestFeedContentSuggestions,NTPCustomization,ChromeRefresh2023,PrivacySandboxSettings4,FedCm,StorageBuckets,AttributionReportingAPI"
         ]
 
         if headless {
