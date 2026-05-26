@@ -158,6 +158,28 @@ enum HookExecutor {
         return env
     }
 
+    /// POSIX-safe shell-quoting for a path that will be spliced into a
+    /// `/bin/bash -lc "..."` invocation. Wraps the string in single
+    /// quotes and escapes any embedded single-quote as `'\''`.
+    ///
+    /// We need this because the auto-repair bundle path after the
+    /// v0.21.22 rename contains spaces (`Stats Widget from Website.app`),
+    /// and unquoted spaces tokenise the bash command line — see comment
+    /// in the .runShellCommand case above. Single-quote wrapping is the
+    /// least error-prone approach: it disables ALL bash interpretation
+    /// inside the quoted region, so `$`, backticks, backslash, etc. all
+    /// survive verbatim. The only character that needs special handling
+    /// is the single-quote itself.
+    ///
+    /// Established 2026-05-26 (voice 4189 / v0.21.36 fix).
+    static func shellQuote(_ rawPath: String) -> String {
+        // Replace each embedded `'` with `'\''` (close-quote,
+        // escaped-quote, reopen-quote). Then wrap the whole thing in
+        // single quotes.
+        let escaped = rawPath.replacingOccurrences(of: "'", with: "'\\''")
+        return "'\(escaped)'"
+    }
+
     private static func truncateDetail(_ detail: String?) -> String? {
         guard var trimmed = detail?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmed.isEmpty else {
             return nil
@@ -240,14 +262,56 @@ final class SystemHookProcessLauncher: HookProcessLauncher {
 
         switch hook.actionKind {
         case .runShellCommand:
-            // Substitute well-known placeholder tokens before exec.
-            let resolvedPayload = hook.actionPayload
-                .replacingOccurrences(
-                    of: HookScriptPaths.autoRepairCommandToken,
-                    with: HookScriptPaths.autoRepairScriptURL().path
-                )
-            process.launchPath = "/bin/bash"
-            process.arguments = ["-lc", resolvedPayload]
+            // v0.21.36 — shell-quote the substituted script path before
+            // splicing it into the bash command line.
+            //
+            // Bug history (voice 4189 + 4188 + readings.json diag,
+            // 2026-05-26): the auto-repair scaffold ships with
+            // `actionPayload = "${AUTO_REPAIR_SCRIPT}"` (literal,
+            // unquoted in the template). v0.21.22+ renamed the .app
+            // wrapper from `MacosWidgetsStatsFromWebsite.app` to
+            // `Stats Widget from Website.app`. Once installed, the
+            // bundled hook script path expands to e.g.
+            //   `/Applications/Stats Widget from Website.app/Contents/Resources/Scripts/auto-repair-tracker.sh`
+            // — a path with TWO spaces. Splicing that into
+            // `bash -lc "<path>"` made bash tokenise on whitespace and
+            // try to exec `/Applications/Stats` as a command, yielding
+            // exit code 127 and the iconic detail string
+            //   "/bin/bash: /Applications/Stats: No such file or directory"
+            // visible in trackers.json `lastRun.detail` for every
+            // tracker that hit a failure under v0.21.34 / .35.
+            //
+            // Fix: when the actionPayload IS exactly the auto-repair
+            // token, bypass shell entirely and exec the script directly
+            // — no quoting risk, no shell at all. The env vars set
+            // below (TRACKER_*, HOOK_*, AUTO_REPAIR_SCRIPT itself) are
+            // already inherited by the child, which is the entire
+            // public-stable hook API. For user-authored shell payloads
+            // we still apply shell-quoting to the substituted path so
+            // arbitrary user shell snippets like
+            //   `${AUTO_REPAIR_SCRIPT} --dry-run`
+            // continue to work even when the bundle path contains
+            // spaces.
+            let scriptPath = HookScriptPaths.autoRepairScriptURL().path
+            let isExactAutoRepairInvocation = hook.actionPayload
+                .trimmingCharacters(in: .whitespacesAndNewlines) ==
+                HookScriptPaths.autoRepairCommandToken
+            if isExactAutoRepairInvocation {
+                // Direct exec — no shell tokenisation at all. Safest
+                // path for the built-in scaffold.
+                process.launchPath = scriptPath
+                process.arguments = []
+            } else {
+                // User-authored shell payload: shell-quote the
+                // substituted path so spaces survive bash parsing.
+                let resolvedPayload = hook.actionPayload
+                    .replacingOccurrences(
+                        of: HookScriptPaths.autoRepairCommandToken,
+                        with: HookExecutor.shellQuote(scriptPath)
+                    )
+                process.launchPath = "/bin/bash"
+                process.arguments = ["-lc", resolvedPayload]
+            }
         case .runAppleScript:
             process.launchPath = "/usr/bin/osascript"
             process.arguments = ["-e", hook.actionPayload]

@@ -13,7 +13,12 @@
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleName</key>
-	<string>$(PRODUCT_NAME)</string>
+	<!-- v0.21.36 (voice 4189) — see parent app Info.plist comment.
+	     Previously $(PRODUCT_NAME) = "MacosWidgetsStatsFromWebsiteWidget" which
+	     leaked into the widget-picker UI as the widget bundle name. The matching
+	     project.yml entry under target.MacosWidgetsStatsFromWebsiteWidget is the
+	     SOURCE OF TRUTH; this raw value is kept in sync. -->
+	<string>Stats Widget from Website Widget</string>
 	<key>CFBundlePackageType</key>
 	<string>$(PRODUCT_BUNDLE_PACKAGE_TYPE)</string>
 	<key>CFBundleShortVersionString</key>

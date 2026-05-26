@@ -5,6 +5,39 @@ Release-by-release notes for the Stats Widget from Website project.
 Format: each entry is dated, lists the user-visible changes first, then the
 under-the-hood / signing / packaging changes. Newest first.
 
+## v0.21.36 — 2026-05-26
+
+### User-facing
+- **Auto-repair hook no longer fails with `/bin/bash: /Applications/Stats: No such
+  file or directory`.** The built-in auto-repair scaffold now spawns the bundled
+  script directly instead of through `bash -lc`, so spaces in the install path
+  (`/Applications/Stats Widget from Website.app/...`) survive correctly. User-
+  authored shell hooks that reference `${AUTO_REPAIR_SCRIPT}` now get a shell-
+  quoted path substitution, so multi-arg invocations like
+  `${AUTO_REPAIR_SCRIPT} --dry-run` also work despite the spaces.
+- **Widget picker now reads "Stats Widget from Website"** instead of the legacy
+  internal identifier `MacosWidgetsStatsFromWebsite`. Set `CFBundleName`
+  explicitly in both the main app and widget extension Info.plists (was
+  `$(PRODUCT_NAME)` which expanded to the legacy Swift product name).
+- **User-facing copy refresh.** Identify / Sign-In / Chromium-install / reinstall
+  prompts that still read "Reinstall macOS Widgets Stats from Website…" now read
+  "Reinstall Stats Widget from Website…" — completing the v0.21.22 rename pass
+  for the remaining user-visible Text() strings.
+
+### Under-the-hood
+- `HookExecutor` adds a POSIX-safe `shellQuote()` helper and splits
+  `.runShellCommand` into two codepaths: exact-token payloads (the built-in
+  scaffold) exec the script directly with no shell at all; user-authored
+  payloads still go through bash with the substituted path single-quoted.
+- New unit test `HookProcessIntegrationTests.testShellQuoteSurvivesSpacesInPath`
+  guards the shell-quote contract so a future agent can't accidentally regress
+  it.
+- Internal Swift product name (`PRODUCT_NAME`, target name, scheme name) is
+  unchanged — still `MacosWidgetsStatsFromWebsite{Widget}` — so the Sparkle
+  update channel, App Group identifier, bundle ID, and existing widget kind ID
+  (`MacosWidgetsStatsFromWebsite`) all keep working. Only the user-facing
+  CFBundleName and the four Text() strings flipped.
+
 ## v0.21.35 — 2026-05-26
 
 ### User-facing

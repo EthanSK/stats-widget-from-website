@@ -127,7 +127,8 @@ struct ChromiumInstallSheet: View {
         case .completed:
             return "The bundled Chromium is reachable. You can now open Identify in Chrome from any tracker."
         case .failed:
-            return "The bundled Chromium inside the .app is missing or corrupt. Reinstall macOS Widgets Stats from Website from the GitHub release page to restore it."
+            // v0.21.36 — user-facing copy rename pass (voice 4189).
+            return "The bundled Chromium inside the .app is missing or corrupt. Reinstall Stats Widget from Website from the GitHub release page to restore it."
         }
     }
 
@@ -174,7 +175,8 @@ struct ChromiumInstallSheet: View {
                 .foregroundStyle(.red)
                 .textSelection(.enabled)
                 .fixedSize(horizontal: false, vertical: true)
-            Text("Reinstall macOS Widgets Stats from Website from the GitHub release page to restore the bundled Chromium.")
+            // v0.21.36 — user-facing copy rename pass (voice 4189).
+            Text("Reinstall Stats Widget from Website from the GitHub release page to restore the bundled Chromium.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -227,7 +229,8 @@ final class ChromiumInstallViewModel: ObservableObject {
                     self.state = .completed
                 } else {
                     self.state = .failed(
-                        "The bundled Chromium inside the .app could not be reached after the recheck. Reinstall macOS Widgets Stats from Website to restore it."
+                        // v0.21.36 — user-facing copy rename pass (voice 4189).
+                        "The bundled Chromium inside the .app could not be reached after the recheck. Reinstall Stats Widget from Website to restore it."
                     )
                 }
             case .failure(let error):

@@ -143,7 +143,8 @@ struct TrackerEditorView: View {
                             VStack(alignment: .leading, spacing: 6) {
                                 Label("Bundled Chromium is missing.", systemImage: "exclamationmark.triangle")
                                     .foregroundStyle(.orange)
-                                Text("Identify needs the Chromium browser bundled inside this app. Reinstall macOS Widgets Stats from Website to restore the missing browser bundle.")
+                                // v0.21.36 — user-facing copy rename pass (voice 4189).
+                                Text("Identify needs the Chromium browser bundled inside this app. Reinstall Stats Widget from Website to restore the missing browser bundle.")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                                 Button {

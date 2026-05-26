@@ -57,7 +57,10 @@ struct SignInPrefsView: View {
                     VStack(alignment: .leading, spacing: 6) {
                         Label("Bundled Chromium is missing.", systemImage: "exclamationmark.triangle")
                             .foregroundStyle(.orange)
-                        Text("Identify, sign-in, and scraping need the Chromium browser bundled inside this app. Reinstall macOS Widgets Stats from Website to restore it.")
+                        // v0.21.36 — user-facing copy rename pass (voice 4189). Legacy
+                        // "macOS Widgets Stats from Website" → current "Stats Widget from
+                        // Website". File paths + bundle IDs deliberately unchanged.
+                        Text("Identify, sign-in, and scraping need the Chromium browser bundled inside this app. Reinstall Stats Widget from Website to restore it.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                         Button {

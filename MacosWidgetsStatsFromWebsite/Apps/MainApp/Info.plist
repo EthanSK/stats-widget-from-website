@@ -28,7 +28,14 @@
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleName</key>
-	<string>$(PRODUCT_NAME)</string>
+	<!-- v0.21.36 (voice 4189) — explicit user-facing CFBundleName.
+	     Previously $(PRODUCT_NAME) which expanded to "MacosWidgetsStatsFromWebsite"
+	     and surfaced as the widget-picker section header. The matching project.yml
+	     entry (target.MacosWidgetsStatsFromWebsite.info.properties.CFBundleName)
+	     is the SOURCE OF TRUTH that xcodegen merges into the built plist; this
+	     raw value is kept in sync so direct-Xcode builds (no xcodegen run)
+	     also show the user-facing name. -->
+	<string>Stats Widget from Website</string>
 	<key>CFBundlePackageType</key>
 	<string>$(PRODUCT_BUNDLE_PACKAGE_TYPE)</string>
 	<key>CFBundleShortVersionString</key>

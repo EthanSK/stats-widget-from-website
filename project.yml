@@ -77,8 +77,8 @@ settings:
     # from Bundle.main.infoDictionary at runtime, so nothing else needs touching.
     # Enforced by .githooks/pre-commit (see core.hooksPath in repo config) and
     # by scripts/validate_release_metadata.py.
-    MARKETING_VERSION: "0.21.35"
-    CURRENT_PROJECT_VERSION: "1291"
+    MARKETING_VERSION: "0.21.36"
+    CURRENT_PROJECT_VERSION: "1292"
 
 packages:
   Sparkle:
@@ -205,7 +205,22 @@ targets:
         CFBundleExecutable: $(EXECUTABLE_NAME)
         CFBundleIdentifier: $(PRODUCT_BUNDLE_IDENTIFIER)
         CFBundleInfoDictionaryVersion: "6.0"
-        CFBundleName: $(PRODUCT_NAME)
+        # v0.21.36 (voice 4189) — explicit user-facing CFBundleName.
+        # Pre-v0.21.36 this was `$(PRODUCT_NAME)` which expanded to
+        # `MacosWidgetsStatsFromWebsite` (the legacy Swift product
+        # name, retained internally for symbol stability). macOS's
+        # widget picker UI (Finder Edit Widgets → search) groups
+        # widgets under the PARENT app's CFBundleName, falling back to
+        # CFBundleDisplayName ONLY when CFBundleName is absent. With
+        # CFBundleName=MacosWidgetsStatsFromWebsite the picker showed
+        # the legacy identifier as the section header even though
+        # CFBundleDisplayName was already "Stats Widget from Website".
+        # Setting CFBundleName explicitly here overrides
+        # $(PRODUCT_NAME) without changing the actual Xcode product
+        # name (which would invalidate Sparkle / app group / bundle ID
+        # contracts). The Mach-O binary name + .app wrapper name are
+        # unrelated to CFBundleName so this is a UX-only flip.
+        CFBundleName: Stats Widget from Website
         CFBundlePackageType: $(PRODUCT_BUNDLE_PACKAGE_TYPE)
         CFBundleShortVersionString: "$(MARKETING_VERSION)"
         CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
@@ -324,7 +339,13 @@ targets:
         CFBundleExecutable: $(EXECUTABLE_NAME)
         CFBundleIdentifier: $(PRODUCT_BUNDLE_IDENTIFIER)
         CFBundleInfoDictionaryVersion: "6.0"
-        CFBundleName: $(PRODUCT_NAME)
+        # v0.21.36 (voice 4189) — same rationale as the main app
+        # CFBundleName override above. Some macOS widget-picker
+        # surfaces read the appex's CFBundleName directly (rather than
+        # CFBundleDisplayName) so we set both to user-facing strings.
+        # $(PRODUCT_NAME) here was `MacosWidgetsStatsFromWebsiteWidget`
+        # — internal-only, never meant to be user-visible.
+        CFBundleName: Stats Widget from Website Widget
         CFBundlePackageType: $(PRODUCT_BUNDLE_PACKAGE_TYPE)
         CFBundleShortVersionString: "$(MARKETING_VERSION)"
         CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
