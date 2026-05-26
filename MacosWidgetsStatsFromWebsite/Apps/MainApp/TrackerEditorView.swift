@@ -453,7 +453,27 @@ struct TrackerEditorView: View {
     }
 
     private var canSave: Bool {
-        !trimmedName.isEmpty && validatedURL != nil && !trimmedSelector.isEmpty && draft.elementBoundingBox != nil
+        // v0.21.38 — relaxed the elementBoundingBox requirement to only fire
+        // for `.snapshot` renderMode (screenshot crop needs the bbox). For
+        // `.text` renderMode the scrape just reads selector content; bbox is
+        // irrelevant.
+        //
+        // Bug surfaced via Ethan voice 4194 (2026-05-26): the two MCP-created
+        // session-usage trackers were saved without a bbox (MCP path doesn't
+        // require it). Opening them in the editor to rename them grayed out
+        // the Save button forever because the old check insisted on a bbox
+        // even though text-mode scrapes don't use one. Now `canSave` only
+        // requires bbox for snapshot-mode trackers (where the screenshot
+        // crop actually needs the coordinates).
+        guard !trimmedName.isEmpty,
+              validatedURL != nil,
+              !trimmedSelector.isEmpty else {
+            return false
+        }
+        if draft.renderMode == .snapshot {
+            return draft.elementBoundingBox != nil
+        }
+        return true
     }
 
     private var trimmedName: String {
