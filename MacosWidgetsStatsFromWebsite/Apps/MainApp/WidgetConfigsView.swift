@@ -215,7 +215,9 @@ private struct WidgetConfigurationRow: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            Image(systemName: iconName)
+            // v0.21.41 — fixed leading icon: only one template + one size
+            // (small) exist now, so the size-based icon switch was dead.
+            Image(systemName: "square")
                 .foregroundStyle(Color.accentColor)
                 .frame(width: 24)
 
@@ -223,7 +225,10 @@ private struct WidgetConfigurationRow: View {
                 Text(configuration.name)
                     .font(.body.weight(.medium))
                     .lineLimit(1)
-                Text("\(configuration.templateID.displayName) · \(configuration.templateID.size.displayName) · \(boundTrackerNames)")
+                // v0.21.41 — dropped the template / size segment from the
+                // subtitle (no more variants). Just shows bound tracker
+                // name(s) now.
+                Text(boundTrackerNames)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -231,11 +236,8 @@ private struct WidgetConfigurationRow: View {
 
             Spacer(minLength: 10)
 
-            Text(configuration.templateID.mode.rawValue.capitalized)
-                .font(.caption.weight(.semibold))
-                .padding(.horizontal, 8)
-                .padding(.vertical, 4)
-                .background(Capsule().fill(Color.secondary.opacity(0.12)))
+            // v0.21.41 — removed the "Text"/"Snapshot" mode capsule. With
+            // a single template the mode tag is redundant.
 
             Button(action: onEdit) {
                 Image(systemName: "pencil.circle.fill")
@@ -257,19 +259,6 @@ private struct WidgetConfigurationRow: View {
         let names = configuration.trackerIDs.compactMap { trackerNamesByID[$0] }
         return names.isEmpty ? "No trackers" : names.joined(separator: ", ")
     }
-
-    private var iconName: String {
-        switch configuration.templateID.size {
-        case .small:
-            return "square"
-        case .medium:
-            return "rectangle"
-        case .large:
-            return "rectangle.grid.1x2"
-        case .extraLarge:
-            return "rectangle.grid.2x2"
-        }
-    }
 }
 
 private struct WidgetConfigurationEditorView: View {
@@ -282,7 +271,8 @@ private struct WidgetConfigurationEditorView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var draft: WidgetConfiguration
     @State private var trackerDrafts: [UUID: Tracker]
-    @State private var showTemplatesInfo: Bool = false
+    // v0.21.41 — `showTemplatesInfo` was dropped along with the templates
+    // info popover. We only ship one template now; nothing to explain.
 
     let mode: Mode
     let trackers: [Tracker]
@@ -315,34 +305,17 @@ private struct WidgetConfigurationEditorView: View {
                 Section {
                     TextField("Name", text: $draft.name)
 
-                    // Templates picker with an info-button on the right that
-                    // opens an illustrated explainer popover. Added v0.21.7
-                    // so new users can see what each template looks like
-                    // before committing.
-                    HStack {
-                        Picker("Template", selection: $draft.templateID) {
-                            ForEach(WidgetTemplate.allCases, id: \.self) { template in
-                                Text(template.displayName).tag(template)
-                            }
-                        }
-                        Button {
-                            showTemplatesInfo = true
-                        } label: {
-                            Image(systemName: "info.circle")
-                                .symbolRenderingMode(.hierarchical)
-                                .imageScale(.large)
-                        }
-                        .buttonStyle(.borderless)
-                        .help("Show illustrations of every widget template")
-                        .accessibilityLabel("About widget templates")
-                        .popover(isPresented: $showTemplatesInfo, arrowEdge: .trailing) {
-                            WidgetTemplatesInfoView()
-                        }
-                    }
+                    // v0.21.41 — the template Picker and the
+                    // illustrated-info popover button were removed. Only
+                    // one template ships (single-big-number) so there's
+                    // nothing to pick. The `draft.templateID` field stays
+                    // hard-pinned to `.singleBigNumber` (via the
+                    // WidgetConfiguration init default + the decoder
+                    // coercion in WidgetTemplate.swift).
                 } header: {
                     Text("Configuration")
                 } footer: {
-                    Text("\(draft.templateID.size.displayName) widget · \(slotDescription) Pick the matching widget size in macOS Edit Widgets.")
+                    Text("Small widget · 1 tracker slot. Pick the small size in macOS Edit Widgets.")
                 }
 
                 Section {
@@ -437,16 +410,11 @@ private struct WidgetConfigurationEditorView: View {
             .padding()
         }
         .navigationTitle(mode == .add ? "Add Widget Configuration" : "Edit Widget Configuration")
-        .onChange(of: draft.templateID) { template in
-            // Size/layout are now derived from the template (the picker UI
-            // for them was removed in v0.17.11 — they were dead controls,
-            // never consumed by the widget extension). Keep the persisted
-            // fields in sync with the chosen template so MCP clients still
-            // see consistent values.
-            draft.size = template.size
-            draft.layout = template.defaultLayout
-            draft.trackerIDs = Array(draft.trackerIDs.prefix(template.slotCount.upperBound))
-        }
+        // v0.21.41 — the `.onChange(of: draft.templateID)` watcher was
+        // removed. It existed to keep `size` / `layout` / `trackerIDs`
+        // in sync when the user changed the template picker; with the
+        // picker gone and only one template ever in play, there's
+        // nothing to react to.
     }
 
     private var trimmedName: String {
@@ -716,8 +684,37 @@ private struct SecondaryElementPicker: View {
     }
 }
 
-/// Per-tracker visual controls (SF Symbol, accent color, gradient).
-/// v0.21.7: relocated here from TrackerEditorView's Presentation section.
+/// Per-tracker visual controls. v0.21.41 — radically simplified per
+/// voice 4206. Keeps ONLY the accent color picker; the SF Symbol icon
+/// field and the value-gradient mode picker were dropped.
+///
+/// Voice 4206 quote:
+///   "What's the s f symbol? I don't see that being used anywhere in
+///    the widget. Can we get rid of that? Is that unnecessary?"
+///   "And the visual stuff as well at the bottom, that configuration
+///    can go. It's kinda oh, actually, what? The color is the color
+///    stuff is useful, so keep that."
+///
+/// Why the SF Symbol field is gone:
+///   - It WAS unused by the widget rendering layer (grep confirms zero
+///     references to `tracker.icon` in
+///     MacosWidgetsStatsFromWebsite/Apps/WidgetExtension/).
+///   - It WAS used cosmetically in the slot-radio picker and the
+///     trackers-list view — those keep falling back to
+///     `Tracker.defaultIcon` (chart.line.uptrend.xyaxis), so removing
+///     the picker UI loses no functionality. The `tracker.icon` field
+///     stays on the Tracker model for backcompat — existing trackers
+///     keep their stored value, but the UI no longer surfaces a way to
+///     edit it. Future cleanup: drop the field from the model in a
+///     later major.
+///
+/// Why the gradient picker is gone:
+///   - It's "visual stuff" that doesn't affect the simplified widget
+///     functionality. The underlying field (`tracker.gradientMode`)
+///     stays on the model so any tracker that already had a gradient
+///     configured keeps rendering with it via SingleBigNumberTemplate's
+///     `gradientStyle` access path. The user just can't change it via
+///     UI any more.
 private struct TrackerVisualConfigCard: View {
     @Binding var tracker: Tracker
     @State private var accentColor: Color
@@ -733,6 +730,9 @@ private struct TrackerVisualConfigCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
+                // Show the stored icon as a read-only chip so the user can
+                // see which icon their tracker is using even though the
+                // picker is gone. Falls back to default icon if empty.
                 Image(systemName: tracker.icon.isEmpty ? Tracker.defaultIcon : tracker.icon)
                     .foregroundStyle(accentColor)
                     .frame(width: 22)
@@ -741,24 +741,15 @@ private struct TrackerVisualConfigCard: View {
                 Spacer()
             }
 
-            HStack {
-                TextField("SF Symbol", text: $tracker.icon)
-                Image(systemName: tracker.icon.isEmpty ? Tracker.defaultIcon : tracker.icon)
-                    .frame(width: 24)
-            }
-
+            // Only the color picker survives the visual cleanup. Ethan
+            // explicitly called out "The color is the color stuff is
+            // useful, so keep that."
             ColorPicker("Accent color", selection: $accentColor, supportsOpacity: false)
                 .onChange(of: accentColor) { newValue in
                     if let hex = newValue.hexString {
                         tracker.accentColorHex = hex
                     }
                 }
-
-            Picker("Value gradient", selection: $tracker.gradientMode) {
-                ForEach(GradientMode.allCases, id: \.self) { mode in
-                    Text(mode.displayName).tag(mode)
-                }
-            }
         }
         .padding(10)
         .background(Color.secondary.opacity(0.06))
@@ -766,296 +757,13 @@ private struct TrackerVisualConfigCard: View {
     }
 }
 
-/// Illustrated explainer popover for the Templates picker. Each row
-/// pairs the template's display name with a tiny SwiftUI mockup that
-/// previews its visual structure — single big number, number + sparkline,
-/// gauge, snapshot tile, etc. v0.21.7 (frontend-design pass).
-private struct WidgetTemplatesInfoView: View {
-    var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 14) {
-                Text("Widget templates")
-                    .font(.title3.weight(.semibold))
-                Text("Each template renders one or more trackers differently. Pick the one that matches the story you want to tell on your desktop.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-
-                Divider()
-
-                ForEach(WidgetTemplate.allCases, id: \.self) { template in
-                    HStack(alignment: .top, spacing: 12) {
-                        TemplateIllustration(template: template)
-                            .frame(width: 110, height: 70)
-                            .background(Color.secondary.opacity(0.08))
-                            .cornerRadius(8)
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 8)
-                                    .stroke(Color.secondary.opacity(0.2))
-                            )
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text(template.displayName)
-                                .font(.subheadline.weight(.semibold))
-                            Text(template.illustrationSubtitle)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .fixedSize(horizontal: false, vertical: true)
-                            Text(template.illustrationSlotCaption)
-                                .font(.caption2)
-                                .foregroundStyle(.tertiary)
-                        }
-                        Spacer(minLength: 0)
-                    }
-                }
-            }
-            .padding(18)
-        }
-        .frame(width: 420, height: 520)
-    }
-}
-
-/// Tiny SwiftUI mockup of each template. Composed from primitives so the
-/// illustration scales with the popover and doesn't depend on bundled
-/// raster assets. Per Ethan voice 3786 (v0.21.7 frontend-design pass).
-private struct TemplateIllustration: View {
-    let template: WidgetTemplate
-
-    @ViewBuilder
-    var body: some View {
-        switch template {
-        case .singleBigNumber:
-            VStack(spacing: 2) {
-                Text("87")
-                    .font(.system(size: 30, weight: .bold, design: .rounded))
-                Text("revenue")
-                    .font(.system(size: 8))
-                    .foregroundStyle(.secondary)
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-        case .numberPlusSparkline:
-            VStack(alignment: .leading, spacing: 4) {
-                Text("87")
-                    .font(.system(size: 22, weight: .bold, design: .rounded))
-                MockSparkline()
-                    .frame(height: 16)
-            }
-            .padding(8)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-        case .gaugeRing:
-            ZStack {
-                Circle()
-                    .stroke(Color.secondary.opacity(0.25), lineWidth: 5)
-                Circle()
-                    .trim(from: 0, to: 0.7)
-                    .stroke(Color.accentColor, style: StrokeStyle(lineWidth: 5, lineCap: .round))
-                    .rotationEffect(.degrees(-90))
-                Text("70%")
-                    .font(.system(size: 12, weight: .semibold, design: .rounded))
-            }
-            .padding(10)
-        case .liveSnapshotTile:
-            ZStack(alignment: .bottomLeading) {
-                LinearGradient(colors: [.blue.opacity(0.5), .purple.opacity(0.5)], startPoint: .topLeading, endPoint: .bottomTrailing)
-                Text("live")
-                    .font(.system(size: 9, weight: .semibold))
-                    .padding(4)
-                    .foregroundStyle(.white)
-            }
-        case .headlineSparkline:
-            VStack(alignment: .leading, spacing: 4) {
-                HStack(alignment: .firstTextBaseline) {
-                    Text("Revenue")
-                        .font(.system(size: 9))
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                    Text("$2.1k")
-                        .font(.system(size: 16, weight: .bold, design: .rounded))
-                }
-                MockSparkline()
-                    .frame(height: 22)
-            }
-            .padding(8)
-        case .dualStatCompare:
-            HStack(spacing: 6) {
-                MockStatCell(label: "Today", value: "87")
-                Divider()
-                MockStatCell(label: "Yest.", value: "62")
-            }
-            .padding(8)
-        case .dashboard3Up:
-            HStack(spacing: 4) {
-                MockStatCell(label: "A", value: "12")
-                MockStatCell(label: "B", value: "34")
-                MockStatCell(label: "C", value: "56")
-            }
-            .padding(8)
-        case .snapshotPlusStat:
-            HStack(spacing: 6) {
-                Rectangle()
-                    .fill(LinearGradient(colors: [.green.opacity(0.6), .teal.opacity(0.6)], startPoint: .top, endPoint: .bottom))
-                    .frame(width: 36)
-                    .cornerRadius(4)
-                VStack(alignment: .leading) {
-                    Text("87")
-                        .font(.system(size: 18, weight: .bold, design: .rounded))
-                    Text("active")
-                        .font(.system(size: 8))
-                        .foregroundStyle(.secondary)
-                }
-                Spacer()
-            }
-            .padding(8)
-        case .statsListWatchlist:
-            VStack(alignment: .leading, spacing: 2) {
-                MockListRow(label: "AAPL", value: "182")
-                MockListRow(label: "TSLA", value: "215")
-                MockListRow(label: "NVDA", value: "905")
-                MockListRow(label: "MSFT", value: "428")
-            }
-            .padding(6)
-        case .heroPlusDetail:
-            VStack(alignment: .leading, spacing: 4) {
-                Text("$2.1k")
-                    .font(.system(size: 22, weight: .bold, design: .rounded))
-                Text("orders today")
-                    .font(.system(size: 8))
-                    .foregroundStyle(.secondary)
-                MockSparkline()
-                    .frame(height: 12)
-            }
-            .padding(8)
-        case .liveSnapshotHero:
-            ZStack(alignment: .bottomLeading) {
-                LinearGradient(colors: [.orange.opacity(0.5), .red.opacity(0.5)], startPoint: .topLeading, endPoint: .bottomTrailing)
-                VStack(alignment: .leading) {
-                    Text("Live")
-                        .font(.system(size: 9, weight: .semibold))
-                        .padding(4)
-                        .background(Color.white.opacity(0.18))
-                        .cornerRadius(3)
-                    Spacer()
-                    Text("Hero")
-                        .font(.system(size: 11, weight: .bold))
-                        .foregroundStyle(.white)
-                        .padding(.leading, 4)
-                        .padding(.bottom, 4)
-                }
-            }
-        case .megaDashboardGrid:
-            VStack(spacing: 3) {
-                HStack(spacing: 3) {
-                    MockGridCell()
-                    MockGridCell()
-                    MockGridCell()
-                    MockGridCell()
-                }
-                HStack(spacing: 3) {
-                    MockGridCell()
-                    MockGridCell()
-                    MockGridCell()
-                    MockGridCell()
-                }
-            }
-            .padding(6)
-        }
-    }
-}
-
-private struct MockSparkline: View {
-    var body: some View {
-        GeometryReader { geo in
-            Path { path in
-                let points: [CGFloat] = [0.7, 0.5, 0.65, 0.4, 0.55, 0.3, 0.45, 0.2]
-                let dx = geo.size.width / CGFloat(points.count - 1)
-                path.move(to: CGPoint(x: 0, y: geo.size.height * points[0]))
-                for (i, value) in points.enumerated().dropFirst() {
-                    path.addLine(to: CGPoint(x: CGFloat(i) * dx, y: geo.size.height * value))
-                }
-            }
-            .stroke(Color.accentColor, lineWidth: 1.5)
-        }
-    }
-}
-
-private struct MockStatCell: View {
-    let label: String
-    let value: String
-
-    var body: some View {
-        VStack(spacing: 2) {
-            Text(value)
-                .font(.system(size: 14, weight: .bold, design: .rounded))
-            Text(label)
-                .font(.system(size: 7))
-                .foregroundStyle(.secondary)
-        }
-        .frame(maxWidth: .infinity)
-    }
-}
-
-private struct MockListRow: View {
-    let label: String
-    let value: String
-
-    var body: some View {
-        HStack {
-            Text(label)
-                .font(.system(size: 8, weight: .medium))
-            Spacer()
-            Text(value)
-                .font(.system(size: 8, design: .monospaced))
-                .foregroundStyle(.secondary)
-        }
-    }
-}
-
-private struct MockGridCell: View {
-    var body: some View {
-        RoundedRectangle(cornerRadius: 3)
-            .fill(Color.accentColor.opacity(0.25))
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-}
-
-private extension WidgetTemplate {
-    var illustrationSubtitle: String {
-        switch self {
-        case .singleBigNumber:
-            return "One huge number, perfect for a KPI you want to glance at from across the room."
-        case .numberPlusSparkline:
-            return "Headline number with a small trend chart underneath."
-        case .gaugeRing:
-            return "Circular gauge from 0 to 100 — best for percentages or completion ratios."
-        case .liveSnapshotTile:
-            return "Embeds a live image snapshot of the captured page region."
-        case .headlineSparkline:
-            return "Caption + headline number + a wider sparkline. Medium-width layout."
-        case .dualStatCompare:
-            return "Two trackers side-by-side, for compare/contrast (e.g. today vs yesterday)."
-        case .dashboard3Up:
-            return "Three small numbers in a row — quick overview of three metrics."
-        case .snapshotPlusStat:
-            return "Image snapshot beside one big number — visual + value."
-        case .statsListWatchlist:
-            return "A scrollable list of 4-6 trackers, like a watchlist."
-        case .heroPlusDetail:
-            return "Large hero number with extra detail and a trend chart below."
-        case .liveSnapshotHero:
-            return "Full-bleed live snapshot of the captured page region."
-        case .megaDashboardGrid:
-            return "A grid of 6-8 trackers, for a dense full-screen dashboard."
-        }
-    }
-
-    var illustrationSlotCaption: String {
-        let range = slotCount
-        if range.lowerBound == range.upperBound {
-            return "\(size.displayName) · \(range.lowerBound) slot\(range.lowerBound == 1 ? "" : "s")"
-        }
-
-        return "\(size.displayName) · \(range.lowerBound)-\(range.upperBound) slots"
-    }
-}
+// v0.21.41 — `WidgetTemplatesInfoView`, `TemplateIllustration`,
+// `MockSparkline`, `MockStatCell`, `MockListRow`, `MockGridCell`, and
+// the `WidgetTemplate.illustrationSubtitle` / `illustrationSlotCaption`
+// extensions are all gone. They served the illustrated-templates info
+// popover that explained what each variant looked like. Voice 4206
+// killed templates entirely, so the popover has nothing left to
+// illustrate. Pure dead code — removed.
 
 private struct WidgetConfigurationEditorPresentation: Identifiable {
     let id = UUID()

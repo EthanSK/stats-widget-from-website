@@ -107,12 +107,17 @@ final class SecondaryElementsCodableTests: XCTestCase {
     }
 
     func testWidgetConfigurationWithSecondaryBindingsRoundTrips() throws {
+        // v0.21.41 — `.dashboard3Up` removed; switched to
+        // `.singleBigNumber`. The test still exercises slot-0 / slot-2
+        // bindings (with no slot-1 binding) — secondaryElementIDsBySlot
+        // is keyed by slot index regardless of how many slots the
+        // template actually exposes, so the data path round-trips fine.
         let elementA = UUID()
         let elementB = UUID()
         let trackerID = UUID()
         let config = WidgetConfiguration(
             name: "Multi",
-            templateID: .dashboard3Up,
+            templateID: .singleBigNumber,
             trackerIDs: [trackerID, trackerID, trackerID],
             secondaryElementIDsBySlot: [
                 "0": [elementA, elementB],

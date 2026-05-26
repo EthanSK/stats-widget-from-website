@@ -40,36 +40,52 @@ struct StatsWidgetEntry: TimelineEntry {
 }
 
 private enum StatsWidgetEntryFactory {
+    /// WidgetKit calls `placeholder` while it's still rebuilding the
+    /// timeline after a `reloadTimelines()` call (e.g. after the user
+    /// taps the refresh button). The previous implementation returned a
+    /// gallery-preview entry with fake "$42.18" / "$157" demo data,
+    /// which on a placed widget rendered as a brief "fake numbers" flash
+    /// between the old value and the new one. Ethan voice 4206 reported
+    /// it as "after a minute, it's now showing nothing" — the widget
+    /// actually swapped from the real number to the placeholder gallery
+    /// preview and back. We now build the placeholder from the LIVE
+    /// readings.json data so the placeholder visually matches the real
+    /// entry; if the live data isn't there yet (extension cold start,
+    /// missing app group, etc.) we fall back to the demo entry.
     static func placeholder(family: WidgetFamily = .systemSmall) -> StatsWidgetEntry {
-        galleryPreview(family: family)
+        // Try to build a real entry first — if any tracker has a current
+        // value cached on disk, we can render it during the reload window
+        // instead of showing fake numbers. This is the fix for the
+        // "widget showed nothing after refresh tap" issue (voice 4206):
+        // the placeholder path used to overwrite the live value with the
+        // gallery preview while WidgetKit was still rebuilding the
+        // timeline post-reloadTimelines(). Now the placeholder still
+        // surfaces the most-recent reading so the user sees continuity.
+        let live = makeEntry(configurationID: nil)
+        if !live.trackers.isEmpty {
+            return live
+        }
+        // No configured trackers at all — show the gallery-style demo
+        // entry so the widget gallery has something to draw. Real placed
+        // widgets only hit this branch on first install before any
+        // trackers exist.
+        return galleryPreview(family: family)
     }
 
     static func galleryPreview(family: WidgetFamily) -> StatsWidgetEntry {
+        // v0.21.41 — only the systemSmall family is supported and only
+        // one template (`.singleBigNumber`) exists. The previous large /
+        // medium / extraLarge branches were dropped per Ethan voice 4206
+        // ("just have the small size widget"). `family` is still threaded
+        // in for the StatsWidgetEntryView's family-aware behaviour, but
+        // the gallery preview itself is always small.
         let trackers = previewTrackers
-        let templateID: WidgetTemplate
-        let trackerLimit: Int
-
-        switch family {
-        case .systemMedium:
-            templateID = .dashboard3Up
-            trackerLimit = 3
-        case .systemLarge:
-            templateID = .statsListWatchlist
-            trackerLimit = 4
-        case .systemExtraLarge:
-            templateID = .megaDashboardGrid
-            trackerLimit = 6
-        default:
-            templateID = .singleBigNumber
-            trackerLimit = 1
-        }
-
-        let selectedTrackers = Array(trackers.prefix(trackerLimit))
+        let selectedTrackers = Array(trackers.prefix(1))
         let configuration = WidgetConfiguration(
             name: "AI Spend Dashboard",
-            templateID: templateID,
-            size: templateID.size,
-            layout: templateID.defaultLayout,
+            templateID: .singleBigNumber,
+            size: .small,
+            layout: .single,
             trackerIDs: selectedTrackers.map(\.id)
         )
 
@@ -89,7 +105,11 @@ private enum StatsWidgetEntryFactory {
         let trackerIDs = configuredTrackerIDs.isEmpty
             ? appConfiguration.trackers.prefix(1).map(\.id)
             : configuredTrackerIDs
-        var trackers = trackerIDs.compactMap { id in
+        // v0.21.41 — singleBigNumber template only renders one tracker, so
+        // cap the resolved tracker list at 1. Pre-v0.21.41 multi-slot
+        // templates (dashboard, watchlist) needed the full list; with
+        // those gone we don't need the extra items here either.
+        var trackers = trackerIDs.prefix(1).compactMap { id in
             appConfiguration.trackers.first { $0.id == id }
         }
 
@@ -368,41 +388,15 @@ struct StatsWidgetEntryView: View {
         .widgetCompatibleBackground()
         .dynamicTypeSize(.xSmall ... .accessibility3)
         .overlay(alignment: .topTrailing) {
-            // The configuration-name chip and the error badge both live at
-            // top-trailing because top-leading is reserved for the template's
-            // own title (rendering them in the same corner caused a "double
-            // title" visual artifact — voice 2960). Error badge wins when
-            // both would render so the user always sees the attention
-            // signal first.
+            // Only the error badge lives at top-trailing now. The
+            // configuration-name chip was dropped in v0.21.41 because it
+            // never rendered on `.systemSmall` widgets anyway (the only
+            // family we ship — see `visibleConfigurationName`'s
+            // systemSmall guard) and the medium/large families that did
+            // render it were removed in this version.
             if let item = firstAttentionItem {
                 ErrorStateBadge(item: item)
                     .padding(8)
-            } else if let configurationName = visibleConfigurationName {
-                Text(configurationName)
-                    .font(.system(size: 9, weight: .semibold, design: .rounded))
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 3)
-                    // Widgets render SwiftUI Material as a static screenshot, so
-                    // .regularMaterial / .thinMaterial come out opaque white on
-                    // a dark widget background — covering the title underneath.
-                    // Use a subtle translucent fill instead so the chip stays
-                    // legible without obscuring content.
-                    .background(Color.primary.opacity(0.08), in: Capsule())
-                    // Cap the chip's horizontal footprint so it can never
-                    // bleed leftward over the template's top-leading title.
-                    // The chip lives at top-trailing and uses tail truncation,
-                    // so capping the frame just truncates long names with an
-                    // ellipsis (e.g. "ChatGPT session usa..." instead of the
-                    // full string extending across the whole widget). 140pt
-                    // is roughly half the medium widget width (~330pt) and a
-                    // third of the large family — wide enough to read at a
-                    // glance, narrow enough to never collide with the title.
-                    // Fix for label-overlap bug 2026-05-24.
-                    .frame(maxWidth: 140, alignment: .trailing)
-                    .padding(6)
             }
         }
         .animation(NumberAnimation.spring(reduceMotion: reduceMotion), value: entry.valueFingerprint)
@@ -410,120 +404,24 @@ struct StatsWidgetEntryView: View {
         .accessibilityLabel(entry.accessibilitySummary)
     }
 
-    /// Name of the selected widget configuration, when distinct from the
-    /// tracker's own title. Surfaced as a small chip so the user can confirm
-    /// which configuration the system picked from the Edit Widget panel.
-    ///
-    /// `.systemSmall` widgets are excluded explicitly: the small family is
-    /// only ~165pt wide and BOTH the template's top-leading title AND the
-    /// top-trailing chip are anchored at the top of the widget. When the
-    /// chip text is long (e.g. "ChatGPT session usage") it extends leftward
-    /// far enough to physically overlap the title text underneath — they
-    /// occupy the same vertical band, just at opposite horizontal anchors,
-    /// and on a narrow widget the two collide. This was especially visible
-    /// after v0.21.9 introduced widget configs whose name differs from the
-    /// underlying tracker label (multi-element trackers + per-slot secondary
-    /// bindings → "ChatGPT session usage" widget showing a tracker labeled
-    /// "5h session" with both labels overlapping at the top). On `medium`
-    /// and larger families there's enough horizontal room for the chip not
-    /// to bleed into the title, so we keep it there. Users disambiguating
-    /// multiple small widgets can still tell them apart via the configured
-    /// tracker label at top-leading; the chip's job (confirming which saved
-    /// config the system picked) is also surfaced in the Edit Widget panel.
-    /// Fix for label-overlap bug reported 2026-05-24 (Ethan screenshot of
-    /// "ChatGPT session usa..." overlapping "5h session" on bottom-row
-    /// small widgets).
-    private var visibleConfigurationName: String? {
-        // Suppress the chip entirely on systemSmall — there isn't enough
-        // horizontal space for both a left-anchored title and a
-        // right-anchored chip at the top of the widget without them
-        // colliding. See the doc-comment above for the full rationale.
-        if family == .systemSmall {
-            return nil
-        }
+    // v0.21.41 — `visibleConfigurationName` was deleted. The chip it fed
+    // was suppressed on `.systemSmall` (the only family we ship now), so
+    // the function only ever returned nil. Dead code.
 
-        guard let configurationName = entry.configuration?.name.trimmingCharacters(in: .whitespacesAndNewlines),
-              !configurationName.isEmpty else {
-            return nil
-        }
-
-        let firstTrackerTitle = entry.trackers.first.map { tracker -> String in
-            tracker.label?.isEmpty == false ? tracker.label! : tracker.name
-        }
-        if let firstTrackerTitle, firstTrackerTitle.caseInsensitiveCompare(configurationName) == .orderedSame {
-            // Don't show a redundant chip when the widget config name and the
-            // tracker title are identical.
-            return nil
-        }
-        return configurationName
-    }
-
+    // v0.21.41 — radical simplification per voice 4206. The previous
+    // 12-template switch is gone; every widget renders as
+    // `SingleBigNumberTemplate`. Legacy WidgetConfigurations on disk that
+    // referenced removed templates (gauge, dashboard, watchlist, etc.)
+    // still load — the WidgetTemplate decoder coerces unknown raw values
+    // to `.singleBigNumber`, so they render here exactly as if the user
+    // had picked single-big-number from the start.
+    //
+    // `fallbackView` and `defaultTemplate` (the family-aware multi-template
+    // dispatch) were dropped — we only ship the systemSmall family and
+    // only one template, so dispatch is no longer necessary.
     @ViewBuilder
     private var templateView: some View {
-        switch entry.configuration?.templateID ?? defaultTemplate {
-        case .singleBigNumber:
-            SingleBigNumberTemplate(item: item(at: 0))
-        case .numberPlusSparkline:
-            NumberPlusSparklineTemplate(item: item(at: 0))
-        case .gaugeRing:
-            GaugeRingTemplate(item: item(at: 0))
-        case .liveSnapshotTile:
-            LiveSnapshotTileTemplate(item: item(at: 0))
-        case .headlineSparkline:
-            HeadlineSparklineTemplate(item: item(at: 0))
-        case .dualStatCompare:
-            DualStatCompareTemplate(items: items(limit: 2))
-        case .dashboard3Up:
-            Dashboard3UpTemplate(items: items(limit: 3))
-        case .snapshotPlusStat:
-            SnapshotPlusStatTemplate(snapshotItem: snapshotItem(), textItem: textItem(excluding: snapshotItem()?.id))
-        case .statsListWatchlist:
-            StatsListWatchlistTemplate(items: items(limit: 6))
-        case .heroPlusDetail:
-            HeroPlusDetailTemplate(item: item(at: 0))
-        case .liveSnapshotHero:
-            LiveSnapshotHeroTemplate(item: item(at: 0))
-        case .megaDashboardGrid:
-            MegaDashboardGridTemplate(items: items(limit: 8))
-        }
-    }
-
-    @ViewBuilder
-    private var fallbackView: some View {
-        if item(at: 0)?.tracker.renderMode == .snapshot {
-            switch family {
-            case .systemLarge:
-                LiveSnapshotHeroTemplate(item: item(at: 0))
-            default:
-                LiveSnapshotTileTemplate(item: item(at: 0))
-            }
-        } else if #available(macOSApplicationExtension 14.0, *), family == .systemExtraLarge {
-            MegaDashboardGridTemplate(items: items(limit: 8))
-        } else {
-            switch family {
-            case .systemMedium:
-                Dashboard3UpTemplate(items: items(limit: 3))
-            case .systemLarge:
-                StatsListWatchlistTemplate(items: items(limit: 6))
-            default:
-                SingleBigNumberTemplate(item: item(at: 0))
-            }
-        }
-    }
-
-    private var defaultTemplate: WidgetTemplate {
-        if #available(macOSApplicationExtension 14.0, *), family == .systemExtraLarge {
-            return .megaDashboardGrid
-        }
-
-        switch family {
-        case .systemMedium:
-            return .dashboard3Up
-        case .systemLarge:
-            return .statsListWatchlist
-        default:
-            return .singleBigNumber
-        }
+        SingleBigNumberTemplate(item: item(at: 0))
     }
 
     private func item(at index: Int) -> WidgetTrackerItem? {
@@ -540,40 +438,11 @@ struct StatsWidgetEntryView: View {
         )
     }
 
-    private func items(limit: Int) -> [WidgetTrackerItem] {
-        entry.trackers.prefix(limit).enumerated().map { offset, tracker in
-            WidgetTrackerItem(
-                tracker: tracker,
-                reading: entry.readings[tracker.id],
-                secondaryElementIDs: secondaryIDs(forSlot: offset),
-                family: family
-            )
-        }
-    }
-
-    private func snapshotItem() -> WidgetTrackerItem? {
-        for (offset, tracker) in entry.trackers.enumerated() where tracker.renderMode == .snapshot {
-            return WidgetTrackerItem(
-                tracker: tracker,
-                reading: entry.readings[tracker.id],
-                secondaryElementIDs: secondaryIDs(forSlot: offset),
-                family: family
-            )
-        }
-        return nil
-    }
-
-    private func textItem(excluding excludedID: UUID?) -> WidgetTrackerItem? {
-        for (offset, tracker) in entry.trackers.enumerated() where tracker.id != excludedID && tracker.renderMode == .text {
-            return WidgetTrackerItem(
-                tracker: tracker,
-                reading: entry.readings[tracker.id],
-                secondaryElementIDs: secondaryIDs(forSlot: offset),
-                family: family
-            )
-        }
-        return nil
-    }
+    // v0.21.41 — `items(limit:)`, `snapshotItem()`, and `textItem(excluding:)`
+    // were removed along with the multi-tracker templates that called them
+    // (Dashboard3Up, StatsListWatchlist, SnapshotPlusStat, MegaDashboardGrid,
+    // DualStatCompare). Only `item(at:)` remains — it serves the single-slot
+    // SingleBigNumberTemplate path.
 
     private var firstAttentionItem: WidgetTrackerItem? {
         for (offset, tracker) in entry.trackers.enumerated() {
@@ -618,7 +487,21 @@ struct StatsWidget: Widget {
     }
 
     private var supportedFamilies: [WidgetFamily] {
-        [.systemSmall, .systemMedium, .systemLarge, .systemExtraLarge]
+        // v0.21.41 — only the small family. Voice 4206 quote:
+        //   "The fucking large size widget and the medium size widget,
+        //    etcetera, don't actually seem to work. Maybe we should just
+        //    remove them from the app, simplify the app because I don't
+        //    need them and I don't even wanna test it. So just have the
+        //    small size widget."
+        //
+        // Confirmed Ethan's currently placed widgets are all small (each
+        // selectedTrackers=1 in the timeline diagnostics log), so flipping
+        // supportedFamilies has zero visible impact on his desktop.
+        // macOS auto-removes any placed widgets whose family is no longer
+        // supported by the extension on next reload — but since none of
+        // his placed widgets use medium/large/extra-large, no orphan
+        // cleanup is required.
+        [.systemSmall]
     }
 }
 
@@ -1023,348 +906,20 @@ struct EmptyWidgetView: View {
     }
 }
 
-private struct SingleBigNumberWidgetView: View {
-    let item: WidgetTrackerItem?
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(item?.title ?? "Tracker")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-
-            Spacer(minLength: 0)
-
-            Text(item?.value ?? "--")
-                .font(.system(size: 48, weight: .semibold, design: .rounded))
-                .monospacedDigit()
-                .minimumScaleFactor(0.45)
-                .lineLimit(1)
-                .numericValueTransition()
-                .foregroundStyle(statusColor)
-                .frame(maxWidth: .infinity, alignment: .center)
-
-            // v0.21.9: secondary text(s) bound to this slot. Hidden when
-            // none are configured — single-element trackers/widgets render
-            // exactly as before.
-            if let secondary = item?.secondaryTextJoined {
-                Text(secondary)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
-                    .multilineTextAlignment(.center)
-                    .frame(maxWidth: .infinity, alignment: .center)
-            }
-
-            Spacer(minLength: 0)
-
-            HStack(spacing: 4) {
-                Image(systemName: item?.status == .ok ? "arrow.clockwise" : "exclamationmark.triangle.fill")
-                Text(item?.updatedText ?? "not updated")
-                    .lineLimit(1)
-            }
-            .font(.caption2)
-            .foregroundStyle(.secondary)
-        }
-        .padding(14)
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel(accessibilityLabel)
-    }
-
-    private var statusColor: Color {
-        switch item?.status {
-        case .broken:
-            return .red
-        case .stale, nil:
-            return .secondary
-        case .ok:
-            return .primary
-        }
-    }
-
-    private var accessibilityLabel: Text {
-        Text("\(item?.title ?? "Tracker"), \(item?.value ?? "no value"), updated \(item?.updatedText ?? "never")")
-    }
-}
-
-private struct NumberSparklineWidgetView: View {
-    let item: WidgetTrackerItem?
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(item?.title ?? "Tracker")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-            Text(item?.value ?? "--")
-                .font(.system(size: 38, weight: .semibold, design: .rounded))
-                .minimumScaleFactor(0.5)
-                .lineLimit(1)
-                .numericValueTransition()
-            if let secondary = item?.secondaryTextJoined {
-                Text(secondary)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
-            }
-            SparklineView(values: item?.sparkline ?? [], tint: item?.accent ?? .accentColor)
-                .frame(height: 34)
-            Text(item?.updatedText ?? "not updated")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-        }
-        .padding(14)
-    }
-}
-
-private struct LiveSnapshotTileWidgetView: View {
-    let item: WidgetTrackerItem?
-
-    var body: some View {
-        SnapshotImageView(item: item, cornerRadius: 4)
-            .overlay(alignment: .bottomLeading) {
-                SnapshotOverlay(item: item)
-            }
-            .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-            .padding(6)
-            .accessibilityElement(children: .combine)
-            .accessibilityLabel(Text("\(item?.title ?? "Snapshot tracker"), updated \(item?.updatedText ?? "never")"))
-    }
-}
-
-private struct LiveSnapshotHeroWidgetView: View {
-    let item: WidgetTrackerItem?
-
-    var body: some View {
-        SnapshotImageView(item: item, cornerRadius: 0)
-            .overlay(alignment: .topLeading) {
-                SnapshotOverlay(item: item)
-                    .padding(10)
-            }
-            .accessibilityElement(children: .combine)
-            .accessibilityLabel(Text("\(item?.title ?? "Snapshot tracker"), updated \(item?.updatedText ?? "never")"))
-    }
-}
-
-private struct SnapshotPlusStatWidgetView: View {
-    let snapshotItem: WidgetTrackerItem?
-    let textItem: WidgetTrackerItem?
-
-    var body: some View {
-        HStack(spacing: 12) {
-            LiveSnapshotTileWidgetView(item: snapshotItem)
-                .frame(width: 142)
-
-            SingleBigNumberWidgetView(item: textItem)
-                .padding(.vertical, -8)
-        }
-        .padding(8)
-    }
-}
-
-struct SnapshotImageView: View {
-    let item: WidgetTrackerItem?
-    let cornerRadius: CGFloat
-
-    var body: some View {
-        Group {
-            if let image = item?.snapshotImage {
-                Image(nsImage: image)
-                    .resizable()
-                    .scaledToFill()
-            } else {
-                VStack(spacing: 6) {
-                    Image(systemName: "photo")
-                        .font(.title2)
-                    Text("No snapshot")
-                        .font(.caption2)
-                }
-                .foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background(Color.secondary.opacity(0.08))
-            }
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
-    }
-}
-
-struct SnapshotOverlay: View {
-    let item: WidgetTrackerItem?
-
-    var body: some View {
-        HStack(spacing: 5) {
-            Circle()
-                .fill(item?.status == .broken ? Color.red : (item?.status == .ok ? Color.green : Color.orange))
-                .frame(width: 6, height: 6)
-            Text(item?.title ?? "Snapshot")
-                .lineLimit(1)
-            Text(item?.updatedText ?? "")
-                .lineLimit(1)
-                .foregroundStyle(.secondary)
-        }
-        .font(.caption2.weight(.medium))
-        .padding(.horizontal, 7)
-        .padding(.vertical, 4)
-        .background(.regularMaterial, in: Capsule())
-        .padding(6)
-    }
-}
-
-private struct GaugeRingWidgetView: View {
-    let item: WidgetTrackerItem?
-
-    var body: some View {
-        VStack(spacing: 8) {
-            Gauge(value: gaugeValue, in: 0...1) {
-                Text(item?.title ?? "Tracker")
-            } currentValueLabel: {
-                Text(item?.value ?? "--")
-                    .font(.caption.weight(.semibold))
-                    .minimumScaleFactor(0.5)
-                    .numericValueTransition()
-            }
-            .gaugeStyle(.accessoryCircular)
-            .tint(gaugeTint)
-            .frame(width: 92, height: 92)
-
-            Text(item?.title ?? "Tracker")
-                .font(.caption)
-                .lineLimit(1)
-                .foregroundStyle(.secondary)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .padding(12)
-    }
-
-    private var gaugeValue: Double {
-        guard let numeric = item?.numeric else {
-            return 0
-        }
-
-        return min(max(numeric / 100, 0), 1)
-    }
-
-    private var gaugeTint: Color {
-        switch gaugeValue {
-        case ..<0.7:
-            return .green
-        case ..<0.9:
-            return .orange
-        default:
-            return .red
-        }
-    }
-}
-
-private struct HeadlineSparklineWidgetView: View {
-    let item: WidgetTrackerItem?
-
-    var body: some View {
-        HStack(alignment: .center, spacing: 14) {
-            VStack(alignment: .leading, spacing: 8) {
-                Text(item?.title ?? "Tracker")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Text(item?.value ?? "--")
-                    .font(.system(size: 50, weight: .semibold, design: .rounded))
-                    .minimumScaleFactor(0.45)
-                    .lineLimit(1)
-                    .numericValueTransition()
-                if let secondary = item?.secondaryTextJoined {
-                    Text(secondary)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(2)
-                }
-                Text(item?.updatedText ?? "not updated")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-
-            SparklineView(values: item?.sparkline ?? [], tint: item?.accent ?? .accentColor)
-                .frame(width: 130, height: 90)
-        }
-        .padding(14)
-    }
-}
-
-private struct Dashboard3UpWidgetView: View {
-    let items: [WidgetTrackerItem]
-
-    var body: some View {
-        HStack(spacing: 0) {
-            ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
-                VStack(alignment: .leading, spacing: 6) {
-                    Text(item.title)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                    Text(item.value)
-                        .font(.system(size: 24, weight: .semibold, design: .rounded))
-                        .monospacedDigit()
-                        .minimumScaleFactor(0.5)
-                        .lineLimit(1)
-                        .numericValueTransition()
-                    SparklineView(values: item.sparkline, tint: item.accent)
-                        .frame(height: 24)
-                    Text(item.updatedText)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-                .padding(.horizontal, 10)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-
-                if index < items.count - 1 {
-                    Divider()
-                }
-            }
-        }
-        .padding(.vertical, 14)
-    }
-}
-
-struct SparklineView: View {
-    let values: [Double]
-    let tint: Color
-
-    var body: some View {
-        SparklineShape(values: values)
-            .stroke(tint, style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
-            .background(
-                SparklineShape(values: values)
-                    .fill(tint.opacity(0.12))
-            )
-    }
-}
-
-private struct SparklineShape: Shape {
-    let values: [Double]
-
-    func path(in rect: CGRect) -> Path {
-        guard values.count > 1,
-              let minValue = values.min(),
-              let maxValue = values.max(),
-              minValue != maxValue else {
-            var path = Path()
-            path.move(to: CGPoint(x: rect.minX, y: rect.midY))
-            path.addLine(to: CGPoint(x: rect.maxX, y: rect.midY))
-            return path
-        }
-
-        let spread = maxValue - minValue
-        var path = Path()
-        for (index, value) in values.enumerated() {
-            let x = rect.minX + rect.width * CGFloat(index) / CGFloat(values.count - 1)
-            let y = rect.maxY - rect.height * CGFloat((value - minValue) / spread)
-            let point = CGPoint(x: x, y: y)
-            index == 0 ? path.move(to: point) : path.addLine(to: point)
-        }
-        return path
-    }
-}
+// v0.21.41 — All the in-file `private struct ___WidgetView` types were
+// deleted: SingleBigNumberWidgetView, NumberSparklineWidgetView,
+// LiveSnapshotTileWidgetView, LiveSnapshotHeroWidgetView,
+// SnapshotPlusStatWidgetView, GaugeRingWidgetView,
+// HeadlineSparklineWidgetView, Dashboard3UpWidgetView. They were all
+// dead — never referenced from anywhere — leftover from an earlier
+// abandoned rendering approach. The actual templates live in the
+// `Templates/` directory and (post-v0.21.41) only SingleBigNumber.swift
+// remains.
+//
+// The dependent infrastructure types (SnapshotImageView, SnapshotOverlay,
+// SparklineView, SparklineShape) are also deleted because their sole
+// callers were the dead structs above; nothing in the surviving
+// SingleBigNumberTemplate uses sparklines or snapshot rendering.
 
 extension View {
     @ViewBuilder

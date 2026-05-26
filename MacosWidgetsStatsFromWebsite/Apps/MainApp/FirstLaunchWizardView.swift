@@ -141,15 +141,12 @@ struct FirstLaunchWizardView: View {
                     }
                     .pickerStyle(.segmented)
 
-                    Picker("First widget layout", selection: $widgetTemplate) {
-                        ForEach(availableWidgetTemplates, id: \.rawValue) { template in
-                            Text("\(template.displayName) — \(template.size.displayName)").tag(template)
-                        }
-                    }
-
-                    Text(widgetTemplateHelp)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    // v0.21.41 — "First widget layout" picker dropped.
+                    // Only one template (single-big-number) ever ships
+                    // now, so the picker had a single-item list and was
+                    // therefore meaningless. The new tracker's widget
+                    // is auto-created as a single-big-number small
+                    // widget below in `saveFirstTracker`.
                 } header: {
                     Text("Tracker")
                 }
@@ -212,12 +209,11 @@ struct FirstLaunchWizardView: View {
                 }
 
                 Section {
-                    HStack {
-                        TextField("SF Symbol", text: $icon)
-                        Image(systemName: icon.isEmpty ? Tracker.defaultIcon : icon)
-                            .frame(width: 24)
-                    }
-
+                    // v0.21.41 — SF Symbol picker dropped per voice 4206
+                    // ("get rid of that. Is that unnecessary?"). The
+                    // tracker's `icon` field still defaults to
+                    // `Tracker.defaultIcon` via `saveFirstTracker`. Only
+                    // the accent color picker survives.
                     ColorPicker("Accent color", selection: $accentColor, supportsOpacity: false)
                 } header: {
                     Text("Presentation")
@@ -471,22 +467,19 @@ struct FirstLaunchWizardView: View {
         return "\(host) Tracker"
     }
 
+    /// v0.21.41 — collapsed to a single-element list. The previous
+    /// switch returned 5 text templates / 2 snapshot templates; with
+    /// only `.singleBigNumber` surviving, every render mode picks the
+    /// same template.
     private func availableWidgetTemplates(for mode: RenderMode) -> [WidgetTemplate] {
-        switch mode {
-        case .text:
-            return [.singleBigNumber, .numberPlusSparkline, .gaugeRing, .headlineSparkline, .heroPlusDetail]
-        case .snapshot:
-            return [.liveSnapshotTile, .liveSnapshotHero]
-        }
+        _ = mode
+        return [.singleBigNumber]
     }
 
+    /// v0.21.41 — always single-big-number. See `availableWidgetTemplates`.
     private static func defaultWidgetTemplate(for mode: RenderMode) -> WidgetTemplate {
-        switch mode {
-        case .text:
-            return .singleBigNumber
-        case .snapshot:
-            return .liveSnapshotTile
-        }
+        _ = mode
+        return .singleBigNumber
     }
 
     private func formattedBoundingBox(_ bbox: ElementBoundingBox) -> String {

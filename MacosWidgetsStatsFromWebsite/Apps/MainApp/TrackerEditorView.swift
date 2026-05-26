@@ -125,14 +125,14 @@ struct TrackerEditorView: View {
                 } header: {
                     Text("Display")
                 } footer: {
-                    // v0.21.7: SF Symbol, accent color, and value gradient
-                    // moved to the Widget Configuration editor — they only
-                    // affect how a tracker is RENDERED in a widget, so they
-                    // belong in the per-widget editor, not the per-tracker
-                    // form. The underlying storage is still on Tracker so
-                    // the same tracker reused across two widgets keeps a
-                    // consistent look.
-                    Text("Visual options (icon, accent color, gradient) moved to the Widgets section.")
+                    // v0.21.41 — accent color lives on the Widget
+                    // configuration editor's Visuals section. SF Symbol
+                    // picker + value gradient picker were dropped per
+                    // voice 4206 ("get rid of that. Is that unnecessary?
+                    // ... the color is the color stuff is useful, so
+                    // keep that."). See WidgetConfigsView.swift →
+                    // `TrackerVisualConfigCard`.
+                    Text("Accent color is in the Widgets section.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }

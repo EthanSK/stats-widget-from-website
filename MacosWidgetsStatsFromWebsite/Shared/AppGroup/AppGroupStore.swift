@@ -746,24 +746,17 @@ final class AppGroupStore: ObservableObject {
         })
     }
 
+    /// v0.21.41 — collapsed to a single return. The previous multi-arm
+    /// switch picked between dashboard / list / mega-grid templates based
+    /// on tracker count; with only `.singleBigNumber` surviving, there's
+    /// nothing left to choose. Signature is preserved so callers continue
+    /// to compile, but the `trackerIDs` and `trackerModesByID` parameters
+    /// are now ignored (snapshot vs text mode no longer affects template
+    /// selection).
     private static func inferredWidgetTemplate(forTrackerIDs trackerIDs: [String], trackerModesByID: [String: String]) -> WidgetTemplate {
-        let modes = trackerIDs.compactMap { trackerModesByID[$0] }
-        let includesSnapshot = modes.contains(RenderMode.snapshot.rawValue)
-
-        switch trackerIDs.count {
-        case 1:
-            return includesSnapshot ? .liveSnapshotTile : .singleBigNumber
-        case 2:
-            return includesSnapshot ? .snapshotPlusStat : .dualStatCompare
-        case 3:
-            return .dashboard3Up
-        case 4...6:
-            return .statsListWatchlist
-        case 7...:
-            return .megaDashboardGrid
-        default:
-            return .singleBigNumber
-        }
+        _ = trackerIDs
+        _ = trackerModesByID
+        return .singleBigNumber
     }
 
     private static func widgetTemplate(from value: Any?) -> WidgetTemplate? {

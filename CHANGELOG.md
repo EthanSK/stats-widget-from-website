@@ -5,6 +5,77 @@ Release-by-release notes for the Stats Widget from Website project.
 Format: each entry is dated, lists the user-visible changes first, then the
 under-the-hood / signing / packaging changes. Newest first.
 
+## v0.21.41 — 2026-05-26
+
+### User-facing — major UX simplification (Ethan voice 4206)
+
+- **Only the small widget remains.** Medium / large / extra-large widget
+  sizes were dropped. Voice 4206: *"The fucking large size widget and the
+  medium size widget, etcetera, don't actually seem to work. Maybe we
+  should just remove them from the app, simplify the app because I don't
+  need them and I don't even wanna test it. So just have the small size
+  widget."* All currently-placed widgets are small, so this change has no
+  visible impact on the desktop.
+- **Widget templates are gone.** Previously the app offered 12 layouts
+  (single big number, sparkline, gauge, dashboard 3-up, watchlist, mega
+  dashboard, etc.). Voice 4206: *"just get rid of templates entirely.
+  There's literally no need at all."* Every widget now renders the
+  single-big-number layout. Existing widget configurations that
+  referenced removed templates (gauge, dashboard, etc.) silently coerce
+  to single-big-number on next load — no user re-configuration needed.
+- **Template picker UI removed** from the widget configuration editor.
+  Only one template ships, so the picker had nothing to choose between.
+- **SF Symbol icon picker removed.** Voice 4206: *"What's the s f symbol?
+  I don't see that being used anywhere in the widget. Can we get rid of
+  that?"* Confirmed unused on the widget face itself; the field stayed
+  only as a cosmetic UI knob in preferences. The stored
+  `tracker.icon` value is preserved on disk (no data migration) — only
+  the editor UI is gone. The trackers-list view still shows the icon as
+  a cosmetic identifier.
+- **Visual / gradient controls removed**, accent color stays. Voice
+  4206: *"the visual stuff as well at the bottom, that configuration
+  can go ... The color is the color stuff is useful, so keep that."*
+  Gradient-mode picker dropped from the per-widget Visuals card.
+- **Widget shows live values during refresh (was: blank/demo numbers).**
+  After tapping the refresh button on a placed widget, the widget could
+  briefly show a "—" or stale render while WidgetKit rebuilt the
+  timeline (voice 4206: *"I just clicked refresh on one of the widget
+  buttons and after a minute, it's now showing nothing, but the other
+  two widgets are fine."*). The `TimelineProvider.placeholder` path
+  used to return gallery-style fake numbers (`$42.18`, `$157`) during
+  the reload window. Now `placeholder` calls the same live-data factory
+  as the real timeline entry, so the most-recent reading shows
+  continuously through the refresh — no flicker, no fake demo numbers.
+
+### Under-the-hood
+
+- `WidgetTemplate` enum collapsed from 12 cases to 1 (`.singleBigNumber`).
+  Custom `init(from:)` coerces any legacy raw value
+  ("dashboard-3-up", "gauge-ring", etc.) to `.singleBigNumber`, so
+  existing `trackers.json` files keep decoding without crashing.
+- Deleted template files:
+  `Dashboard3Up.swift`, `DualStatCompare.swift`, `GaugeRing.swift`,
+  `HeadlineSparkline.swift`, `HeroPlusDetail.swift`,
+  `LiveSnapshotHero.swift`, `LiveSnapshotTile.swift`,
+  `MegaDashboardGrid.swift`, `NumberPlusSparkline.swift`,
+  `SnapshotPlusStat.swift`, `StatsListWatchlist.swift`. Only
+  `SingleBigNumber.swift` remains.
+- `StatsWidget.supportedFamilies` reduced to `[.systemSmall]`.
+- Dead in-file `private struct ___WidgetView` types removed from
+  `StatsWidget.swift` along with `SparklineView`, `SparklineShape`,
+  `SnapshotImageView`, `SnapshotOverlay`.
+- `WidgetTemplatesInfoView` + `TemplateIllustration` + Mock*
+  illustration helpers removed from `WidgetConfigsView.swift`.
+- `FirstLaunchWizardView.swift`: SF Symbol picker removed, "First
+  widget layout" picker removed (single-option lists were meaningless);
+  `availableWidgetTemplates(for:)` collapsed to `[.singleBigNumber]`.
+- `AppGroupStore.inferredWidgetTemplate` collapsed — every input
+  returns `.singleBigNumber`.
+- WidgetKit `kind` ID (`MacosWidgetsStatsFromWebsite`) UNCHANGED so
+  existing placed widgets re-pair after the update. Per voice 4192
+  Ethan will "shit the bed" if we orphan his placed widgets — every
+  identifier on the wire stays put.
+
 ## v0.21.40 — 2026-05-26
 
 ### Under-the-hood
