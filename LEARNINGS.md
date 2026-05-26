@@ -24,6 +24,26 @@ Each entry looks like:
 (newest first)
 
 ---
+**Date:** 2026-05-26T16:51:13Z
+**Trigger:** Ethan voice 4212 (2026-05-26)
+**Symptom:** Terminal Claude Code session can't call the host's Sparkle update MCP tools (check_for_updates / install_pending_update / upgrade_to_latest) — they all throw 'requires the running app's MCP socket — Sparkle is not linked into the CLI stdio MCP transport'. Ethan's ~/.claude/.mcp.json spawns the host binary with --mcp-stdio, but that path runs MCPServer.shared.runStdioServer() and exits without booting UpdateController, so MCPUpdateBridge.handler is nil in the stdio process even though the SEPARATE menu-bar host process IS running and DOES have the bridge handler installed.
+**Root cause:** Two separate processes share the same MCPServer.shared singleton type but each has its own instance. The stdio CLI process (one-shot, spawned by CC) never starts UpdateController + never installs the MCPUpdateBridge.handler. The menu-bar host process (long-running) does. The Sparkle MCP tools only see the handler in the host process — stdio callers fail.
+**Fix:** v0.21.43 adds MCPServerProxy.swift in Shared/MCP/ — a thin synchronous shim that, when the stdio path hits a Sparkle tool with nil bridge handler, opens the running menu-bar host's Unix socket (path from AppGroupPaths.mcpSocketURL), authenticates via the shared keychain MCP token (KeychainHelper.currentMCPToken), forwards the JSON-RPC tool/call request via the existing MCPClient, and unwraps result.content[0].text into the [String: Any] payload. The check_for_updates / install_pending_update / upgrade_to_latest dispatch functions in MCPServer.swift now try the proxy as a stdio fallback before throwing the validation error. Transparent to MCP callers.
+**Commit:** <pending — v0.21.43 tag>
+**Guard:** (a) MCPServerProxy.swift has an inline header block naming this 'two-process MCP child' design + why Shared/ is the right home (compiled into both stdio CLI and MainApp targets). (b) The dispatch sites in MCPServer.swift each have a comment block explaining the fallback chain. (c) The MCPUpdateBridge.swift header block explains why Sparkle types can't leak across the bridge — that's also why the proxy must serialize to JSON before crossing the process boundary.
+---
+
+---
+**Date:** 2026-05-26T16:50:56Z
+**Trigger:** Ethan voice 4212 (2026-05-26)
+**Symptom:** Sparkle won't offer canonical-tag releases as updates to users on build-suffix releases — sparkle:version of installed v0.21.41-build.90 was 129700090 (= base_build * 100000 + run_number), while next clean tag release v0.21.42 would have sparkle:version=1298 (= base_build alone). Sparkle compares numerically, 1298 < 129700090, refuses to offer.
+**Root cause:** prepare_release_metadata.py used build_number = base_build * 100000 + run_number for build-suffix tag releases, producing mega-numbers that interleaved badly with the small monotonic base_build values from canonical tag releases. Build-suffix releases also published to appcast.xml unconditionally, polluting the end-user feed with non-canonical versions.
+**Fix:** Three-layer fix in v0.21.43: (1) prepare_release_metadata.py drops the *100000+run_number encoding — CFBundleVersion now always equals CURRENT_PROJECT_VERSION; (2) release.yml gates 'Update gh-pages appcast' + 'Commit appcast' steps on RELEASE_CHANNEL == 'tag' (canonical tags only — build-suffix tags now have channel='tag-build' which skips the gate); (3) one-time jump-leap of CURRENT_PROJECT_VERSION to 129700091 (one past the highest historical mega-number) so v0.21.43 outranks every prior install, canonical or build-suffix. Going forward, base_build increments by 1.
+**Commit:** <pending — v0.21.43 tag>
+**Guard:** (a) The 'Update gh-pages appcast' step in release.yml has an inline comment block naming this incident + the gating logic. Removing the 'if: env.RELEASE_CHANNEL == "tag"' clause reintroduces the bug. (b) prepare_release_metadata.py's build-suffix branch has a comment block naming the same incident — removing the comment doesn't change behaviour, but anyone re-introducing the *100000+run_number multiplication would have to ignore the warning. (c) project.yml's CURRENT_PROJECT_VERSION block carries a header comment naming why the value jumped from 1297 → 129700091 — future bump-and-tag runs continue incrementing from there.
+---
+
+---
 **Date:** 2026-05-26T17:00:00Z
 **Trigger:** voice 4206 — "just have the small size widget. ... just get rid of templates entirely. ... What's the s f symbol? ... visual stuff as well at the bottom, that configuration can go ... color stuff is useful, so keep that. ... I just clicked refresh on one of the widget buttons and after a minute, it's now showing nothing"
 **Symptom:** Widget configuration UI surfaced 12 template options + 4 family sizes + SF Symbol + gradient + render-mode pickers — most of which Ethan never used. Medium / large / extra-large widget sizes silently broken; user wanted them gone. Tapping the refresh button on a placed widget caused the widget to briefly flash "nothing" / placeholder content while WidgetKit rebuilt the timeline, because the placeholder path returned a gallery-style demo entry with fake `$42.18` / `$157` numbers instead of the live readings.json data.

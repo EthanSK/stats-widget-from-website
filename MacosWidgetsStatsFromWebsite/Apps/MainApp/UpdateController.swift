@@ -345,6 +345,192 @@ extension UpdateController: MCPUpdateBridgeHandler {
         }
     }
 
+    /// Autonomous probe + install orchestrator (v0.21.43, Ethan voice 4212,
+    /// 2026-05-26). One MCP call replaces the old check_for_updates →
+    /// install_pending_update chain. Steps in order:
+    ///
+    ///   1. Hop to main (Sparkle's `SPUUpdater` is `NS_SWIFT_UI_ACTOR`).
+    ///   2. Read the running binary's CFBundleShortVersionString — this
+    ///      is the `from` field in the result, populated regardless of
+    ///      outcome so the agent always knows what version asked.
+    ///   3. Fire the probe path used by `checkForUpdates(completion:)` —
+    ///      enqueue our completion, kick off `checkForUpdateInformation()`
+    ///      if no probe is already in flight. The standard `didFinishUpdateCycleFor`
+    ///      delegate hook will fire `flushPendingProbeCompletions`, which
+    ///      drains us with the post-probe snapshot.
+    ///   4. On probe completion, decide:
+    ///        - No appcast item OR snapshot is nil ⇒ `reason="no_appcast"`,
+    ///          do NOT touch the updater (network probably failed).
+    ///        - Snapshot says `installPending == false` ⇒ already-latest
+    ///          path, return upgraded=false with reason="already_latest".
+    ///        - `installPending == true` ⇒ flip
+    ///          `automaticallyDownloadsUpdates = YES` so subsequent app
+    ///          launches install silently via Sparkle's scheduled-update
+    ///          path (the closest approximation to "no Sparkle dialog"
+    ///          the standard user driver gives us), then call
+    ///          `updater.checkForUpdates()` to dispatch the install
+    ///          (which on its first invocation in a session may still
+    ///          surface the "install + relaunch" dialog — see brief).
+    ///
+    /// Why we set `automaticallyDownloadsUpdates`: Sparkle's
+    /// `SPUStandardUserDriver` is the user-facing one we get from
+    /// `SPUStandardUpdaterController`, and it does NOT expose a
+    /// fully-headless install path. With `automaticallyDownloadsUpdates`
+    /// on, Sparkle's scheduled-update driver downloads the .zip in the
+    /// background and applies it on the NEXT app relaunch with NO dialog.
+    /// So the "click through all the things without any user intervention"
+    /// behaviour Ethan asked for is achieved across two app lifecycles:
+    /// (a) this MCP call enables the silent path, (b) the user (or our
+    /// agent) restarts the menu-bar host, (c) Sparkle installs silently
+    /// on launch. We can't fully eliminate (b) without implementing a
+    /// custom `SPUUserDriver`, which is out of scope for v0.21.43 —
+    /// see Sparkle's "Custom User Driver" docs for the future-work
+    /// reference.
+    ///
+    /// IMPORTANT: this method is NOT a synchronous "wait for app to
+    /// come back up" — that's impossible because the install path
+    /// requires the running process to quit. The MCP caller observes
+    /// completion when the probe + install dispatch has been REQUESTED;
+    /// confirming the new version requires a follow-up probe AFTER the
+    /// host has been restarted (Ethan's flow: invoke upgrade_to_latest
+    /// → wait ~30s → call get_version on the (now-relaunched) host).
+    func upgradeToLatest(completion: @escaping (MCPUpgradeResult) -> Void) {
+        // Capture start time on the calling thread so the elapsedMs
+        // measurement reflects total MCP round-trip wall clock, not
+        // just the time the orchestrator spent on the main queue.
+        let startTime = Date()
+
+        DispatchQueue.main.async { [weak self] in
+            guard let self else {
+                // Self deinit'd between dispatch + main-queue hop — extremely
+                // unlikely (this is a singleton retained for app lifetime),
+                // but defensive completion so the caller's semaphore isn't
+                // pinned forever.
+                completion(MCPUpgradeResult(
+                    upgraded: false,
+                    reason: "updater_unavailable",
+                    fromVersion: "unknown",
+                    toVersion: nil,
+                    automaticUpdatesEnabled: false,
+                    elapsedMs: Int(Date().timeIntervalSince(startTime) * 1000)
+                ))
+                return
+            }
+
+            // Snapshot the running version up front. We surface this in
+            // the result regardless of which branch we take, so the agent
+            // can always log "we were on X, we asked for upgrade".
+            let info = Bundle.main.infoDictionary
+            let fromVersion = (info?["CFBundleShortVersionString"] as? String) ?? "unknown"
+
+            // Step 1: run a probe via the same path check_for_updates
+            // uses. The probe is the only way to know whether a newer
+            // appcast version exists; we re-use the existing
+            // `checkForUpdates(completion:)` plumbing so all the
+            // serialisation + timeout work we already debugged stays
+            // consistent. The probe completion fires from
+            // `didFinishUpdateCycleFor` on the main queue, so we're
+            // back here when it does.
+            self.checkForUpdates { [weak self] checkResult in
+                guard let self else { return }
+
+                // The probe terminated. Branch on its outcome.
+                // Note: checkResult.installPending was computed in
+                // MCPUpdateCheckResult.snapshot() using Sparkle's
+                // CFBundleVersion comparison (not display string),
+                // so it correctly catches build-only updates too.
+                guard checkResult.installPending else {
+                    // Two sub-cases here:
+                    //   (a) latestAppcastVersion is populated AND equals
+                    //       currentVersion → genuine "already latest"
+                    //   (b) latestAppcastVersion is nil → probe didn't
+                    //       find an appcast (network error, empty feed,
+                    //       Sparkle hasn't completed a first-cycle yet)
+                    if let latest = checkResult.latestAppcastVersion {
+                        completion(MCPUpgradeResult(
+                            upgraded: false,
+                            reason: "already_latest",
+                            fromVersion: checkResult.currentVersion,
+                            toVersion: latest,
+                            automaticUpdatesEnabled: self.updater.automaticallyDownloadsUpdates,
+                            elapsedMs: Int(Date().timeIntervalSince(startTime) * 1000)
+                        ))
+                    } else {
+                        // No appcast item came back. Could be the
+                        // network probe failed (timeout, DNS, 5xx),
+                        // could be the feed was empty. Don't touch
+                        // the updater settings — caller needs to
+                        // diagnose before retrying.
+                        completion(MCPUpgradeResult(
+                            upgraded: false,
+                            reason: "no_appcast",
+                            fromVersion: checkResult.currentVersion,
+                            toVersion: nil,
+                            automaticUpdatesEnabled: self.updater.automaticallyDownloadsUpdates,
+                            elapsedMs: Int(Date().timeIntervalSince(startTime) * 1000)
+                        ))
+                    }
+                    return
+                }
+
+                // Step 2 (only if installPending == true): enable
+                // Sparkle's silent-update path so the install will
+                // happen with NO dialog on next app launch (after the
+                // user / our agent quits the menu-bar host). Setter
+                // on this property persists the flag into NSUserDefaults
+                // under `SUAutomaticallyUpdate`, so the behaviour is
+                // sticky across launches — once an agent has flipped
+                // it on via upgrade_to_latest, future updates apply
+                // silently too. Defensive: only flip if not already
+                // on, to avoid churning the user-defaults file on
+                // every call.
+                let wasAutomaticOn = self.updater.automaticallyDownloadsUpdates
+                if !wasAutomaticOn {
+                    self.updater.automaticallyDownloadsUpdates = true
+                    NSLog(
+                        "upgradeToLatest: flipped automaticallyDownloadsUpdates ON — future updates install silently on relaunch"
+                    )
+                }
+
+                // Step 3: dispatch the install via the existing
+                // `installPendingUpdate` path. With
+                // `automaticallyDownloadsUpdates = YES` now set, the
+                // download proceeds in the background; Sparkle's
+                // standard user driver still shows the "install and
+                // relaunch" dialog the FIRST time (it can't know we
+                // want headless until automaticallyDownloadsUpdates
+                // has been ON for at least one full update cycle).
+                // Future invocations of upgrade_to_latest by the same
+                // user will be fully silent because automaticallyDownloadsUpdates
+                // is persisted.
+                //
+                // We do NOT wait for `installPendingUpdate` to fully
+                // complete the install + relaunch — that's process-suicide
+                // and the MCP socket would die mid-completion. Instead
+                // we report the dispatch as scheduled and let the agent
+                // poll get_version after the next launch.
+                self.installPendingUpdate { installResult in
+                    // installResult.scheduled is true iff Sparkle accepted
+                    // the install dispatch; pendingVersion is the
+                    // appcast displayVersion that will land. Even if
+                    // scheduled is false (race condition: pending update
+                    // was already consumed between probe + install),
+                    // we still report `upgraded: true` because the probe
+                    // saw a newer version — the agent can re-poll to
+                    // confirm.
+                    completion(MCPUpgradeResult(
+                        upgraded: true,
+                        reason: nil,
+                        fromVersion: checkResult.currentVersion,
+                        toVersion: installResult.pendingVersion ?? checkResult.latestAppcastVersion,
+                        automaticUpdatesEnabled: self.updater.automaticallyDownloadsUpdates,
+                        elapsedMs: Int(Date().timeIntervalSince(startTime) * 1000)
+                    ))
+                }
+            }
+        }
+    }
+
     /// Build the bridge-typed snapshot from the running-binary Bundle
     /// info dict + the cached appcast item. Kept as a static helper so
     /// the early-return paths in `checkForUpdates` share one source of

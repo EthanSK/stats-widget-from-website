@@ -50,7 +50,14 @@ def main(argv: list[str]) -> int:
 
     payload = {
         "version": version,
-        "channel": "stable" if channel in ("branch", "tag", "stable") else channel,
+        # v0.21.43 — `tag-build` was added as a release channel to
+        # distinguish canonical `v<X.Y.Z>` tag pushes from build-suffix
+        # `v<X.Y.Z>-build.<N>` tag pushes (see prepare_release_metadata.py
+        # for the rationale). Both map to "stable" here because the
+        # version.json landing-page badge doesn't differentiate; the
+        # appcast-update gate in release.yml is what actually uses the
+        # tag/tag-build distinction.
+        "channel": "stable" if channel in ("branch", "tag", "tag-build", "stable") else channel,
         "updated_at": datetime.datetime.now(datetime.timezone.utc)
         .strftime("%Y-%m-%dT%H:%M:%SZ"),
         "release_url": f"https://github.com/{repo}/releases/latest",

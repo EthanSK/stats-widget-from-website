@@ -73,6 +73,59 @@ struct MCPUpdateInstallResult {
     let pendingVersion: String?
 }
 
+/// Result returned from `upgrade_to_latest` — the autonomous orchestrator
+/// added in v0.21.43 (Ethan voice 4212, 2026-05-26). One-shot probe + install
+/// dispatch wrapping the existing checkForUpdates → installPendingUpdate
+/// dance so an agent doesn't have to chain two MCP calls.
+///
+/// IMPORTANT — silent-install caveat: Sparkle's `SPUStandardUserDriver`
+/// (which we use for the menu-bar app) does NOT expose a fully-headless
+/// install path. When `scheduled == true`, Sparkle will display a small
+/// "install on quit / install and relaunch" prompt that the user must
+/// dismiss. The flag `automaticUpdatesEnabled` here means we've toggled
+/// `SPUUpdater.automaticallyDownloadsUpdates = YES` so subsequent app
+/// launches will silently install pending updates via Sparkle's
+/// scheduled-update path — i.e. the "next time you quit + relaunch the
+/// menu-bar app, the update applies without any UI". The marketing-version
+/// switch is therefore deferred to the next app launch on the user's
+/// machine; we cannot force a foreground relaunch over MCP without
+/// implementing a custom `SPUUserDriver` (out of scope for v0.21.43).
+struct MCPUpgradeResult {
+    /// True iff a newer appcast version was found vs the running binary.
+    let upgraded: Bool
+
+    /// Reason short-string when `upgraded == false`. One of:
+    ///   `"already_latest"`  — current binary == appcast latest, nothing to do.
+    ///   `"no_appcast"`      — Sparkle probe didn't return an appcast item (network error, feed empty).
+    ///   `"updater_unavailable"` — bridge handler missing (e.g. stdio without proxy fallback).
+    /// `nil` when `upgraded == true`.
+    let reason: String?
+
+    /// Currently-running binary `CFBundleShortVersionString` BEFORE the install dispatch.
+    /// Always populated, even on the no-op path.
+    let fromVersion: String
+
+    /// Latest appcast `displayVersionString` AFTER the probe.
+    /// On `upgraded == true` this is the version Sparkle will install.
+    /// On `upgraded == false, reason == "already_latest"` this equals
+    /// `fromVersion`. On `reason == "no_appcast"` this is `nil`.
+    let toVersion: String?
+
+    /// True iff we successfully toggled `SPUUpdater.automaticallyDownloadsUpdates`
+    /// on for the running app. The flag persists in `NSUserDefaults` under
+    /// `SUAutomaticallyUpdate` so subsequent app launches will silently
+    /// download + install pending updates without an install dialog. This
+    /// is our compromise for "auto-install without user-interaction Sparkle
+    /// dialog" given `SPUStandardUserDriver`'s API surface — see
+    /// MCPUpgradeResult documentation block above for the full caveat.
+    let automaticUpdatesEnabled: Bool
+
+    /// Total wall-clock duration of the orchestrator in milliseconds, from
+    /// MCP request arrival to result completion. Helps the agent reason
+    /// about whether to wait for the install dialog to surface or move on.
+    let elapsedMs: Int
+}
+
 /// Protocol implemented by the MainApp's `UpdateController` so the
 /// MCP server in Shared/ can drive Sparkle without importing it.
 ///
@@ -93,6 +146,23 @@ protocol MCPUpdateBridgeHandler: AnyObject {
     /// install path on the standard user driver, so showing the
     /// dialog is the trade-off here.
     func installPendingUpdate(completion: @escaping (MCPUpdateInstallResult) -> Void)
+
+    /// Autonomous probe + install orchestrator (v0.21.43, Ethan voice 4212,
+    /// 2026-05-26). One MCP call: probe Sparkle, if an update is pending
+    /// toggle `SPUUpdater.automaticallyDownloadsUpdates = YES` so future
+    /// launches install silently, then dispatch Sparkle's install path.
+    /// Completion fires once the probe has settled + the install dispatch
+    /// has been requested (NOT once Sparkle actually completes the
+    /// install + relaunch — that requires a process restart we can't
+    /// observe in-band).
+    ///
+    /// Implementer must:
+    ///   1. Wait for the Sparkle probe to terminate (didFinishUpdateCycleFor)
+    ///   2. If probe found a newer version, set automaticallyDownloadsUpdates
+    ///      and call updater.checkForUpdates() to dispatch install
+    ///   3. Hop to main queue for all SPUUpdater touches (Sparkle is
+    ///      `NS_SWIFT_UI_ACTOR`)
+    func upgradeToLatest(completion: @escaping (MCPUpgradeResult) -> Void)
 }
 
 /// Static singleton accessor for the MCP server to read.

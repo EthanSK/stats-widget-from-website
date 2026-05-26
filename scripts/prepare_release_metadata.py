@@ -93,18 +93,49 @@ def release_values_for_ref(version: str, base_build: int) -> dict[str, str]:
         if match.group("version") != version:
             fail(f"tag {ref_name!r} does not match CFBundleShortVersionString {version!r}")
         release_tag = ref_name
-        release_channel = "tag"
+        # v0.21.43 (Ethan voice 4212, 2026-05-26) — distinguish canonical
+        # `v<X.Y.Z>` tags from build-suffix `v<X.Y.Z>-build.<N>` tags so
+        # the release.yml workflow can gate the appcast update on the
+        # canonical path only. Build-suffix releases still produce a
+        # GitHub Release (test artifact + downloadable .zip), but they
+        # do NOT publish to appcast.xml because their CFBundleVersion
+        # encoding interleaves with canonical releases in a way that
+        # confuses Sparkle's update-comparison logic. See the comment
+        # block on the `else` branch below for the historical incident
+        # this prevents from recurring.
+        release_channel = "tag-build" if match.group("build") else "tag"
         if match.group("build"):
-            build_number = base_build * 100000 + int(match.group("build"))
+            # v0.21.43 (Ethan voice 4212, 2026-05-26) — sparkle:version
+            # drift fix. Build-suffix tags (e.g. v0.21.41-build.90) used
+            # to compute CFBundleVersion as `base_build * 100000 + build`,
+            # which produced mega-numbers (129700090) that interleaved
+            # badly with tag-driven releases' small monotonic numbers
+            # (e.g. 1296 for v0.21.40 → 1298 for v0.21.42), causing the
+            # next clean tag release to LOSE the Sparkle numeric
+            # comparison against an installed build-suffix release.
+            # Paired with the workflow-level gate that prevents
+            # build-suffix releases from publishing to appcast.xml at
+            # all (see release.yml "Update gh-pages appcast" step),
+            # CFBundleVersion now stays as `base_build` regardless of
+            # the `-build.<N>` suffix. Two build-suffix releases for
+            # the same marketing version will therefore share a
+            # CFBundleVersion — that's fine because they don't reach
+            # the appcast, and users who manually install a build-suffix
+            # release will see the next tag release as a same-build
+            # update (which Sparkle will offer ONLY if the marketing
+            # version changes, which it always does between releases
+            # because bump-and-tag.sh increments both).
             release_title = f"{DISPLAY_NAME} v{version} (build {match.group('build')})"
     else:
         # Producer Player-style branch releases: use the canonical version tag
         # once, then deterministic build tags once that tag exists. This keeps
-        # Sparkle's numeric build version monotonic for repeat main/master runs
-        # without requiring a marketing-version bump on every commit.
+        # the per-release artifact uniquely tagged for download URLs while
+        # CFBundleVersion stays as the source-of-truth base_build (the
+        # mega-number `base_build * 100000 + run_number` encoding was
+        # dropped in v0.21.43 — see the tag-path comment above for the
+        # full rationale).
         if git_tag_exists(canonical_tag):
             release_tag = f"{canonical_tag}-build.{run_number}"
-            build_number = base_build * 100000 + run_number
             release_title = f"{DISPLAY_NAME} v{version} (build {run_number})"
 
     zip_filename = f"{ASSET_PREFIX}-{release_tag}.zip"

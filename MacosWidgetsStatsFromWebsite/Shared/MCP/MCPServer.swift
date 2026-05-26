@@ -717,6 +717,23 @@ private enum MCPToolCatalog {
             "get_version",
             "Read the running binary's version metadata synchronously from Bundle.main.infoDictionary. Returns marketingVersion (CFBundleShortVersionString), buildNumber (CFBundleVersion), and bundleId (CFBundleIdentifier). Cheap probe used by the bump-and-tag release flow to confirm propagation. Works on any MCP transport (stdio or socket) — no Sparkle dependency.",
             [:]
+        ),
+        // v0.21.43 (Ethan voice 4212, 2026-05-26) — autonomous upgrade
+        // orchestrator. One MCP call replaces the old check_for_updates
+        // → install_pending_update chain. Flips Sparkle's
+        // `automaticallyDownloadsUpdates` flag ON if a newer version
+        // is found, so future updates install silently on next app
+        // launch. See MCPUpgradeResult / UpdateController.upgradeToLatest
+        // docs for the silent-install caveat — `SPUStandardUserDriver`
+        // still shows the install-and-relaunch dialog the FIRST time;
+        // subsequent updates are dialog-free. Stdio CLI transport
+        // proxies this call to the running menu-bar host's Unix socket
+        // (see MCPServerProxy), so terminal CC sessions can invoke
+        // this tool too without linking Sparkle into the CLI binary.
+        tool(
+            "upgrade_to_latest",
+            "Autonomous one-shot upgrade orchestrator. Probes Sparkle for a newer appcast version, and if one is found: (1) enables Sparkle's `automaticallyDownloadsUpdates` flag so future updates install with NO dialog on relaunch, (2) dispatches Sparkle's install path (the FIRST install in a session may still show an 'install and relaunch' dialog because the standard user driver doesn't support fully-headless first-time install; subsequent updates are silent), and (3) returns a result describing the outcome. Returns upgraded (true iff a newer version was found + install dispatched), reason (`already_latest` | `no_appcast` | `updater_unavailable` when upgraded=false, null when upgraded=true), fromVersion (running CFBundleShortVersionString before dispatch), toVersion (latest appcast version, null on no_appcast), automaticUpdatesEnabled (true iff Sparkle's silent-update flag is now ON), and elapsedMs (total wall-clock duration in milliseconds). Times out at 30s on the Sparkle probe. Use get_version after the menu-bar host has been relaunched to confirm the new version applied.",
+            [:]
         )
     ]
 
@@ -870,11 +887,15 @@ private enum MCPToolDispatcher {
         // these tools throw a clear "transport doesn't support this"
         // error.
         case "check_for_updates":
-            return try checkForUpdates()
+            return try checkForUpdates(context: context)
         case "install_pending_update":
-            return try installPendingUpdate()
+            return try installPendingUpdate(context: context)
         case "get_version":
             return getVersion()
+        // v0.21.43 — autonomous upgrade orchestrator. See tool catalog
+        // entry above for the full semantics + silent-install caveat.
+        case "upgrade_to_latest":
+            return try upgradeToLatest(context: context)
         default:
             throw MCPError.toolNotFound(name)
         }
@@ -2160,14 +2181,27 @@ private enum MCPToolDispatcher {
     /// to the cached snapshot rather than throwing.
     private static let updateBridgeTimeoutSeconds: TimeInterval = 30
 
-    private static func checkForUpdates() throws -> Any {
+    private static func checkForUpdates(context: MCPToolContext) throws -> Any {
         // Bridge handler is installed by UpdateController.start() on
         // the MainApp side. Absent ⇒ we're running in a transport
         // (CLI stdio) or process state (pre-startup) that does not
-        // expose Sparkle. Throw validation so the agent gets a clear
-        // signal, matching the identify_element guard pattern.
+        // expose Sparkle.
+        //
+        // v0.21.43 (Ethan voice 4212, 2026-05-26): instead of throwing
+        // immediately on the stdio path, try proxying to the running
+        // menu-bar host's Unix socket first — terminal CC sessions
+        // talk to us via stdio (see ~/.claude/.mcp.json), and the
+        // running host on the socket DOES have the bridge handler
+        // installed. The proxy only fires on stdio + handler-nil; the
+        // socket path keeps the validation throw as before (if the
+        // socket-served process somehow has no bridge handler, that's
+        // a real bug we want surfaced).
         guard let handler = MCPUpdateBridge.handler else {
-            throw MCPError.validation("check_for_updates requires the running app's MCP socket — Sparkle is not linked into the CLI stdio MCP transport. Connect to the app's mcp.sock.")
+            if context.transport == .stdio,
+               let proxied = MCPServerProxy.forward(method: "check_for_updates", arguments: [:]) {
+                return proxied
+            }
+            throw MCPError.validation("check_for_updates requires the running app's MCP socket — Sparkle is not linked into the CLI stdio MCP transport, and the proxy to the running menu-bar host's socket also failed. Is the Stats Widget app running?")
         }
 
         let semaphore = DispatchSemaphore(value: 0)
@@ -2210,9 +2244,15 @@ private enum MCPToolDispatcher {
         ]
     }
 
-    private static func installPendingUpdate() throws -> Any {
+    private static func installPendingUpdate(context: MCPToolContext) throws -> Any {
         guard let handler = MCPUpdateBridge.handler else {
-            throw MCPError.validation("install_pending_update requires the running app's MCP socket — Sparkle is not linked into the CLI stdio MCP transport. Connect to the app's mcp.sock.")
+            // Same stdio→socket proxy fallback pattern as checkForUpdates.
+            // See that function's comment block for the full rationale.
+            if context.transport == .stdio,
+               let proxied = MCPServerProxy.forward(method: "install_pending_update", arguments: [:]) {
+                return proxied
+            }
+            throw MCPError.validation("install_pending_update requires the running app's MCP socket — Sparkle is not linked into the CLI stdio MCP transport, and the proxy to the running menu-bar host's socket also failed. Is the Stats Widget app running?")
         }
 
         let semaphore = DispatchSemaphore(value: 0)
@@ -2231,6 +2271,72 @@ private enum MCPToolDispatcher {
             // NSNull (the dictionary's value type is Any, so we need
             // a uniform fallback for the null case).
             "pendingVersion": (result.pendingVersion as Any?) ?? NSNull()
+        ]
+    }
+
+    /// Autonomous probe + install orchestrator (v0.21.43, Ethan voice 4212,
+    /// 2026-05-26). Behind the same bridge handler pattern as
+    /// check_for_updates / install_pending_update — the MainApp side
+    /// implements `MCPUpdateBridgeHandler.upgradeToLatest`, this side
+    /// just dispatches through the bridge + bridges async-to-sync with
+    /// a semaphore.
+    ///
+    /// Timeout: we extend the standard 30s update-bridge timeout to
+    /// 60s here because the orchestrator chains a probe + an install
+    /// dispatch, and 30s on each step would put us over budget if both
+    /// the network and Sparkle are slow.
+    private static func upgradeToLatest(context: MCPToolContext) throws -> Any {
+        guard let handler = MCPUpdateBridge.handler else {
+            // stdio fallback — same pattern as check_for_updates.
+            // Important: the proxy must NOT use the standard 30s timeout
+            // for this method because the orchestrator can legitimately
+            // take 30-60s (probe + download dispatch). The proxy uses
+            // a per-method timeout map; see MCPServerProxy.timeoutFor.
+            if context.transport == .stdio,
+               let proxied = MCPServerProxy.forward(method: "upgrade_to_latest", arguments: [:]) {
+                return proxied
+            }
+            throw MCPError.validation("upgrade_to_latest requires the running app's MCP socket — Sparkle is not linked into the CLI stdio MCP transport, and the proxy to the running menu-bar host's socket also failed. Is the Stats Widget app running?")
+        }
+
+        // Wall-clock budget for the orchestrator: 60s. We double the
+        // probe-side 30s because the orchestrator chains probe + install
+        // dispatch. If Sparkle hangs we still return rather than pinning
+        // the MCP session.
+        let upgradeTimeoutSeconds: TimeInterval = 60
+
+        let semaphore = DispatchSemaphore(value: 0)
+        var captured: MCPUpgradeResult?
+        handler.upgradeToLatest { result in
+            captured = result
+            semaphore.signal()
+        }
+        _ = semaphore.wait(timeout: .now() + upgradeTimeoutSeconds)
+
+        // On timeout, build a defensive "we don't know what happened"
+        // result with the running binary's current version so the
+        // agent has something to log. reason="updater_unavailable" is
+        // overloaded slightly here (also covers "timeout"), but matches
+        // the bridge handler's missing-handler path semantically — in
+        // both cases we couldn't reach Sparkle for an answer.
+        let result = captured ?? MCPUpgradeResult(
+            upgraded: false,
+            reason: "updater_unavailable",
+            fromVersion: (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "unknown",
+            toVersion: nil,
+            automaticUpdatesEnabled: false,
+            elapsedMs: Int(upgradeTimeoutSeconds * 1000)
+        )
+
+        return [
+            "upgraded": result.upgraded,
+            // `as Any?` cast keeps NSNull / String? operands type-compatible
+            // in a [String: Any] dictionary.
+            "reason": (result.reason as Any?) ?? NSNull(),
+            "fromVersion": result.fromVersion,
+            "toVersion": (result.toVersion as Any?) ?? NSNull(),
+            "automaticUpdatesEnabled": result.automaticUpdatesEnabled,
+            "elapsedMs": result.elapsedMs
         ]
     }
 

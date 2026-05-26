@@ -510,7 +510,42 @@ jobs:
           prerelease: false
           make_latest: true
 
+      # v0.21.43 (Ethan voice 4212, 2026-05-26) — gate appcast updates
+      # on tag-driven releases ONLY. Branch-push releases (which produce
+      # `v<X.Y.Z>-build.<run_number>` tags with `sparkle:version` set to
+      # `base_build * 100000 + run_number` for monotonicity within a
+      # marketing version) used to ALSO update the appcast, which caused
+      # `sparkle:version` mega-numbers (e.g. 129700090 for v0.21.41-build.90)
+      # to interleave with the small numbers from tag-driven releases
+      # (e.g. 1296 for v0.21.40). The next clean tag-driven release
+      # would then have a `sparkle:version` LOWER than the branch-push
+      # entry's mega-number, and Sparkle (which compares CFBundleVersion
+      # numerically) would refuse to offer the new tag as an update to
+      # users who installed the branch-push build.
+      #
+      # Fix: only run the appcast / version.json update step when this
+      # release was triggered by a tag of the form `v<X.Y.Z>` (no
+      # `-build.<N>` suffix). Branch-push releases still produce a
+      # GitHub Release (the "Publish GitHub Release" step runs
+      # unconditionally) — they're useful as testing artifacts and
+      # for the `Stats-Widget-from-Website-latest.zip` direct-download
+      # path — but they don't pollute the appcast.xml that end-user
+      # Sparkle clients poll.
+      #
+      # Detection: `RELEASE_CHANNEL` env var is set by
+      # prepare_release_metadata.py to "tag" for tag-driven runs and
+      # "branch" otherwise. Both branch-push runs AND tag-push runs
+      # arrive here with `RELEASE_CHANNEL == "tag"` IF the canonical
+      # tag exists at the same SHA — but the check-tag-race job above
+      # already short-circuits the branch-push run in that case, so
+      # by the time we reach this step, the only branch-push runs that
+      # got here are the first-release-on-a-fresh-main case (no
+      # canonical tag yet). Those WILL have channel=branch and we
+      # correctly skip the appcast for them too — the next manual
+      # `bump-and-tag.sh` invocation will push the canonical tag and
+      # THAT run will publish to appcast.
       - name: Update gh-pages appcast
+        if: env.RELEASE_CHANNEL == 'tag'
         env:
           ED_SIGNATURE: ${{ steps.sparkle.outputs.ed_signature }}
           ZIP_FILENAME: ${{ steps.package.outputs.zip_filename }}
@@ -551,6 +586,12 @@ jobs:
           git -C "$GH_PAGES_DIR" diff -- appcast.xml version.json
 
       - name: Commit appcast + version.json to gh-pages
+        # Paired with the tag-only gate on the "Update gh-pages appcast"
+        # step above — branch-push runs skip BOTH the update and the
+        # commit so nothing gets pushed to gh-pages from a non-tag release.
+        # See the comment block on "Update gh-pages appcast" above for
+        # the full rationale (v0.21.43, sparkle:version drift fix).
+        if: env.RELEASE_CHANNEL == 'tag'
         run: |
           set -euo pipefail
           git -C "$GH_PAGES_DIR" config user.name "github-actions[bot]"

@@ -5,6 +5,60 @@ Release-by-release notes for the Stats Widget from Website project.
 Format: each entry is dated, lists the user-visible changes first, then the
 under-the-hood / signing / packaging changes. Newest first.
 
+## v0.21.43 — 2026-05-26
+
+### User-facing — autonomous one-shot upgrade (Ethan voice 4212)
+
+- **New MCP tool `upgrade_to_latest`.** One call probes Sparkle, dispatches
+  the install if a newer version is available, AND flips Sparkle's
+  silent-auto-update flag on so subsequent updates apply with no dialog
+  on next launch. Returns `{ upgraded, reason, fromVersion, toVersion,
+  automaticUpdatesEnabled, elapsedMs }`. Voice 4212: *"Is there an MCP
+  hook in the app to go to the latest version so I can just tell you
+  to upgrade stats... you should be able to see it through as well... clicking
+  through all the things without any user intervention."* The first invocation
+  on a fresh install still surfaces Sparkle's standard "install and relaunch"
+  dialog because `SPUStandardUserDriver` doesn't expose a fully-headless
+  first-install API — but every invocation AFTER the auto-update flag is
+  set will install silently on quit. Result: terminal CC can now upgrade
+  the stats widget host on demand without Ethan touching the menu bar.
+- **Stdio-to-socket proxy fallback.** The three Sparkle MCP tools
+  (`check_for_updates`, `install_pending_update`, `upgrade_to_latest`)
+  were socket-only previously (Sparkle isn't linked into the `--mcp-stdio`
+  CLI binary). v0.21.43 adds an automatic stdio→socket forwarder so
+  terminal CC sessions (which talk to the host over stdio per
+  `~/.claude/.mcp.json`) can now call these tools too — the stdio
+  process reads the shared keychain token and forwards the JSON-RPC
+  request to the running menu-bar host's Unix socket, then unwraps the
+  response. Transparent to callers.
+
+### Bug fixes — sparkle:version drift (Ethan voice 4212)
+
+- **Build-suffix releases no longer publish to the Sparkle appcast.**
+  Pre-v0.21.43 build-suffix releases (e.g. `v0.21.41-build.90`) encoded
+  `sparkle:version` as `base_build * 100000 + run_number`, producing
+  mega-numbers (e.g. 129700090) that interleaved with the small monotonic
+  base_build values from tag releases (e.g. 1296 for v0.21.40). The
+  next clean tag release would have a LOWER `sparkle:version` than the
+  installed build-suffix release, and Sparkle (which uses CFBundleVersion
+  numerically) would refuse to offer the tag update. Fix: the `Update
+  gh-pages appcast` + `Commit appcast` steps in release.yml are now
+  gated on `RELEASE_CHANNEL == 'tag'` (canonical tag pushes only).
+  Build-suffix releases still produce a GitHub Release as a testing
+  artifact, but they don't pollute the appcast.
+- **`prepare_release_metadata.py` dropped the `base_build * 100000 +
+  run_number` encoding** for build-suffix tags. Going forward,
+  CFBundleVersion always equals `CURRENT_PROJECT_VERSION` (the
+  source-of-truth value in `project.yml`), regardless of whether the
+  release is a canonical tag or a build-suffix tag.
+- **`CURRENT_PROJECT_VERSION` jump-leap to 129700091.** One-time bump
+  past the highest historical mega-number (129700090, from
+  `v0.21.41-build.90`) so v0.21.43 is guaranteed offerable as an update
+  to every installed prior release — canonical tag installs (low
+  build numbers, 1287–1297) AND build-suffix installs (mega-numbers up
+  to 129700090). Future releases increment by 1 from here
+  (`bump-and-tag.sh` default).
+
 ## v0.21.41 — 2026-05-26
 
 ### User-facing — major UX simplification (Ethan voice 4206)

@@ -77,8 +77,27 @@ settings:
     # from Bundle.main.infoDictionary at runtime, so nothing else needs touching.
     # Enforced by .githooks/pre-commit (see core.hooksPath in repo config) and
     # by scripts/validate_release_metadata.py.
-    MARKETING_VERSION: "0.21.41"
-    CURRENT_PROJECT_VERSION: "1297"
+    MARKETING_VERSION: "0.21.43"
+    # v0.21.43 (Ethan voice 4212, 2026-05-26) — jump-leap past historical
+    # mega-numbers. Pre-v0.21.43 build-suffix releases (e.g. v0.21.41-build.90)
+    # encoded CFBundleVersion as `base_build * 100000 + run_number`,
+    # producing values like 129700090 that interleave badly with the
+    # small monotonic base_build numbers (1296 for v0.21.40, 1297 for
+    # v0.21.41 tag). A clean v0.21.42 / v0.21.43 release at base_build=1298
+    # / 1299 would have CFBundleVersion LOWER than the installed
+    # build-suffix mega-numbers, so Sparkle would refuse to offer the
+    # tag update to users who installed a build-suffix version. Fix:
+    # set CURRENT_PROJECT_VERSION to 129700091 (one greater than the
+    # highest historical mega-number, 129700090) so v0.21.43's
+    # CFBundleVersion / sparkle:version are guaranteed higher than
+    # every prior install. Going forward, base_build increments by 1
+    # (bump-and-tag.sh's default) so v0.21.44 → 129700092, v0.21.45 →
+    # 129700093, etc. The encoding bug itself is fixed in
+    # prepare_release_metadata.py + release.yml (appcast gated on
+    # tag-channel only) so the mega-number space never grows again.
+    # See LEARNINGS.md "sparkle:version mega-number drift" entry for
+    # the full incident.
+    CURRENT_PROJECT_VERSION: "129700091"
 
 packages:
   Sparkle:
