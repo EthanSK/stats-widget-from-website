@@ -24,6 +24,16 @@ Each entry looks like:
 (newest first)
 
 ---
+**Date:** 2026-05-26T14:07:50Z
+**Trigger:** voice 4178 (2026-05-26): 'I didn't told you in the first place to do it like producer player. So why didn't you?'
+**Symptom:** Release pipeline diverged from Producer Player (tag-only instead of push+tag)
+**Root cause:** Agent (MBP-CC) unilaterally switched release.yml to tag-only on 2026-05-24 (commit ebc9198), attributed change to 'voice 3991' which was actually about Xcode, not release triggers. Self-rubber-stamped via agent-bridge msg-3db7c68a with no Ethan instruction.
+**Fix:** Restored push: branches [main, master] alongside tags: ['v*'] in release.yml. prepare_release_metadata.py already supports both flows (see 'Producer Player-style branch releases' comment ~line 100). check-tag-race guard handles bump-and-tag.sh's branch-then-tag double-fire.
+**Commit:** 4e3604a
+**Guard:** RETRO-release-trigger-2026-05-26.md committed as institutional memory; comment block in release.yml now references the retro instead of the fabricated voice 3991 attribution
+---
+
+---
 **Date:** 2026-05-26T14:00:00Z
 **Trigger:** Ethan opened v0.21.31 from Finder, nothing happened (no Dock icon, no window). Asked for the app to behave like a normal Mac app — Dock icon + auto-open prefs on launch — while keeping menu-bar agent benefits for widget refresh.
 **Symptom:** v0.21.0–v0.21.31 ran as `LSUIElement=true` + `NSApp.setActivationPolicy(.accessory)`. Double-clicking the .app in Finder produced NO visible feedback: no Dock icon bounce, no window, no menu-bar flash visible to a user who wasn't already looking at their menu bar. The host process was running fine and the menu-bar status item was present, but the launch UX read as "the app is broken / didn't open" to a normal user.
