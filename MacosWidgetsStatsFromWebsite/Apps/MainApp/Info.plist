@@ -50,8 +50,34 @@
 	<string>public.app-category.utilities</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>$(MACOSX_DEPLOYMENT_TARGET)</string>
+	<!--
+	  LSUIElement (v0.21.32, hybrid UX):
+	    false = the app behaves like a normal Mac app — Dock icon visible,
+	    auto-opens its preferences window on launch, double-clickable from
+	    Finder / LaunchPad / Spotlight like any other application.
+
+	  Why this was flipped from true → false in v0.21.32:
+	    v0.21.0–0.21.31 ran as LSUIElement=true (menu-bar agent only). Ethan
+	    opened v0.21.31 from Finder, saw nothing happen, and asked for the
+	    app to behave like a normal app. The previous comment in
+	    MacosWidgetsStatsFromWebsiteApp.swift / AppDelegate.swift implied
+	    LSUIElement=true was load-bearing for the widget refresh budget /
+	    chronod cadence; that turned out to be misleading. The widget
+	    refresh benefits come from:
+	      (a) the host process staying alive long-term (via LaunchAgent
+	          KeepAlive — unaffected by LSUIElement), and
+	      (b) sane reload cadence ~30 min (in BackgroundScheduler — also
+	          unaffected by LSUIElement).
+	    chronod budgets non-foreground / background-window apps and pure
+	    LSUIElement agents the same way (~40-70 timeline reloads/day), so
+	    flipping LSUIElement off does NOT cost us the widget budget. See
+	    LEARNINGS.md (v0.21.32 entry).
+
+	  We KEEP the MenuBarController + NSStatusItem alongside the Dock icon
+	  — same hybrid pattern as Bartender, Time Out, iStat Menus.
+	-->
 	<key>LSUIElement</key>
-	<true/>
+	<false/>
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
 	<key>SUEnableAutomaticChecks</key>

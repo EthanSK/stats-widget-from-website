@@ -95,7 +95,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         ActivityLogger.log("startup", startupLine)
         LaunchAgentManager.ensureInstalledAndBootstrapped()
 
-        // v0.21.0 — menu-bar agent architecture.
+        // v0.21.0 — long-running-host architecture (UPDATED v0.21.32:
+        // now a hybrid Dock-visible app rather than a pure menu-bar
+        // agent — see activation-policy block below).
         //
         // Previously (v0.19/0.20) we relied on a per-user LaunchAgent
         // firing the bundled CLI every 5 min to keep `readings.json`
@@ -109,13 +111,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         //      blew the budget and chronod started silently throttling
         //      us on macOS 26.
         //
-        // The new model: the app itself runs as an `LSUIElement=true`
-        // menu-bar agent. It is the one persistent process. The
-        // BackgroundScheduler's in-process timers handle scraping
-        // (default 30 min cadence per tracker), and the host calls
-        // `WidgetCenter.reloadTimelines(ofKind:)` from its own (correct)
-        // identity. No CLI re-launch, no LaunchAgent, no chronod-state
-        // mismatch.
+        // The model since v0.21.0: the app itself is the one persistent
+        // process. BackgroundScheduler's in-process timers handle
+        // scraping (default 30 min cadence per tracker), and the host
+        // calls `WidgetCenter.reloadTimelines(ofKind:)` from its own
+        // (correct) identity. No CLI re-launch, no LaunchAgent timer,
+        // no chronod-state mismatch.
+        //
+        // v0.21.32 clarification: the chronod budget benefit is from
+        // (a) process longevity (host stays alive long-term via the
+        // host-watchdog LaunchAgent) + (b) the 30-min cadence. It is
+        // NOT from `LSUIElement=true`. So we now ship with LSUIElement
+        // false (Dock icon visible) without losing widget budget. See
+        // LEARNINGS.md v0.21.32 entry.
         //
         // Migration: tear down any legacy LaunchAgent from prior
         // installs so we don't end up with both schedulers fighting.
@@ -134,25 +142,48 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             )
         }
 
-        // Default activation policy is `.accessory` — no Dock icon,
-        // no menu bar. Only the menu-bar status item is visible.
-        // (LSUIElement=true in Info.plist already gives us this on
-        // launch; we re-assert here to be explicit.)
-        NSApp.setActivationPolicy(.accessory)
+        // v0.21.32 — hybrid UX. Activation policy is `.regular` so the
+        // app has a normal Dock icon you can click, and Cmd-Tab finds
+        // it the way you'd expect a normal Mac app. The menu-bar
+        // status item installed above still appears alongside — same
+        // pattern as Bartender / Time Out / iStat Menus.
+        //
+        // We deliberately do NOT call `setActivationPolicy(.accessory)`
+        // here any more. Prior versions (v0.21.0–0.21.31) ran the
+        // process as a pure menu-bar agent (LSUIElement=true +
+        // activationPolicy=.accessory). Ethan opened v0.21.31 from
+        // Finder, saw nothing happen, and the implicit-launch UX was
+        // confusing. v0.21.32 reverts to a Dock-visible app.
+        //
+        // Activation-policy is also re-asserted to `.regular` from
+        // `MainPreferencesWindowController.showWindow` (no-op when
+        // already regular). The previous `windowWillClose` handler
+        // dropped back to `.accessory`; that's been removed (see
+        // MainPreferencesWindowController.swift) so closing the prefs
+        // window leaves the Dock icon in place — the user can click it
+        // again to reopen the window (handled by
+        // `applicationShouldHandleReopen` below).
+        NSApp.setActivationPolicy(.regular)
 
         if migrated {
             presentMigrationAlertOnNextRunLoop()
         }
 
-        // First-launch flow: if there's no existing configuration on
-        // disk, auto-open the preferences window so the user can
-        // create their first tracker. (Without this, a fresh-install
-        // user would just see a chart icon in their menu bar with no
-        // obvious way to start.)
-        if AppDelegate.shouldShowFirstLaunchFlow {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
-                MainPreferencesWindowController.shared.showWindow()
-            }
+        // v0.21.32 — auto-open the preferences window on every launch
+        // (not just first-launch). Double-clicking the .app in Finder
+        // or hitting "Open" from LaunchPad should bring the prefs UI
+        // to the foreground, the way a normal Mac app does. If the
+        // user then closes the window, the host stays alive (per
+        // `applicationShouldTerminateAfterLastWindowClosed` returning
+        // false below) so the menu-bar status item + BackgroundScheduler
+        // continue to run and feed the widgets — and the Dock icon
+        // remains a way to reopen the window.
+        //
+        // 1.0s delay matches the original first-launch path: lets
+        // AppKit settle the activation-policy promotion + ContentView
+        // wire up its @StateObject subscriptions before we present.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+            MainPreferencesWindowController.shared.showWindow()
         }
 
         // v0.21.6 — agent-startup orphan tab sweep. Old installs (pre
@@ -256,16 +287,43 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         MCPServer.shared.stopSocketServer()
     }
 
-    /// Menu-bar agent behaviour: when the user re-launches the app
-    /// (double-clicking the .app in Finder, hitting Open from
-    /// LaunchPad, etc.), we surface the Preferences window. The menu-
-    /// bar status item is already present; the re-launch is a clear
-    /// "I want to see the UI" signal so we honour it.
+    /// Hybrid-app behaviour: when the user clicks the Dock icon (or
+    /// re-opens the app from Finder/LaunchPad/Spotlight while the
+    /// process is already running) and there are no visible windows,
+    /// materialize the preferences window. This is the standard "click
+    /// Dock icon to bring app forward" UX that normal Mac apps have.
+    ///
+    /// `flag == true` means the system can find at least one visible
+    /// window already; AppKit will handle activation itself, we don't
+    /// need to do anything special. Returning `true` either way tells
+    /// AppKit we've handled the reopen request.
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         if !flag {
             MainPreferencesWindowController.shared.showWindow()
         }
         return true
+    }
+
+    /// v0.21.32 — KEEP THE HOST ALIVE WHEN THE PREFS WINDOW CLOSES.
+    ///
+    /// Returning `false` is what lets us behave like a normal Mac app
+    /// (Dock icon you can click) AND keep the in-process
+    /// BackgroundScheduler ticking to feed widget refreshes. Without
+    /// this, closing the prefs window (red dot / Cmd-W) would terminate
+    /// the host process, the BackgroundScheduler would stop, and the
+    /// widget would go stale within the next scrape interval.
+    ///
+    /// The Dock icon stays visible after close — clicking it triggers
+    /// `applicationShouldHandleReopen` above which re-opens the window.
+    /// The menu-bar status item also stays as a redundant access point.
+    ///
+    /// SwiftUI's default for AppKit apps with no `WindowGroup` is also
+    /// "don't terminate on last window close", so this method is
+    /// arguably redundant — but stating it explicitly here makes the
+    /// intent obvious to future readers and guards against a SwiftUI
+    /// SDK change flipping the default.
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        return false
     }
 
     func application(_ application: NSApplication, open urls: [URL]) {
@@ -329,10 +387,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         AppNavigationEvents.openTrackerSettings(trackerID: trackerID)
     }
 
-    // v0.21.0 — `bringAppToFrontOnLaunch` removed. The menu-bar agent
-    // is intentionally launch-silent (no Dock icon flash, no auto-
-    // opened window). The user explicitly opens Preferences from the
-    // menu-bar dropdown when they want to interact with the app.
+    // v0.21.32 — hybrid app: auto-opens prefs window on launch (see
+    // `applicationDidFinishLaunching` above) AND keeps the menu-bar
+    // status item. Originally launch-silent in v0.21.0 (menu-bar only,
+    // no auto-window) — reverted here because that UX confused users
+    // double-clicking the .app and seeing nothing happen.
 }
 
 private enum MCPInvocationLoggerProxy {

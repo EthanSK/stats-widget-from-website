@@ -77,8 +77,8 @@ settings:
     # from Bundle.main.infoDictionary at runtime, so nothing else needs touching.
     # Enforced by .githooks/pre-commit (see core.hooksPath in repo config) and
     # by scripts/validate_release_metadata.py.
-    MARKETING_VERSION: "0.21.31"
-    CURRENT_PROJECT_VERSION: "1287"
+    MARKETING_VERSION: "0.21.32"
+    CURRENT_PROJECT_VERSION: "1288"
 
 packages:
   Sparkle:

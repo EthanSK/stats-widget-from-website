@@ -2,23 +2,28 @@
 //  MainPreferencesWindowController.swift
 //  MacosWidgetsStatsFromWebsite
 //
-//  v0.21.0 — owns the on-demand preferences window for the menu-bar
-//  agent. Pre-0.21 the app used a SwiftUI `WindowGroup` scene that
-//  AppKit auto-presented at launch, which is incompatible with the
-//  `LSUIElement=true` menu-bar pattern (no foreground / Dock icon, so
-//  the auto-present silently fails — or, depending on AppKit version,
-//  briefly flashes a window the user never asked for).
+//  v0.21.32 — owns the preferences window for the hybrid-UX app
+//  (Dock icon + menu-bar status item + long-running host).
 //
-//  Instead we host the SwiftUI ContentView inside an NSHostingController
-//  + NSWindow that we instantiate ONLY when the user explicitly asks
-//  for it (menu bar > Open Preferences, or a deep link / second-launch).
+//  History: pre-v0.21 the app used a SwiftUI `WindowGroup` scene that
+//  AppKit auto-presented at launch (clashed with the LSUIElement=true
+//  menu-bar pattern). v0.21.0–0.21.31 ran as a pure menu-bar agent
+//  with the window opened only on demand. v0.21.32 reverts to a
+//  Dock-visible app (LSUIElement=false) while keeping the on-demand
+//  window-controller path because it gives us deep-link section
+//  routing + window reuse + explicit activation control that a
+//  WindowGroup scene wouldn't.
+//
+//  The actual auto-open-on-launch happens in
+//  `AppDelegate.applicationDidFinishLaunching` calling `showWindow()`.
 //
 //  Activation policy:
-//    When the window is shown we temporarily switch
-//    `NSApp.setActivationPolicy(.regular)` so the user gets a proper
-//    Dock icon + menu bar while interacting. When the window is closed
-//    we drop back to `.accessory` so the Dock icon disappears. This
-//    matches what Stats / Lungo / iStat Menus do.
+//    From v0.21.32 the app stays at `.regular` for its whole lifetime
+//    — `applicationDidFinishLaunching` sets it once, and `showWindow`
+//    re-asserts it as a no-op. The previous "revert to .accessory on
+//    windowWillClose" behaviour was removed because we now want the
+//    Dock icon to stay visible after the user closes the window (so
+//    they can click it again to reopen, like any normal app).
 //
 
 import AppKit
@@ -117,10 +122,14 @@ final class MainPreferencesWindowController: NSObject, NSWindowDelegate {
     }
 
     func windowWillClose(_ notification: Notification) {
-        ActivityLogger.log("prefs-window", "closed; reverting to accessory")
-        // Drop the Dock icon when the user closes the window — we go
-        // back to being a pure menu-bar agent.
-        NSApp.setActivationPolicy(.accessory)
+        // v0.21.32 — DO NOT revert to .accessory here. The hybrid-UX
+        // model wants the Dock icon to stay visible so the user can
+        // click it again to reopen the prefs window
+        // (`applicationShouldHandleReopen` handles that). Previously
+        // (v0.21.0–0.21.31) we dropped to .accessory on close, which
+        // hid the Dock icon and made the app feel "gone" even though
+        // the host process was still running for widget refreshes.
+        ActivityLogger.log("prefs-window", "closed; staying at .regular for hybrid UX")
         // Don't nil out `window` — we want subsequent showWindow() calls
         // to re-use the same NSWindow instance (cheaper) AND avoid the
         // SwiftUI view's `@State` being thrown away mid-session. The

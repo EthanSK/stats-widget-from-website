@@ -2,13 +2,24 @@
 //  MacosWidgetsStatsFromWebsiteApp.swift
 //  MacosWidgetsStatsFromWebsite
 //
-//  v0.21.0 — menu-bar agent host (no auto-open window).
+//  v0.21.32 — hybrid UX: behaves like a normal Mac app (Dock icon,
+//  auto-opens prefs window on launch, click-Dock-to-reopen) AND keeps
+//  the menu-bar status item as a secondary access point.
 //
-//  Architecture: the App's `body` returns a `Settings` scene, which
-//  SwiftUI hosts even when `LSUIElement=true` and does NOT auto-open
-//  a window at launch. All UI surfaces are presented on demand by the
-//  AppDelegate / MenuBarController / MainPreferencesWindowController
-//  trio.
+//  Architecture: the App's `body` still returns a `Settings` scene
+//  (intentionally — `WindowGroup` would auto-spawn a blank SwiftUI
+//  window we don't own, and we already manage the real preferences
+//  window via `MainPreferencesWindowController` / NSHostingController
+//  for fine-grained control over activation policy, window reuse, and
+//  section deep-linking). The actual "open prefs on launch" trigger
+//  lives in `AppDelegate.applicationDidFinishLaunching` (see notes
+//  there). Reopen-from-Dock is wired via `applicationShouldHandleReopen`.
+//
+//  Why this isn't just a pure-LSUIElement agent any more: see Info.plist
+//  comment block on the `LSUIElement` key — TL;DR the chronod widget
+//  budget is governed by process longevity + reload cadence, NOT
+//  LSUIElement, so we can have a Dock icon + menu bar icon + long-running
+//  host all at once.
 //
 
 import Darwin
@@ -66,10 +77,22 @@ struct MacosWidgetsStatsFromWebsiteApp: App {
     }
 
     var body: some Scene {
-        // `Settings` is the conventional SwiftUI scene for menu-bar
-        // agents — it does NOT auto-present a window at launch, but
-        // gives the app a valid scene root so SwiftUI's lifecycle
-        // proceeds normally.
+        // v0.21.32 — we deliberately use `Settings` here, NOT
+        // `WindowGroup`, even though we now want a Dock-icon Mac app
+        // that auto-opens its prefs window. Reason:
+        //   - `WindowGroup` would auto-create a SwiftUI-owned window at
+        //     launch with no way to position/size/title it the way the
+        //     existing AppKit window expects.
+        //   - We already host the prefs UI via
+        //     `MainPreferencesWindowController` (NSHostingController +
+        //     NSWindow). That's what every existing call site
+        //     (menu bar > Open Preferences, deep-link routing, dock
+        //     reopen, first-launch wizard) uses; replacing it with a
+        //     WindowGroup would mean rewiring all of them and losing
+        //     section-deep-linking / activation-policy control.
+        // The auto-open-on-launch behaviour lives in
+        // `AppDelegate.applicationDidFinishLaunching` — see the
+        // `showWindow()` call there.
         Settings {
             EmptyView()
         }
