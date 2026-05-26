@@ -7,6 +7,7 @@
 
 import AppKit
 import UserNotifications
+import WidgetKit
 
 final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
     /// Bundle identifier of the main app. Hardcoded here so the
@@ -88,6 +89,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         TrackerAttentionNotifier.shared.configure()
         UpdateController.shared.start()
         MCPServer.shared.startSocketServer()
+
+        // v0.21.44 — POST-SPARKLE-INSTALL WIDGET EXTENSION REFRESH.
+        //
+        // Problem this guards against:
+        //   When Sparkle's `quitAndInstall` replaces the .app on disk and
+        //   relaunches the host process, macOS `chronod` (the WidgetKit
+        //   extension host daemon) KEEPS the old widget extension binary
+        //   loaded in memory. Result: the host runs the new version but
+        //   the widget extension keeps serving stale cached values from
+        //   the OLD .appex binary. v0.21.43 → v0.21.44 incident
+        //   (2026-05-26): host upgraded but widget extension stayed pinned
+        //   to v0.21.36 for 30+ min, rendering stale numbers (80%/97%) and
+        //   a blank widget where chronod hadn't called TimelineProvider
+        //   since the install. Manual `killall -9 chronod` was the only
+        //   way to recover.
+        //
+        // The fix runs ONLY on the first launch after the host build
+        // number changes — i.e. exactly the situation where chronod's
+        // cached widget-extension binary might be stale. Normal launches
+        // (relaunch after Quit, login auto-start, re-foreground) skip
+        // this entirely so we don't churn chronod's cache for no reason.
+        //
+        // See `refreshWidgetExtensionsIfHostJustUpdated()` below for the
+        // actual mechanism + escalation chain.
+        refreshWidgetExtensionsIfHostJustUpdated()
 
         // v0.21.35 — SWITCH FROM LaunchAgent TO SMAppService FOR LOGIN ITEM.
         //
@@ -306,6 +332,252 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                     ChromeBrowserProfile.shared.endBackgroundUse(configuration: configuration)
                 }
             }
+        }
+    }
+
+    // MARK: - Post-Sparkle-install widget extension refresh
+    //
+    // v0.21.44 — see comment block at the call site in
+    // `applicationDidFinishLaunching` for background. The short story:
+    // when Sparkle replaces the .app, macOS chronod can keep the OLD
+    // widget extension binary live in-memory. The host needs to kick
+    // chronod to drop the cached binding so the NEW .appex is loaded.
+
+    /// UserDefaults key that stores the CFBundleVersion (build number) of
+    /// the host process the LAST time this code path ran cleanly. On every
+    /// launch we compare this against the current build; a mismatch means
+    /// "first launch after install" (whether the install was Sparkle,
+    /// Mac App Store update, manual drag-replace, or fresh install on a
+    /// machine where the user had a different prior build).
+    private static let lastSeenHostBuildKey = "lastSeenHostBuildAfterStartup"
+
+    /// Detect first-launch-after-build-change and, if so, force-refresh
+    /// the WidgetKit widget extension so chronod doesn't keep serving
+    /// stale values from the old .appex binary still cached in memory.
+    ///
+    /// Escalation chain (cheapest → nuclear):
+    ///   (1) `WidgetCenter.shared.reloadAllTimelines()` — costs nothing,
+    ///       always worth trying. Sometimes enough on its own when
+    ///       chronod's cache was already cold.
+    ///   (2) After a 5-second settle window, schedule a recheck: re-fire
+    ///       reloadAllTimelines + a check on whether the activity log
+    ///       has seen a widget-extension query in the new version yet.
+    ///       If chronod still appears to be serving old code, escalate.
+    ///   (3) Last resort: `killall -9 chronod`. This is the only thing
+    ///       that reliably forced chronod to re-load the new .appex
+    ///       binary during the v0.21.36 → v0.21.43 incident on
+    ///       2026-05-26. Destructive in the sense that it kills ALL
+    ///       widget extensions on the system briefly — but chronod is
+    ///       respawned by launchd within ~1 second, and other widgets
+    ///       are simply reloaded by their respective hosts shortly
+    ///       after. The user impact is a 1–2s blip in all widgets, not
+    ///       a permanent state. We only do this on actual host-build
+    ///       changes, NOT on every launch, so the blip happens at most
+    ///       once per host upgrade.
+    ///
+    /// Apple does not expose a public API to invalidate a specific
+    /// extension binding inside chronod. We audited the
+    /// ChronoCore/WidgetKit headers + private symbol space for things
+    /// like `dropExtensionBindings(_:)` or a darwin notification on
+    /// `com.apple.chrono.invalidate-binding` — nothing public, nothing
+    /// reliably callable from a sandboxed-or-not host. WidgetCenter's
+    /// public surface (reloadTimelines/reloadAllTimelines) does NOT
+    /// invalidate the loaded extension binary; it only invalidates the
+    /// timeline cache, which is a SEPARATE layer that sits on top of
+    /// whatever code chronod has currently mapped into its extension
+    /// host process. So `killall chronod` is the cleanest available
+    /// option for the cache-drop case, and we accept it.
+    private func refreshWidgetExtensionsIfHostJustUpdated() {
+        let bundle = Bundle.main
+        // CFBundleVersion is what we compare on — it's a monotonic build
+        // counter, unlike CFBundleShortVersionString which can have build
+        // suffixes / pre-release tags. v0.21.43 -> v0.21.44 here means
+        // 129700091 -> 129700092.
+        let currentBuild = (bundle.infoDictionary?["CFBundleVersion"] as? String) ?? "unknown"
+        let currentMarketing = (bundle.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "unknown"
+
+        // Use UserDefaults.standard which, for an unsandboxed host (see
+        // v0.21.31 entitlements rework), is rooted at
+        // ~/Library/Preferences/<bundle-id>.plist — survives across
+        // Sparkle installs because Sparkle keeps that prefs file in
+        // place when replacing the .app bundle.
+        let defaults = UserDefaults.standard
+        let lastSeenBuild = defaults.string(forKey: AppDelegate.lastSeenHostBuildKey)
+
+        // No drift → normal launch. Record current build (handles the
+        // very-first launch on a fresh install) and exit. The next time
+        // Sparkle replaces the .app, lastSeenBuild WILL differ.
+        guard lastSeenBuild != currentBuild else {
+            ActivityLogger.log("widget-refresh", "host-build unchanged — no widget refresh needed", metadata: [
+                "build": currentBuild,
+                "version": currentMarketing
+            ])
+            return
+        }
+
+        // Drift detected. Could be: Sparkle install, MAS update, fresh
+        // install (lastSeenBuild == nil), or a developer doing a manual
+        // drag-replace. All paths benefit from the same refresh ritual.
+        ActivityLogger.log("widget-refresh", "host build changed — starting widget extension refresh ritual", metadata: [
+            "previousBuild": lastSeenBuild ?? "<none>",
+            "currentBuild": currentBuild,
+            "version": currentMarketing
+        ])
+
+        // Record the new build IMMEDIATELY so a crash during the refresh
+        // ritual doesn't make us re-run the (potentially noisy) escalation
+        // chain on the next launch. If the refresh fails, the host's next
+        // run will see no drift and skip — chronod will eventually catch
+        // up on its own anyway (it does eventually, just slowly).
+        defaults.set(currentBuild, forKey: AppDelegate.lastSeenHostBuildKey)
+        defaults.synchronize()
+
+        // Tier (1): cheap, always-on. Fire reloadAllTimelines immediately
+        // via the diagnostics wrapper so the call shows up in activity.log
+        // alongside the chronod queries we're trying to influence.
+        WidgetCenterDiagnostics.reloadAllTimelines(reason: "post-install-host-build-change")
+
+        // Tier (2)+(3): give chronod a chance to act on tier (1), then
+        // verify + escalate. We run the verify pass after 5 seconds (long
+        // enough for chronod to wake the extension and start serving the
+        // new timeline, short enough that the user doesn't sit on stale
+        // widgets for long). The verify reads the activity log tail and
+        // looks for a widget-extension query stamped with the NEW build —
+        // see WidgetExtension's TimelineProvider, which already logs
+        // pid+version on every query (that's how we caught this bug).
+        DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 5.0) { [currentBuild, currentMarketing] in
+            let widgetExtensionRanWithNewBuild = AppDelegate.widgetExtensionHasQueriedSinceBuildChange(currentBuild: currentBuild)
+            if widgetExtensionRanWithNewBuild {
+                ActivityLogger.log("widget-refresh", "verify-OK: widget extension already serving new build — done", metadata: [
+                    "build": currentBuild,
+                    "version": currentMarketing
+                ])
+                return
+            }
+
+            // Tier (2): re-fire reloadAllTimelines once more in case the
+            // first attempt landed before chronod fully booted its extension
+            // host. Then wait another 5 seconds and recheck.
+            ActivityLogger.log("widget-refresh", "verify-MISS: widget extension still stale after 5s — escalating (reload+wait)", metadata: [
+                "build": currentBuild
+            ])
+            DispatchQueue.main.async {
+                WidgetCenterDiagnostics.reloadAllTimelines(reason: "post-install-reload-retry")
+            }
+
+            DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 5.0) { [currentBuild, currentMarketing] in
+                let stillStale = !AppDelegate.widgetExtensionHasQueriedSinceBuildChange(currentBuild: currentBuild)
+                if !stillStale {
+                    ActivityLogger.log("widget-refresh", "verify-OK after retry: widget extension serving new build", metadata: [
+                        "build": currentBuild,
+                        "version": currentMarketing
+                    ])
+                    return
+                }
+
+                // Tier (3): nuclear. Kill chronod. launchd respawns it
+                // within ~1 second; the next widget query then has to
+                // load the new .appex binary from disk because the
+                // cached binding is gone. Confirmed working on
+                // 2026-05-26 — `killall -9 chronod` immediately moved
+                // the activity log from `version=0.21.36` to
+                // `version=0.21.43` across all 4 configIDs.
+                ActivityLogger.log("widget-refresh", "still stale after retry — escalating to chronod kill", metadata: [
+                    "build": currentBuild,
+                    "version": currentMarketing
+                ])
+                AppDelegate.killChronodToForceWidgetExtensionReload()
+
+                // Give chronod a beat to respawn, then nudge once more
+                // so it actually queries the fresh extension binary.
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+                    WidgetCenterDiagnostics.reloadAllTimelines(reason: "post-chronod-kill")
+                }
+            }
+        }
+    }
+
+    /// Scan the tail of the shared activity log looking for a recent
+    /// widget-extension query line stamped with the current build. The
+    /// widget extension's TimelineProvider logs every getTimeline /
+    /// getSnapshot call with `pid=<n> version=<marketing> build=<n>`
+    /// metadata (see WidgetExtension.swift). If we see at least one
+    /// such line with `build=<currentBuild>` written AFTER our refresh
+    /// kick, chronod has loaded the new .appex and we're done.
+    ///
+    /// Conservative: any failure to parse / read the log returns false
+    /// so we ALWAYS escalate rather than declare success on a parse
+    /// error. False negatives (escalating unnecessarily) are cheap; a
+    /// false positive would leave the user with stale widgets.
+    private static func widgetExtensionHasQueriedSinceBuildChange(currentBuild: String) -> Bool {
+        let recentLines = ActivityLogger.recentLogText(lineLimit: 200)
+        guard !recentLines.isEmpty else { return false }
+
+        // The widget extension's log lines look like:
+        //   2026-...Z [widget] TimelineProvider.getTimeline build=129700092 pid=4353 ...
+        // The category is exactly "[widget]" (see StatsWidget.swift's
+        // ActivityLogger.log call sites). We need ANY line that has
+        // both "[widget]" and a build= token matching the current
+        // build. Any other host-side log lines with build= metadata
+        // (the host log lines from refreshWidgetExtensionsIfHostJust...
+        // above, for example) use a DIFFERENT category, so the
+        // "[widget]" check correctly excludes those — we only count
+        // lines originating from the appex process.
+        for line in recentLines.split(separator: "\n").reversed() {
+            // Cheap substring match. We're scanning ~200 lines max so a
+            // proper regex would be overkill.
+            if line.contains("build=\(currentBuild)") && line.contains("[widget]") {
+                return true
+            }
+        }
+        return false
+    }
+
+    /// Shell out to `killall -9 chronod`. This is the only path we have
+    /// found that reliably forces macOS to drop chronod's cached
+    /// widget-extension binary mapping. launchd respawns chronod
+    /// immediately (it's a system-managed daemon), so the only user-
+    /// visible side effect is a ~1-second blip across ALL widgets on
+    /// the system. Documented in the v0.21.44 fix incident notes.
+    ///
+    /// Best-effort: if for any reason the launch fails (TCC, sandbox,
+    /// codesign), we just log the failure and let chronod's own slow
+    /// background refresh catch up over the following ~minutes. We do
+    /// NOT propagate the error to the user.
+    ///
+    /// NB: We deliberately do NOT request a confirmation dialog for
+    /// this. The whole point of v0.21.44 is to make the post-install
+    /// refresh invisible to the user; popping a dialog would defeat
+    /// that. The action is bounded (one process kill, one daemon
+    /// respawn) and non-destructive to user data.
+    private static func killChronodToForceWidgetExtensionReload() {
+        // Use /usr/bin/killall — it accepts the process name and walks
+        // proc list itself. No PID lookup needed on our side.
+        let task = Process()
+        task.launchPath = "/usr/bin/killall"
+        task.arguments = ["-9", "chronod"]
+
+        // Pipe stderr to a buffer so we can log any failure detail
+        // (e.g. "No matching processes belonging to you" if chronod
+        // isn't running under our UID, which means there's nothing to
+        // kill anyway → also success-ish).
+        let errPipe = Pipe()
+        task.standardError = errPipe
+        task.standardOutput = Pipe() // discard stdout
+
+        do {
+            try task.run()
+            task.waitUntilExit()
+            let errData = errPipe.fileHandleForReading.readDataToEndOfFile()
+            let errText = String(data: errData, encoding: .utf8) ?? ""
+            ActivityLogger.log("widget-refresh", "killall chronod completed", metadata: [
+                "exitCode": "\(task.terminationStatus)",
+                "stderr": errText.trimmingCharacters(in: .whitespacesAndNewlines)
+            ])
+        } catch {
+            ActivityLogger.log("widget-refresh", "killall chronod failed (non-fatal)", metadata: [
+                "error": error.localizedDescription
+            ])
         }
     }
 

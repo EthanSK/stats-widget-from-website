@@ -5,6 +5,39 @@ Release-by-release notes for the Stats Widget from Website project.
 Format: each entry is dated, lists the user-visible changes first, then the
 under-the-hood / signing / packaging changes. Newest first.
 
+## v0.21.44 — 2026-05-26
+
+### User-facing — no more stale widgets after a Sparkle install
+
+- **Auto-refresh the widget extension on first launch after an update.**
+  Before this fix, when Sparkle replaced the host app and restarted it,
+  macOS `chronod` (the WidgetKit extension host daemon) would keep the
+  OLD widget extension binary loaded in memory. Result: the host ran the
+  new version but widgets kept showing stale values from the previous
+  build — for as long as 30+ minutes — until something else forced
+  chronod to drop its cache. We now detect "first launch after a host
+  build change" and walk an escalation chain: (1) immediate
+  `WidgetCenter.reloadAllTimelines()`, (2) after 5s, retry if widgets
+  still serving old build, (3) after another 5s, `killall chronod` —
+  the only path that reliably forces chronod to reload the new .appex
+  binary. launchd respawns chronod within ~1s, so the user-visible
+  blip is minimal and only happens once per update.
+
+### Under the hood
+
+- New code path: `AppDelegate.refreshWidgetExtensionsIfHostJustUpdated()`
+  + helpers (`widgetExtensionHasQueriedSinceBuildChange`,
+  `killChronodToForceWidgetExtensionReload`). UserDefaults key
+  `lastSeenHostBuildAfterStartup` tracks the last-seen CFBundleVersion;
+  Sparkle preserves UserDefaults across installs so the comparison
+  survives the app replacement. Audited Apple's ChronoCore /
+  WidgetKit headers for a public extension-binding invalidation API —
+  none exists. `killall chronod` is the only known-working path and
+  is well-commented as such in `AppDelegate.swift`.
+- Logs every step under category `[widget-refresh]` in `activity.log`
+  so the escalation chain is traceable. Verify success by checking
+  for `[widget] ... build=<new-build>` lines after a Sparkle install.
+
 ## v0.21.43 — 2026-05-26
 
 ### User-facing — autonomous one-shot upgrade (Ethan voice 4212)
