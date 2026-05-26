@@ -186,11 +186,21 @@ fi
 if [[ "$DEV_RESIGN_FLAG" == "1" ]]; then
   echo "build.sh: DEV_RESIGN=1 — skipping strict App Group signature/profile checks (dev-resign workaround applied below)"
 else
-  require_signed_app_group_entitlement "$APP_PATH" "app"
+  # v0.21.31 — host no longer carries `com.apple.security.application-groups`
+  # or `keychain-access-groups` (both are AMFI-restricted on Sonoma+ and require
+  # an embedded provisioning profile to validate; the Sparkle/Developer-ID
+  # distribution flow ships profile-free, which caused v0.21.30 to be
+  # SIGKILL'd by amfid with `Error: Code=-413 "No matching profile found"`).
+  # The host now resolves its Group Containers path manually (see
+  # MacosWidgetsStatsFromWebsite/Shared/AppGroup/AppGroupPaths.swift) and the
+  # widget appex (still sandboxed) keeps the entitlement + an embedded
+  # provisioning profile, so only the WIDGET needs to be validated here.
+  #
+  # If a future change re-introduces the host entitlement together with an
+  # embedded provisioning profile, restore the matching validators below.
   require_signed_app_group_entitlement "$WIDGET_PATH" "widget extension"
-  require_profile_app_group_entitlement "$APP_PATH" "app"
   require_profile_app_group_entitlement "$WIDGET_PATH" "widget extension"
-  echo "build.sh: App Group entitlements verified in signatures and provisioning profiles ($APP_GROUP_ID)"
+  echo "build.sh: App Group entitlements verified for widget extension ($APP_GROUP_ID); host intentionally bare"
 fi
 
 # Defensively reset any stale TCC SystemPolicyAppData grant for this bundle.
