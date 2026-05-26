@@ -5,6 +5,37 @@ Release-by-release notes for the Stats Widget from Website project.
 Format: each entry is dated, lists the user-visible changes first, then the
 under-the-hood / signing / packaging changes. Newest first.
 
+## v0.21.39 — 2026-05-26
+
+### User-facing
+- **"Check for Updates…" is now everywhere it should be.** It was already in
+  the menu-bar status item, but Ethan didn't realise that was the only place.
+  v0.21.39 also adds it to the **About** preferences section (with a "Last
+  checked X ago" relative timestamp + a subtle note that updates are installed
+  automatically) and to the standard **App menu** right after the system
+  "About" entry, matching every other Mac app's conventions. All three
+  entry points call the same Sparkle path — behaviour is identical.
+
+### Under-the-hood
+- **MCP Unix-domain socket fix — `socket_path_too_long` since v0.21.0.**
+  The embedded MCP server's socket path lived under the Group Container
+  (`~/Library/Group Containers/T34G959ZG8.group.com.ethansk.macos-widgets-stats-from-website/mcp.sock`),
+  which is 122 bytes — well over macOS's `sun_path` cap of 104 bytes. Every
+  host launch since v0.21.0 has been failing the `bind(2)` call and silently
+  logging `socket_path_too_long` to `~/Library/Logs/macOS Widgets Stats from
+  Website/mcp.log`. The host's external-MCP-over-socket path has therefore
+  been broken for months. Stdio (`--mcp-stdio`) was unaffected because it
+  skips the bind entirely, which is why `.mcp.json`-based external CC access
+  kept working.
+- **Fix:** socket moved to `NSTemporaryDirectory()/mcp.sock` (~57 bytes per-user
+  under `/var/folders/<XX>/<YY>/T/`). Group Container holds user data and is
+  intentionally not touched — only the ephemeral socket relocates. Hook
+  scripts pick the new location up automatically via the
+  `MCP_SOCKET_PATH` env var `HookExecutor` already injects.
+- **`UpdateController` is now `ObservableObject`** so the new About-section
+  "Last checked" row re-renders when Sparkle's `lastUpdateCheckDate` changes.
+  Published fields: `lastCheckDate` (Date?) + `isCheckingForUpdates` (Bool).
+
 ## v0.21.36 — 2026-05-26
 
 ### User-facing

@@ -24,6 +24,16 @@ Each entry looks like:
 (newest first)
 
 ---
+**Date:** 2026-05-26T15:41:50Z
+**Trigger:** Voice 4196 (2026-05-26): 'can you MCP communicate with the currently installed stats widget application that I've got running now? We should have update button everywhere'
+**Symptom:** MCP Unix-domain socket bind fails silently with socket_path_too_long error in mcp.log; external MCP-over-socket access has been broken since v0.21.0; hooks env var MCP_SOCKET_PATH points to a path no Unix-domain socket can be bound to
+**Root cause:** Socket path was ~/Library/Group Containers/<id>/mcp.sock = 122 bytes, exceeding macOS's sockaddr_un.sun_path 104-byte cap (sys/un.h). Every host launch's runSocketServer() bind call failed; runStdioServer (--mcp-stdio mode) was unaffected because it bypasses bind entirely.
+**Fix:** v0.21.39 — moved mcpSocketURL() in Shared/AppGroup/AppGroupPaths.swift to NSTemporaryDirectory()/mcp.sock (~57 bytes total). Group Container itself unchanged — only the ephemeral socket relocates. HookExecutor passes MCP_SOCKET_PATH env var so hook scripts auto-pick up the new location.
+**Commit:** 99b2da6
+**Guard:** Inline comment block at mcpSocketURL() names the 104-byte sun_path cap + cites the failure mode + points future agents to this LEARNINGS entry. The dead-path also lives in the historical comment so anyone restoring the Group Container path knows why not. Verification: after install, /tmp inspection via 'lsof -U | grep mcp.sock' should show the host's listener and a NEW grep of mcp.log should show no further socket_path_too_long lines.
+---
+
+---
 **Date:** 2026-05-26T16:30:00Z
 **Trigger:** Investigation sub from main session — all 4 trackers timed out on v0.21.36 with `lastError="Timed out loading https://claude.ai/settings/usage."` and similar; readings.json consecutiveFailureCount=8-10 across the board; activity.log showed `[cdp] enableDomain ended … error=Target crashed method=Page.enable` on every scrape; ~30 `Chromium-*-2026-05-26-*.ips` crash reports + 1 `Chromium Helper (Renderer)-*.ips` were appearing in `~/Library/Logs/DiagnosticReports/` throughout the day.
 **Symptom:** v0.21.30–v0.21.36 install fine + launch fine, but every scrape attempt produces `Target crashed method=Page.enable` in the CDP log and times out at the 30s outer deadline (60s for ChatGPT). All 4 trackers became broken. The Chromium browser process AND the renderer helper crash with `EXC_BREAKPOINT` (SIGTRAP) — renderer crash report's faulting thread is `CrRendererMain` on `com.apple.main-thread`, exception code 1 (breakpoint trap), termination "Trace/BPT trap: 5". Stack trace shows the crash deep inside Chromium Framework with no resolvable symbols — a Chromium `IMMEDIATE_CRASH` / V8 `CHECK` macro firing.
