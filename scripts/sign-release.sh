@@ -52,12 +52,52 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 MAIN_ENTITLEMENTS="$REPO_ROOT/MacosWidgetsStatsFromWebsite/Apps/MainApp/MacosWidgetsStatsFromWebsite.entitlements"
 WIDGET_ENTITLEMENTS="$REPO_ROOT/MacosWidgetsStatsFromWebsite/Apps/WidgetExtension/MacosWidgetsStatsFromWebsiteWidget.entitlements"
 
-for entitlements_file in "$MAIN_ENTITLEMENTS" "$WIDGET_ENTITLEMENTS"; do
+# v0.21.37 — Chromium helper entitlements directory. Mirrors what
+# scripts/embed-chromium.sh applies during the Xcode build phase. We HAVE to
+# re-apply these here because sign-release.sh runs AFTER embed-chromium.sh
+# during the CI flow (xcodebuild archive → sign-release.sh → notarize), and
+# any plain `codesign --force --sign … "$helper"` call without --entitlements
+# strips the previously-applied entitlements blob.
+#
+# v0.21.30–v0.21.36 shipped Chromium helpers with NO entitlements because
+# sign-release.sh re-signed every helper bare. Under Hardened Runtime that
+# means the renderer hits EXC_BREAKPOINT (SIGTRAP) on its first JIT compile
+# inside V8 — surfaces to the scraper as "Target crashed method=Page.enable"
+# in the CDP log. See LEARNINGS.md for the full diagnosis arc.
+CHROMIUM_ENTITLEMENTS_DIR="$REPO_ROOT/scripts/cft-entitlements"
+CHROMIUM_APP_ENTITLEMENTS="$CHROMIUM_ENTITLEMENTS_DIR/app.plist"
+CHROMIUM_HELPER_ENTITLEMENTS="$CHROMIUM_ENTITLEMENTS_DIR/helper.plist"
+CHROMIUM_HELPER_RENDERER_ENTITLEMENTS="$CHROMIUM_ENTITLEMENTS_DIR/helper-renderer.plist"
+CHROMIUM_HELPER_GPU_ENTITLEMENTS="$CHROMIUM_ENTITLEMENTS_DIR/helper-gpu.plist"
+CHROMIUM_HELPER_PLUGIN_ENTITLEMENTS="$CHROMIUM_ENTITLEMENTS_DIR/helper-plugin.plist"
+
+for entitlements_file in "$MAIN_ENTITLEMENTS" "$WIDGET_ENTITLEMENTS" \
+    "$CHROMIUM_APP_ENTITLEMENTS" "$CHROMIUM_HELPER_ENTITLEMENTS" \
+    "$CHROMIUM_HELPER_RENDERER_ENTITLEMENTS" "$CHROMIUM_HELPER_GPU_ENTITLEMENTS" \
+    "$CHROMIUM_HELPER_PLUGIN_ENTITLEMENTS"; do
     if [[ ! -f "$entitlements_file" ]]; then
         echo "sign-release.sh: ERROR — entitlements file missing: $entitlements_file" >&2
         exit 1
     fi
 done
+
+# Resolve the canonical Chromium-helper-entitlements path for a given helper
+# bundle name. Pattern-matches the .app basename. Mirrors the case-block in
+# scripts/embed-chromium.sh (step 2 of the embed pass) so any name additions
+# upstream Chromium ships in future are handled in BOTH scripts.
+chromium_helper_entitlements_for() {
+    local helper_basename="$1"
+    case "$helper_basename" in
+        *"Helper (Renderer)"*) printf '%s' "$CHROMIUM_HELPER_RENDERER_ENTITLEMENTS" ;;
+        *"Helper (GPU)"*)      printf '%s' "$CHROMIUM_HELPER_GPU_ENTITLEMENTS" ;;
+        *"Helper (Plugin)"*)   printf '%s' "$CHROMIUM_HELPER_PLUGIN_ENTITLEMENTS" ;;
+        # Catch-all for Helper.app / Helper (Alerts).app / future utility
+        # helpers. The base helper.plist grants disable-library-validation
+        # only (no JIT) — matches Chromium's upstream chrome/app/
+        # helper-entitlements.plist.
+        *)                     printf '%s' "$CHROMIUM_HELPER_ENTITLEMENTS" ;;
+    esac
+}
 
 echo "sign-release.sh: target  = $APP"
 echo "sign-release.sh: identity= $IDENTITY"
@@ -105,16 +145,49 @@ if [[ -d "$CHROMIUM_APP" ]]; then
             -perm -111 \
             -print0 2>/dev/null
     )
-    # Sign nested helper bundles (helpers run as separate processes)
+    # Sign nested helper bundles (helpers run as separate processes).
+    #
+    # v0.21.37 (root cause of "Target crashed method=Page.enable"): we MUST
+    # apply each helper's correct entitlements plist here. Bare `sign "$helper"`
+    # strips the entitlements that scripts/embed-chromium.sh applied during the
+    # Xcode archive phase, leaving the renderer / GPU / plugin helpers with no
+    # JIT or unsigned-executable-memory grant. Under Hardened Runtime that
+    # means V8 SIGTRAPs (EXC_BREAKPOINT) on its very first JIT compile, the
+    # CDP socket disconnects, and every scrape times out at the Page.enable
+    # step. v0.21.30–v0.21.36 shipped without these grants and were broken
+    # for all four trackers; readings.json showed consecutiveFailureCount
+    # climbing through the day with `lastError="Timed out loading …"`.
+    #
+    # Entitlement assignment per Chromium helper kind (mirrors upstream
+    # chrome/app/helper-*-entitlements.plist):
+    #   Helper (Renderer) → allow-jit + allow-unsigned-executable-memory + disable-library-validation
+    #   Helper (GPU)      → same set as Renderer
+    #   Helper (Plugin)   → allow-unsigned-executable-memory + disable-library-validation
+    #   Helper (Alerts)
+    #     + base Helper   → disable-library-validation only
+    # .xpc bundles (Crashpad, etc.) live alongside the helpers and only need
+    # the catch-all helper.plist (no JIT). The same chromium_helper_entitlements_for
+    # helper case-block applies for them since they're not (Renderer|GPU|Plugin).
     while IFS= read -r -d '' helper; do
-        sign "$helper"
+        helper_entitlements="$(chromium_helper_entitlements_for "$(basename "$helper")")"
+        sign "$helper" "$helper_entitlements"
     done < <(find "$CHROMIUM_APP/Contents/Frameworks/Chromium Framework.framework/Versions" -type d \( -name "*.app" -o -name "*.xpc" \) -print0 2>/dev/null)
-    # Sign the Chromium Framework versioned bundle
+    # Sign the Chromium Framework versioned bundle. The framework wrapper
+    # itself doesn't host an executable that goes through Hardened-Runtime
+    # exec-time checks (it's loaded by the outer Chromium.app), so the bare
+    # sign with no entitlements is correct here — matches upstream Chromium's
+    # own signing flow and what scripts/embed-chromium.sh does at step 3.
     while IFS= read -r -d '' framework; do
         sign "$framework"
     done < <(find "$CHROMIUM_APP/Contents/Frameworks" -name "*.framework" -print0 2>/dev/null)
-    # Sign Chromium.app itself
-    sign "$CHROMIUM_APP"
+    # Sign the outer Chromium.app with the upstream chrome/app/app-entitlements.plist
+    # equivalent (disable-library-validation + allow-unsigned-executable-memory +
+    # allow-jit). The browser process loads Chromium Framework dylibs and may
+    # JIT its own code paths under some configs; matching upstream's grant is
+    # the safe default. v0.21.30–v0.21.36 signed this bare too, which on some
+    # configs prevented the browser process from loading the framework on cold
+    # spawn — bundled into the same root-cause class as the renderer SIGTRAP.
+    sign "$CHROMIUM_APP" "$CHROMIUM_APP_ENTITLEMENTS"
 else
     echo "sign-release.sh: (no embedded Chromium.app — skipping)"
 fi
