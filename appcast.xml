@@ -8,12 +8,12 @@
     <atom:link href="https://ethansk.github.io/stats-widget-from-website/appcast.xml" rel="self" type="application/rss+xml" />
     <item>
       <title>Stats Widget from Website v0.21.41</title>
-      <pubDate>Tue, 26 May 2026 16:06:54 +0000</pubDate>
-      <sparkle:version>1297</sparkle:version>
+      <pubDate>Tue, 26 May 2026 16:07:31 +0000</pubDate>
+      <sparkle:version>129700090</sparkle:version>
       <sparkle:shortVersionString>0.21.41</sparkle:shortVersionString>
       <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
-      <sparkle:releaseNotesLink>https://github.com/EthanSK/stats-widget-from-website/releases/tag/v0.21.41</sparkle:releaseNotesLink>
-      <enclosure url="https://github.com/EthanSK/stats-widget-from-website/releases/download/v0.21.41/Stats-Widget-from-Website-v0.21.41.zip" length="161614007" type="application/octet-stream" sparkle:version="1297" sparkle:shortVersionString="0.21.41" sparkle:edSignature="LkfBJP84FCr4/uap7BClf5whVWAeifKe9ELIXHxc87qGnWulCxBxxEUGhOtEJ26uS+LuzJRRHYS8aWdREILPCg==" />
+      <sparkle:releaseNotesLink>https://github.com/EthanSK/stats-widget-from-website/releases/tag/v0.21.41-build.90</sparkle:releaseNotesLink>
+      <enclosure url="https://github.com/EthanSK/stats-widget-from-website/releases/download/v0.21.41-build.90/Stats-Widget-from-Website-v0.21.41-build.90.zip" length="161614034" type="application/octet-stream" sparkle:version="129700090" sparkle:shortVersionString="0.21.41" sparkle:edSignature="HQTIKyG0aV6WbxZGTXGYx/kvo5VV7MyvGXxpz/y7eJZJdtSJZGN4pnYvsRIDhnshrMPWRS1GEnl1M0ivEHZNAg==" />
     </item>
     <item>
       <title>Stats Widget from Website v0.21.39</title>
