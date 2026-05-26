@@ -1,17 +1,41 @@
 name: Release
 
 on:
-  # Tag-only release trigger — aligns with bump-and-tag.sh as THE explicit
-  # release ceremony. Branch pushes (e.g. doc fixes, lint cleanups, README
-  # tweaks landing on main) no longer publish a release. This eliminates
-  # the "every commit auto-publishes a build-tagged release" noise that the
-  # branch+tag combo produced, and removes the branch-vs-tag race at the
-  # source. The `check-tag-race` guard job below stays as defense-in-depth
-  # for workflow_dispatch + tag combinations and any future regression that
-  # re-adds branch triggers. Established 2026-05-24 (MBP-CC bridge
-  # msg-3db7c68a, voice 3991 follow-up).
+  # Dual-trigger release: BOTH push-to-main/master AND v* tag-push fire a
+  # release run. Matches Producer Player's release-desktop.yml pattern
+  # exactly. Restored 2026-05-26 (voice 4178 + RETRO-release-trigger-2026-05-26.md).
+  #
+  # History — why this used to be tag-only:
+  #   Commit ebc9198 (2026-05-24) dropped the branches trigger on the
+  #   stated rationale "voice 3991 follow-up". Voice 3991 was actually
+  #   about Ethan moving off local Xcode for stats-widget (see
+  #   ~/.claude/projects/-Users-ethansarif-kattan/memory/feedback_stats_widget_no_xcode.md);
+  #   it said NOTHING about release triggers. The tag-only design was
+  #   agent-invented and self-rubber-stamped over agent-bridge between
+  #   MBP-CC and Mini-CC (msg-3db7c68a). Voice 4178 (2026-05-26):
+  #   "I didn't told you in the first place to do it like producer player.
+  #   So why didn't you?" — flipping back to match PP behaviour now.
+  #
+  # Why both triggers are safe:
+  #   - prepare_release_metadata.py already supports both flows. Tag push
+  #     → release named v<MARKETING_VERSION>. Branch push (once the
+  #     canonical tag exists) → release named v<X.Y.Z>-build.<run_number>
+  #     with a monotonic build number for Sparkle. See release_values_for_ref()
+  #     lines 100-108 — the comment in that function literally says
+  #     "Producer Player-style branch releases".
+  #   - bump-and-tag.sh's "push branch THEN push tag" sequence is
+  #     handled by the check-tag-race job below: branch-push run sees a
+  #     concurrent v* tag at the same SHA and exits early so the tag-push
+  #     run is the sole publisher.
+  #
+  # Trade-off accepted: every commit to main now produces a build-tagged
+  # release. That's the same trade-off PP makes, and it matches Ethan's
+  # stated preference (voice 4178).
   workflow_dispatch:
   push:
+    branches:
+      - main
+      - master
     tags:
       - 'v*'
 
