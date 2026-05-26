@@ -24,6 +24,26 @@ Each entry looks like:
 (newest first)
 
 ---
+**Date:** 2026-05-26T15:06:32Z
+**Trigger:** voice 4189 + 4188 (2026-05-26)
+**Symptom:** Widget picker (Finder → Edit Widgets → search) showed legacy 'macOS Widget Stats from Website' / 'MacosWidgetsStatsFromWebsite' as the section header even after the v0.21.22 user-facing rename. CFBundleDisplayName was already 'Stats Widget from Website' but the picker ignored it.
+**Root cause:** Both main app + widget extension Info.plists set 'CFBundleName: $(PRODUCT_NAME)'. $(PRODUCT_NAME) expands to the internal Swift product name ('MacosWidgetsStatsFromWebsite' / 'MacosWidgetsStatsFromWebsiteWidget'). macOS widget picker reads CFBundleName for app grouping and only falls back to CFBundleDisplayName when CFBundleName is absent — so the legacy identifier surfaced despite the display name override.
+**Fix:** Set CFBundleName explicitly to 'Stats Widget from Website' / 'Stats Widget from Website Widget' in both project.yml info.properties blocks AND both raw Info.plists (project.yml is the merged source of truth, raw files kept in sync for direct-Xcode builds). PRODUCT_NAME / target name / scheme name / kind ID deliberately unchanged — they're internal Sparkle / app-group / placed-widget contracts and renaming would invalidate Sparkle updates + existing user-placed widgets. v0.21.36, commit b2b0cff.
+**Commit:** b2b0cff
+**Guard:** /usr/libexec/PlistBuddy -c 'Print :CFBundleName' on the installed bundle's Info.plist must return the user-facing string, not '$(PRODUCT_NAME)' or 'MacosWidgetsStatsFromWebsite'. Inline comment block in both Info.plists names the bug + the picker behaviour + the reason PRODUCT_NAME wasn't flipped.
+---
+
+---
+**Date:** 2026-05-26T15:06:20Z
+**Trigger:** voice 4189 + 4188 (2026-05-26) + readings.json diag showing exit 127 across all 4 trackers
+**Symptom:** Every tracker's onFailure hook logs '/bin/bash: /Applications/Stats: No such file or directory' (exit 127) in trackers.json lastRun.detail after the v0.21.22 .app wrapper rename. Auto-repair never runs.
+**Root cause:** HookExecutor's .runShellCommand path passes the substituted AUTO_REPAIR_SCRIPT path UNQUOTED into 'bash -lc "<path>"'. After v0.21.22 the bundled script path is '/Applications/Stats Widget from Website.app/Contents/Resources/Scripts/auto-repair-tracker.sh' (two spaces). Bash tokenises on whitespace and tries to exec '/Applications/Stats' as a command.
+**Fix:** HookExecutor.swift .runShellCommand split into two codepaths: exact-token payloads (the built-in scaffold) exec the script directly with no shell at all (process.launchPath = scriptPath, no '-lc'). User-authored payloads still go through bash but with the substituted path single-quoted via new shellQuote() helper. v0.21.36, commit b2b0cff.
+**Commit:** b2b0cff
+**Guard:** New unit test HookProcessIntegrationTests.testShellQuoteSurvivesSpacesInPath pins the shell-quote contract. After v0.21.36 installs, trackers.json hooks.onFailure[0].lastRun.detail should never contain 'No such file or directory' for the script path. Inline comment block in HookExecutor.swift names the bug + symptom + fix path.
+---
+
+---
 **Date:** 2026-05-26T15:30:00Z
 **Trigger:** MBP-CC ship task — root-cause of "Finder double-click does nothing after auto-start" diagnosed; switch from LaunchAgent to SMAppService.
 **Symptom:** v0.21.0–v0.21.34: after the per-user LaunchAgent (`~/Library/LaunchAgents/com.ethansk.macos-widgets-stats-from-website.plist`) auto-started the host at login, double-clicking `Stats Widget from Website.app` in Finder returned `-600 / "Application isn't running"`. No Dock icon bounce, no window. `bootout` the LaunchAgent → Finder double-click immediately works, Trackers window opens, Dock icon visible. Verified empirically.
