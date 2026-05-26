@@ -89,11 +89,65 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         UpdateController.shared.start()
         MCPServer.shared.startSocketServer()
 
-        let launchdManaged = LaunchAgentManager.isCurrentProcessLaunchdManaged()
-        let startupLine = "[startup] launchd-managed=\(launchdManaged) pid=\(getpid()) bundle=\(Bundle.main.bundlePath)"
+        // v0.21.35 — SWITCH FROM LaunchAgent TO SMAppService FOR LOGIN ITEM.
+        //
+        // Background (the failure mode this fixes):
+        //   v0.21.0–0.21.34 used a per-user LaunchAgent
+        //   (`~/Library/LaunchAgents/com.ethansk.macos-widgets-stats-from-website.plist`)
+        //   whose `ProgramArguments` directly exec'd the host binary at login.
+        //   macOS registers a binary launched this way as an `osservice`
+        //   under launchd, NOT as a regular foreground app via LaunchServices.
+        //   Consequence: when the user later double-clicks `Stats Widget from
+        //   Website.app` in Finder, LaunchServices sees the bundle ID is
+        //   already running (as the osservice), refuses to spawn a second
+        //   foreground instance, and the existing osservice can't receive
+        //   the open event because it has NO LaunchServices identity. The
+        //   user sees `open` return -600 / "Application isn't running" and
+        //   the Dock icon never appears. Verified by bootout-test on
+        //   2026-05-26: bootout the LaunchAgent → Finder double-click works,
+        //   Trackers window appears, Dock icon visible.
+        //
+        // Fix: use `SMAppService.mainApp` (macOS 13+) to register the .app
+        // itself as a login item. macOS then launches the .app via
+        // LaunchServices at login — registered as a normal foreground app —
+        // so Finder double-clicks coexist correctly. The legacy LaunchAgent
+        // is removed by `LaunchAgentManager.removeLegacyHostLaunchAgent()`
+        // (one-shot migration; idempotent).
+        let startupLine = "[startup] pid=\(getpid()) bundle=\(Bundle.main.bundlePath)"
         NSLog("%@", startupLine)
         ActivityLogger.log("startup", startupLine)
-        LaunchAgentManager.ensureInstalledAndBootstrapped()
+
+        // One-shot: tear down the legacy host LaunchAgent installed by
+        // v0.21.0–0.21.34. The migration is idempotent — if no plist is
+        // present (fresh install) it logs and returns. After this lands,
+        // the LaunchAgent file is gone from disk and `launchctl print
+        // gui/$UID/com.ethansk.macos-widgets-stats-from-website` returns
+        // "Could not find service" — which the stats-widget-host-watchdog
+        // already handles as "host_plist_missing app_likely_uninstalled"
+        // (no-op). The watchdog will be deprecated in a follow-up.
+        LaunchAgentManager.removeLegacyHostLaunchAgent()
+
+        // Register the .app as a macOS login item via SMAppService.
+        // Quiet-fails if the user has it disabled in System Settings >
+        // General > Login Items — the host still runs (we're running NOW),
+        // we just won't auto-launch at next login. The user can re-enable
+        // from the menu-bar dropdown if they want auto-start.
+        //
+        // SMAppService.mainApp is the modern macOS 13+ replacement for the
+        // LSBackgroundOnly + LaunchAgent pattern. macOS handles the actual
+        // launch path via LaunchServices, so the resulting process has a
+        // proper foreground identity (Dock icon, Cmd-Tab presence,
+        // double-click coexistence with the running process).
+        do {
+            try LoginItemManager.setEnabled(true)
+            ActivityLogger.log("startup", "SMAppService login item registered (or already enabled)")
+        } catch {
+            // Non-fatal — user can re-enable via menu-bar "Launch at Login"
+            // toggle, or via System Settings if they revoked the entry.
+            ActivityLogger.log("startup", "SMAppService register failed (non-fatal)", metadata: [
+                "error": error.localizedDescription
+            ])
+        }
 
         // v0.21.0 — long-running-host architecture (UPDATED v0.21.32:
         // now a hybrid Dock-visible app rather than a pure menu-bar

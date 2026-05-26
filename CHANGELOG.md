@@ -5,6 +5,31 @@ Release-by-release notes for the Stats Widget from Website project.
 Format: each entry is dated, lists the user-visible changes first, then the
 under-the-hood / signing / packaging changes. Newest first.
 
+## v0.21.35 — 2026-05-26
+
+### User-facing
+- **Finder double-click now works again.** Previously, after the app had
+  auto-started at login, double-clicking `Stats Widget from Website.app`
+  in Finder would silently fail (LaunchServices returned -600
+  "Application isn't running"). The Dock icon never appeared and no
+  window opened. v0.21.35 fixes this — the .app coexists correctly with
+  itself and Finder double-clicks bring the prefs window forward.
+
+### Under-the-hood
+- **LaunchAgent → SMAppService.** v0.21.0–0.21.34 used a per-user
+  LaunchAgent that directly `exec`'d the host binary at login. macOS
+  registered the resulting process as an `osservice` rather than a
+  LaunchServices foreground app, which is what broke Finder
+  double-clicks (single-instance policy + missing LaunchServices
+  identity). v0.21.35 switches to `SMAppService.mainApp` — macOS launches
+  the .app at login via LaunchServices, so it has a proper foreground
+  identity and Finder coexists.
+- One-shot migration on first launch: bootouts the legacy LaunchAgent
+  and removes `~/Library/LaunchAgents/com.ethansk.macos-widgets-stats-from-website.plist`.
+  Idempotent — safe on repeated launches.
+- `LaunchAgentManager.swift` reduced to the migration helper only; the
+  install/bootstrap codepath is gone.
+
 ## v0.21.22 — 2026-05-24
 
 ### User-facing

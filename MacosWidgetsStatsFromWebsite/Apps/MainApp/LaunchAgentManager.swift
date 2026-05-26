@@ -2,317 +2,136 @@
 //  LaunchAgentManager.swift
 //  MacosWidgetsStatsFromWebsite
 //
-//  v0.21.4 — installs a per-user launchd KeepAlive job for the menu-bar
-//  agent so crash exits are respawned without relying on SMAppService.
+//  v0.21.35 — REPURPOSED to one-shot migrator only.
+//
+//  History: v0.21.4–v0.21.34 used this enum to install a per-user
+//  LaunchAgent (`~/Library/LaunchAgents/com.ethansk.macos-widgets-stats-from-website.plist`)
+//  that directly exec'd the host binary at login. The LaunchAgent's
+//  `ProgramArguments` model gave the running process an `osservice`
+//  identity under launchd, NOT a LaunchServices foreground-app identity.
+//  Symptom: after the app was running, double-clicking the .app bundle
+//  in Finder returned `-600 / "Application isn't running"` because
+//  LaunchServices refused to start a second instance for a bundle ID it
+//  already saw as running, and the osservice could not receive the
+//  reopen event (no LaunchServices identity).
+//
+//  v0.21.35 switches to `SMAppService.mainApp` (see LoginItemManager.swift)
+//  which registers the .app for login launches via LaunchServices —
+//  preserving the foreground-app identity so Finder double-clicks
+//  coexist with the running process. This file is now JUST the
+//  migration path that tears down the legacy LaunchAgent plist on
+//  upgrade.
+//
+//  See LEARNINGS.md entry "v0.21.35 LaunchAgent → SMAppService" for the
+//  full root-cause analysis.
 //
 
 import Foundation
 
 enum LaunchAgentManager {
-    static let agentLabel = "com.ethansk.macos-widgets-stats-from-website"
-    // v0.21.22 renamed the user-facing .app wrapper to
-    // "Stats Widget from Website.app" (voice 4002 / MBP-CC bridge
-    // msg-65036391). The legacy install location
-    // ("/Applications/MacosWidgetsStatsFromWebsite.app") is kept here so
-    // `migrateLegacyProgramArgumentsIfNeeded()` can detect a previously
-    // installed LaunchAgent that points at the OLD path and rewrite it
-    // to the new wrapper name without forcing users to re-install
-    // manually. The internal executable name (`MacosWidgetsStatsFromWebsite`)
-    // is unchanged — only the .app wrapper directory's filename changed.
-    static let appBundlePath = "/Applications/Stats Widget from Website.app"
-    static let executablePath = "/Applications/Stats Widget from Website.app/Contents/MacOS/MacosWidgetsStatsFromWebsite"
-    static let legacyAppBundlePath = "/Applications/MacosWidgetsStatsFromWebsite.app"
-    static let legacyExecutablePath = "/Applications/MacosWidgetsStatsFromWebsite.app/Contents/MacOS/MacosWidgetsStatsFromWebsite"
-    static let logPath = "/tmp/stats-widget-launchd.log"
+    /// Label of the legacy host LaunchAgent (created by v0.21.4–v0.21.34).
+    /// MUST match the `Label` key the old `writePlistIfNeeded()` wrote, or
+    /// `launchctl bootout` will silently do nothing.
+    static let legacyAgentLabel = "com.ethansk.macos-widgets-stats-from-website"
 
-    /// Idempotent startup hook. It writes the LaunchAgent plist and
-    /// bootstraps it into the user's Aqua session when the canonical
-    /// /Applications install is present.
-    static func ensureInstalledAndBootstrapped() {
-        // v0.21.22: handle the .app wrapper rename. If a user is running
-        // a freshly renamed v0.21.22+ install but the on-disk LaunchAgent
-        // plist still references the OLD wrapper path
-        // ("/Applications/MacosWidgetsStatsFromWebsite.app/..."), launchd
-        // will keep trying to launch the OLD binary on every login until
-        // we rewrite the ProgramArguments. Run the migration first so any
-        // downstream "already loaded?" check sees the corrected plist.
-        // Idempotent — safe on repeated launches and on fresh installs.
-        // voice 4002 / MBP-CC bridge msg-65036391.
-        migrateLegacyProgramArgumentsIfNeeded()
+    /// One-shot migration from the v0.21.x LaunchAgent model to the
+    /// v0.21.35 SMAppService model. Idempotent — safe to call on every
+    /// launch; performs no work after the first run.
+    ///
+    /// Steps:
+    ///   1. If `~/Library/LaunchAgents/<label>.plist` doesn't exist,
+    ///      nothing to migrate (fresh install or already-migrated). Return.
+    ///   2. Bootout the running job from the user's GUI domain. This
+    ///      stops launchd from respawning the binary on next exit and
+    ///      removes the `osservice` identity that was blocking Finder
+    ///      double-click launches.
+    ///   3. Delete the plist file from disk so a future
+    ///      `launchctl bootstrap` can't reload it accidentally (e.g. via
+    ///      the stale stats-widget-host-watchdog script).
+    ///   4. Log the result via `ActivityLogger` so the migration is
+    ///      visible in the activity log if Ethan wants to verify.
+    ///
+    /// Note on the host-watchdog: `~/.claude/scripts/stats-widget-host-watchdog.sh`
+    /// guards against the "plist missing" case (line 262 — logs
+    /// `watchdog.no-op host_plist_missing app_likely_uninstalled` and
+    /// exits without trying to bootstrap). So after migration the
+    /// watchdog will quietly no-op every 5 minutes until it's removed.
+    /// We don't attempt to unload the watchdog itself from inside the
+    /// app — that's Ethan-territory (separate LaunchAgent owned by the
+    /// dot-claude infra).
+    static func removeLegacyHostLaunchAgent() {
+        let fm = FileManager.default
+        let plistPath = legacyPlistURL().path
 
-        guard isRunningFromCanonicalInstall() else {
-            ActivityLogger.log("launchd", "LaunchAgent install skipped; app is not running from canonical install path", metadata: [
-                "expectedBundle": appBundlePath,
-                "bundle": Bundle.main.bundlePath
+        // Step 1 — fast path: nothing on disk means nothing to undo.
+        guard fm.fileExists(atPath: plistPath) else {
+            ActivityLogger.log("launchd-migrator", "legacy host LaunchAgent plist not present; nothing to migrate", metadata: [
+                "expectedPath": plistPath
             ])
             return
         }
 
-        // Resolve which executable path matches the running install (new
-        // wrapper vs legacy wrapper — see isRunningFromCanonicalInstall()
-        // comment). Sparkle in-place updates keep the legacy directory
-        // name, so we MUST use the resolved path here, not the new-only
-        // constant. v0.21.22.
-        let resolvedExecutable = resolvedExecutablePathForRunningInstall()
-        guard FileManager.default.isExecutableFile(atPath: resolvedExecutable) else {
-            ActivityLogger.log("launchd", "LaunchAgent install skipped; canonical app executable not present", metadata: [
-                "expectedExecutable": resolvedExecutable,
-                "bundle": Bundle.main.bundlePath
-            ])
-            return
-        }
-
-        do {
-            let plistChanged = try writePlistIfNeeded()
-            let launchdManaged = isCurrentProcessLaunchdManaged()
-            let loaded = isLoaded()
-
-            if loaded {
-                if plistChanged && !launchdManaged {
-                    let bootout = runLaunchctl(["bootout", domainTarget()])
-                    ActivityLogger.log("launchd", "LaunchAgent reloaded after plist update", metadata: [
-                        "bootoutStatus": "\(bootout.status)"
-                    ])
-                    try bootstrap()
-                } else {
-                    ActivityLogger.log("launchd", "LaunchAgent already loaded", metadata: [
-                        "launchdManaged": "\(launchdManaged)",
-                        "plistChanged": "\(plistChanged)",
-                        "path": plistURL().path
-                    ])
-                }
-                return
-            }
-
-            try bootstrap()
-        } catch {
-            ActivityLogger.log("launchd", "LaunchAgent install failed", metadata: [
-                "error": error.localizedDescription,
-                "path": plistURL().path
-            ])
-            NSLog("[launchd] LaunchAgent install failed: %@", error.localizedDescription)
-        }
-    }
-
-    /// Startup self-test used by AppDelegate logging. This asks launchd
-    /// whether the loaded job's PID is this process.
-    static func isCurrentProcessLaunchdManaged() -> Bool {
-        let result = runLaunchctl(["print", domainTarget()])
-        guard result.status == 0 else { return false }
-        return result.output.contains("pid = \(getpid())")
-    }
-
-    private static func writePlistIfNeeded() throws -> Bool {
-        let destination = plistURL()
-        try FileManager.default.createDirectory(
-            at: destination.deletingLastPathComponent(),
-            withIntermediateDirectories: true,
-            attributes: nil
-        )
-
-        // v0.21.22: use the resolved (new-vs-legacy) executable path so an
-        // in-place Sparkle update from v0.21.21 keeps writing a plist that
-        // points at the still-named wrapper directory the user has on
-        // disk. Fresh installs / users who manually re-installed with the
-        // new wrapper name get the new path. The migration step that runs
-        // earlier handles the case where an older plist already exists at
-        // the old path — see migrateLegacyProgramArgumentsIfNeeded().
-        let resolvedExecutable = resolvedExecutablePathForRunningInstall()
-
-        let plist: [String: Any] = [
-            "Label": agentLabel,
-            "ProgramArguments": [resolvedExecutable],
-            "RunAtLoad": true,
-            "KeepAlive": [
-                "SuccessfulExit": false
-            ],
-            "StandardOutPath": logPath,
-            "StandardErrorPath": logPath,
-            "LimitLoadToSessionType": "Aqua"
-        ]
-
-        let plistObject = NSDictionary(dictionary: plist)
-        let data = try PropertyListSerialization.data(
-            fromPropertyList: plistObject,
-            format: .xml,
-            options: 0
-        )
-
-        if let existing = try? Data(contentsOf: destination),
-           let existingObject = try? PropertyListSerialization.propertyList(
-            from: existing,
-            options: [],
-            format: nil
-           ) as? NSDictionary,
-           existingObject.isEqual(plistObject) {
-            return false
-        }
-
-        try data.write(to: destination, options: .atomic)
-        ActivityLogger.log("launchd", "LaunchAgent plist written", metadata: [
-            "path": destination.path,
-            "executable": resolvedExecutable
+        ActivityLogger.log("launchd-migrator", "legacy host LaunchAgent plist detected; tearing down", metadata: [
+            "path": plistPath
         ])
-        return true
-    }
 
-    /// One-shot migration for users coming from a pre-v0.21.22 install
-    /// whose LaunchAgent plist still references a wrapper path that no
-    /// longer matches the running install. If the on-disk plist's
-    /// ProgramArguments[0] does NOT equal the path that
-    /// `resolvedExecutablePathForRunningInstall()` would write, AND that
-    /// resolved path is actually executable, rewrite the plist and
-    /// `launchctl bootout`+`bootstrap` so launchd loads the corrected
-    /// ProgramArguments before `writePlistIfNeeded()` runs.
-    ///
-    /// Strict idempotency property (Codex xhigh review fix, voice 4002):
-    /// every branch below ends in "no migration work to do" UNLESS the
-    /// plist genuinely needs to be rewritten to match the running
-    /// install's wrapper. Compare against the resolved-for-running path
-    /// (NOT the new canonical path) so a user who is launched from the
-    /// legacy wrapper does not thrash between legacy and new on every
-    /// launch — `writePlistIfNeeded()` will then immediately see the
-    /// matching plist and return false, so there is no second rewrite.
-    ///
-    /// Cases:
-    ///   - No existing plist (fresh install) → no-op; writePlistIfNeeded() handles it.
-    ///   - Plist already matches resolved path → no-op.
-    ///   - Plist references the OTHER wrapper path but the resolved target
-    ///     is not executable on disk → defer with a log line; writePlistIfNeeded()
-    ///     will then also bail out at its isExecutableFile() guard above.
-    ///   - Plist references the OTHER wrapper path AND resolved target is
-    ///     executable → rewrite plist + bootout+bootstrap.
-    ///
-    /// v0.21.22, voice 4002 / MBP-CC bridge msg-65036391.
-    private static func migrateLegacyProgramArgumentsIfNeeded() {
-        let plistPath = plistURL().path
-        guard let existingData = try? Data(contentsOf: URL(fileURLWithPath: plistPath)),
-              let parsed = try? PropertyListSerialization.propertyList(
-                from: existingData,
-                options: [],
-                format: nil
-              ) as? [String: Any] else {
-            // No existing plist (fresh install) or unreadable — nothing
-            // to migrate. ensureInstalledAndBootstrapped() will write a
-            // fresh plist via the standard code path below.
-            return
-        }
+        // Step 2 — `launchctl bootout` to stop the running job. The
+        // bootout target must use the FULL domain target form
+        // (`gui/<uid>/<label>`) for a per-user LaunchAgent. A non-zero
+        // status here is normal if the job wasn't actually loaded
+        // (e.g. user already manually bootout'd it earlier today); we
+        // log and continue to step 3 either way.
+        let bootoutResult = runLaunchctl(["bootout", domainTarget()])
+        ActivityLogger.log("launchd-migrator", "launchctl bootout completed", metadata: [
+            "status": "\(bootoutResult.status)",
+            "domainTarget": domainTarget()
+        ])
 
-        guard let programArgs = parsed["ProgramArguments"] as? [String],
-              let firstArg = programArgs.first else {
-            ActivityLogger.log("launchd", "LaunchAgent migration skipped — plist has no ProgramArguments")
-            return
-        }
-
-        let resolvedExecutable = resolvedExecutablePathForRunningInstall()
-        if firstArg == resolvedExecutable {
-            // Plist already matches the running install's wrapper. No
-            // rewrite needed — this is the steady-state path on every
-            // launch after the first migration AND the path for users
-            // who never had legacy state to migrate.
-            return
-        }
-
-        guard FileManager.default.isExecutableFile(atPath: resolvedExecutable) else {
-            ActivityLogger.log("launchd", "LaunchAgent migration deferred — resolved target not executable", metadata: [
-                "currentFirstArg": firstArg,
-                "resolvedExecutable": resolvedExecutable
-            ])
-            return
-        }
-
-        var rewritten = parsed
-        rewritten["ProgramArguments"] = [resolvedExecutable]
-
+        // Step 3 — delete the plist file from disk. Once it's gone, the
+        // legacy LaunchAgent path can't ever respawn the binary again
+        // (launchd only reloads files in `~/Library/LaunchAgents/` at
+        // login; no on-disk file = nothing to reload). We're deliberate
+        // about REMOVAL rather than RENAME (vs LegacyLaunchAgentMigrator's
+        // .DISABLED suffix dance for the older scraper plist): the
+        // failure mode for the HOST plist is "Finder double-click broken",
+        // which is more user-visible than scraper-double-fire, and we
+        // don't want any backdoor to re-enable it.
         do {
-            let data = try PropertyListSerialization.data(
-                fromPropertyList: rewritten,
-                format: .xml,
-                options: 0
-            )
-            try data.write(to: URL(fileURLWithPath: plistPath), options: .atomic)
+            try fm.removeItem(atPath: plistPath)
+            ActivityLogger.log("launchd-migrator", "legacy host LaunchAgent plist deleted", metadata: [
+                "path": plistPath
+            ])
         } catch {
-            ActivityLogger.log("launchd", "LaunchAgent migration plist rewrite failed", metadata: [
+            // Soft failure — log it but don't throw. Most likely cause is
+            // a permissions issue (file owned by a different UID after a
+            // restore-from-Time-Machine), which Ethan can sort out
+            // manually. The bootout in step 2 already stopped the
+            // running job, so the immediate Finder-double-click bug is
+            // fixed even if file deletion failed.
+            ActivityLogger.log("launchd-migrator", "legacy host LaunchAgent plist delete failed (non-fatal)", metadata: [
+                "path": plistPath,
                 "error": error.localizedDescription
             ])
-            return
         }
-
-        // Reload launchd so the new ProgramArguments takes effect. The
-        // bootout result is logged but not fatal — launchd may report a
-        // non-zero status if the job wasn't loaded, which is fine.
-        let bootout = runLaunchctl(["bootout", domainTarget()])
-        let bootstrap = runLaunchctl(["bootstrap", guiDomain(), plistPath])
-        ActivityLogger.log("launchd", "LaunchAgent ProgramArguments migrated to running wrapper", metadata: [
-            "from": firstArg,
-            "to": resolvedExecutable,
-            "bootoutStatus": "\(bootout.status)",
-            "bootstrapStatus": "\(bootstrap.status)"
-        ])
     }
 
-    private static func bootstrap() throws {
-        let result = runLaunchctl(["bootstrap", guiDomain(), plistURL().path])
-        if result.status != 0 {
-            throw LaunchAgentError.bootstrapFailed(status: result.status, output: result.output)
-        }
-        ActivityLogger.log("launchd", "LaunchAgent bootstrapped", metadata: [
-            "domain": guiDomain(),
-            "path": plistURL().path
-        ])
-    }
+    // MARK: - Internals
 
-    private static func isLoaded() -> Bool {
-        runLaunchctl(["print", domainTarget()]).status == 0
-    }
-
-    private static func isRunningFromCanonicalInstall() -> Bool {
-        // v0.21.22: accept BOTH the new ("/Applications/Stats Widget from
-        // Website.app") and legacy ("/Applications/MacosWidgetsStatsFromWebsite.app")
-        // wrapper paths as canonical. Sparkle in-place updates a v0.21.21 -> v0.21.22
-        // user will preserve the OLD wrapper directory name (Sparkle replaces the
-        // bundle CONTENTS but does not rename the outer directory), so the legacy
-        // path is still a valid running location for the foreseeable migration
-        // window. resolvedExecutablePathForRunningInstall() then picks the right
-        // ProgramArguments for the LaunchAgent plist. voice 4002 / MBP-CC bridge
-        // msg-65036391.
-        let current = Bundle.main.bundleURL.resolvingSymlinksInPath().path
-        let newPath = URL(fileURLWithPath: appBundlePath).resolvingSymlinksInPath().path
-        let legacyPath = URL(fileURLWithPath: legacyAppBundlePath).resolvingSymlinksInPath().path
-        return current == newPath || current == legacyPath
-    }
-
-    /// Resolve the ProgramArguments path that the LaunchAgent plist should
-    /// reference, based on the current running install. This mirrors the
-    /// dual-path tolerance in `isRunningFromCanonicalInstall()` so an
-    /// in-place Sparkle update keeps a working LaunchAgent without
-    /// requiring the user to re-install. v0.21.22.
-    private static func resolvedExecutablePathForRunningInstall() -> String {
-        let current = Bundle.main.bundleURL.resolvingSymlinksInPath().path
-        let legacyPath = URL(fileURLWithPath: legacyAppBundlePath).resolvingSymlinksInPath().path
-        if current == legacyPath {
-            return legacyExecutablePath
-        }
-        // Default to the new canonical path. If the user is running from
-        // somewhere else entirely, `ensureInstalledAndBootstrapped()`
-        // already refused via the canonical-install guard so we don't
-        // reach this code path.
-        return executablePath
-    }
-
-    private static func plistURL() -> URL {
+    /// Location of the legacy host LaunchAgent plist as written by
+    /// v0.21.4–v0.21.34's `writePlistIfNeeded()`. Hardcoded path —
+    /// `legacyAgentLabel` + standard `~/Library/LaunchAgents/`.
+    private static func legacyPlistURL() -> URL {
         FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library", isDirectory: true)
             .appendingPathComponent("LaunchAgents", isDirectory: true)
-            .appendingPathComponent("\(agentLabel).plist", isDirectory: false)
+            .appendingPathComponent("\(legacyAgentLabel).plist", isDirectory: false)
     }
 
-    private static func guiDomain() -> String {
-        "gui/\(getuid())"
-    }
-
+    /// `gui/<uid>/<label>` — full launchctl domain target string for the
+    /// user's Aqua session. `bootout` needs this form, not just the
+    /// label.
     private static func domainTarget() -> String {
-        "\(guiDomain())/\(agentLabel)"
+        "gui/\(getuid())/\(legacyAgentLabel)"
     }
 
     private struct LaunchctlResult {
@@ -320,6 +139,10 @@ enum LaunchAgentManager {
         let output: String
     }
 
+    /// Run `/bin/launchctl <args...>` and capture stdout+stderr. Returns
+    /// the exit status + combined output. Failures to spawn launchctl
+    /// itself (extraordinarily rare on macOS) map to status -1 with the
+    /// localized error string as output.
     private static func runLaunchctl(_ arguments: [String]) -> LaunchctlResult {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/launchctl")
@@ -339,21 +162,6 @@ enum LaunchAgentManager {
             return LaunchctlResult(status: process.terminationStatus, output: output)
         } catch {
             return LaunchctlResult(status: -1, output: error.localizedDescription)
-        }
-    }
-
-    private enum LaunchAgentError: LocalizedError {
-        case bootstrapFailed(status: Int32, output: String)
-
-        var errorDescription: String? {
-            switch self {
-            case let .bootstrapFailed(status, output):
-                let trimmedOutput = output.trimmingCharacters(in: .whitespacesAndNewlines)
-                if trimmedOutput.isEmpty {
-                    return "launchctl bootstrap failed with status \(status)"
-                }
-                return "launchctl bootstrap failed with status \(status): \(trimmedOutput)"
-            }
         }
     }
 }
