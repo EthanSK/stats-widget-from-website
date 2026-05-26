@@ -1214,7 +1214,49 @@ final class ChromeBrowserProfile {
             // touch the system keychain from our app's user-data-dir anyway, since
             // the data is silo'd to this widget app.
             "--password-store=basic",
-            "--use-mock-keychain"
+            "--use-mock-keychain",
+            // Crash fix (v0.21.40): defensive disables for macOS 26 (Tahoe) +
+            // Chromium 150 startup-phase browser-main crashes (EXC_BREAKPOINT
+            // / SIGTRAP on CrBrowserMain, ~6-9 s after launch, identical
+            // stack frame offset 0x6816010 across multiple crashes). The
+            // unified system log (`log show ... process == "Chromium"`)
+            // captured immediately before each crash shows a burst of:
+            //   • SiriTTSService #FactoryInstall errors (asset query "5")
+            //   • AssistantServices  AFLocalization "No descriptor found
+            //     for language code <private>, voice name <private>"
+            //     (repeats 8-10 times in <300 ms)
+            //   • CoreAudio HALC_ShellObject::SetPropertyData proxy errors
+            //   • SafariServices SFUniversalLink "Process not entitled"
+            //   • 45+ TCC access requests in a 7 s window
+            // The dominant signal is that Chromium 150's Web Speech API
+            // initialization probes the macOS speech-synthesis voice
+            // catalog (Siri/AVSpeech infrastructure), the Tahoe TTS asset
+            // query returns an unexpected null/empty result, and an
+            // `IMMEDIATE_CRASH`/`CHECK` in browser-side speech code fires
+            // → SIGTRAP. We don't need ANY of these APIs for the scraper:
+            // scraping is pure DOM reads, never audio/speech/synth.
+            // Belt-and-suspenders disable list:
+            //   --disable-speech-api          → disables BOTH speech
+            //                                   recognition + synthesis
+            //   --disable-speech-synthesis-api→ also kills synth, in case
+            //                                   --disable-speech-api flag
+            //                                   stops working in a future
+            //                                   Chromium build (defensive)
+            //   --mute-audio                  → blocks any page-driven
+            //                                   audio playback (HALC proxy)
+            //   --disable-audio-output        → secondary HAL gate
+            //   --disable-notifications       → kills macOS notification
+            //                                   permission probes (one
+            //                                   source of TCC flood)
+            // Refs: LEARNINGS.md (chromium-tahoe-26-browser-main-crash),
+            //       garrytan/gstack#867 (different but related Tahoe crash),
+            //       crash reports ~/Library/Logs/DiagnosticReports/
+            //       Chromium-2026-05-26-16{19,37,42}*.ips
+            "--disable-speech-api",
+            "--disable-speech-synthesis-api",
+            "--mute-audio",
+            "--disable-audio-output",
+            "--disable-notifications"
         ]
 
         if headless {

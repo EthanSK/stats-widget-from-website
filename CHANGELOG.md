@@ -5,6 +5,31 @@ Release-by-release notes for the Stats Widget from Website project.
 Format: each entry is dated, lists the user-visible changes first, then the
 under-the-hood / signing / packaging changes. Newest first.
 
+## v0.21.40 — 2026-05-26
+
+### Under-the-hood
+- **Defensive Chromium flags for macOS 26 (Tahoe) browser-main crashes.** Over
+  26 Chromium browser-main crashes today on the MBP (`CrBrowserMain` thread,
+  `EXC_BREAKPOINT` / `SIGTRAP`, identical stack offset across crashes,
+  6-9 seconds after launch). Three of those happened on v0.21.37+, AFTER the
+  helper-entitlements fix — meaning the v0.21.37 fix correctly addressed the
+  renderer JIT crashes but a SECOND distinct crash signature remained in the
+  browser process. Unified system log right before each crash shows
+  Chromium 150 probing macOS speech-synthesis voice catalog
+  (`SiriTTSService #FactoryInstall`, `AssistantServices AFLocalization
+  outputVoiceDescriptorForOutputLanguageCode "No descriptor found"` x10),
+  CoreAudio HAL proxy errors, SafariServices SFUniversalLink errors,
+  and a burst of 45+ TCC requests — strong evidence that Web Speech API
+  init is the trigger on Tahoe.
+- **Fix:** added five defensive Chromium launch flags in
+  `ChromeBrowserProfile.swift`'s `buildChromeLaunchArguments`:
+  `--disable-speech-api`, `--disable-speech-synthesis-api`, `--mute-audio`,
+  `--disable-audio-output`, `--disable-notifications`. The scraper does
+  pure DOM reads — none of these subsystems are needed. Belt-and-suspenders.
+- **No user-facing change.** Widgets refresh as normal. The expected outcome
+  is fewer "Chromium quit unexpectedly" macOS notifications + zero impact
+  on scrape reliability (which already auto-recovered from these crashes).
+
 ## v0.21.39 — 2026-05-26
 
 ### User-facing
