@@ -97,6 +97,26 @@ final class ChromeCDPClient {
         }
     }
 
+    /// v0.21.47 — fire-and-forget `Page.bringToFront`.
+    ///
+    /// Called by the Identify-in-Chrome flow after openTab creates a new
+    /// page target. Chromium does NOT auto-focus newly-created CDP tabs;
+    /// without this the user-visible Chrome window stays on whichever tab
+    /// was foregrounded before (typically the launch-spawned `about:blank`
+    /// from `--user-data-dir` boot), so the user opens Chrome and sees
+    /// `about:blank` instead of the picker page (voice 4269 bug).
+    ///
+    /// Best-effort: no completion handler is exposed. If Chromium ignores
+    /// the call or the websocket is gone, the user still has the
+    /// `/json/activate/<id>` REST call as a fallback (issued in
+    /// `ChromeIdentifyElementCoordinator.handleTarget`). One of the two
+    /// reliably wins in practice on Chromium-150 on macOS 26.
+    func sendBringToFront() {
+        send(method: "Page.bringToFront") { _ in
+            // Intentionally ignored — visual focus is best-effort.
+        }
+    }
+
     func evaluate(
         _ expression: String,
         returnByValue: Bool = true,

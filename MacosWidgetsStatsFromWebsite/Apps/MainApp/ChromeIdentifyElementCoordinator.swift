@@ -111,6 +111,31 @@ struct ChromeElementCaptureView: View {
                     .buttonStyle(.borderedProminent)
                     .keyboardShortcut(.defaultAction)
                 } else {
+                    // v0.21.47 — "Re-inject Picker" escape hatch (voice 4269).
+                    //
+                    // After the persistent-Chromium / extra-`about:` tab
+                    // refactor in this build, the picker overlay should land
+                    // on the right tab the first time. But Chromium has
+                    // occasional flakes (slow page load behind a redirect,
+                    // user clicked away mid-inject, etc.) where the overlay
+                    // doesn't appear OR was dismissed accidentally. Rather
+                    // than force the user to cancel + reopen the whole sheet,
+                    // give them a one-tap "Re-inject Picker" that re-runs
+                    // injectOverlay against the SAME tab the controller
+                    // already chose — preserving the user's logged-in
+                    // session + tab focus, just re-arming the overlay.
+                    //
+                    // This is distinct from "Try Again" (which tears down the
+                    // CDP client and restarts the whole flow including target
+                    // selection — slower, more disruptive). Re-inject is
+                    // fast (one Runtime.evaluate) and is the right move when
+                    // the user CAN see the target page but no overlay.
+                    if controller.hasStarted && controller.canReinjectPicker {
+                        Button("Re-inject Picker") {
+                            controller.reinjectPicker()
+                        }
+                        .disabled(controller.isReinjectingPicker)
+                    }
                     Button(controller.hasStarted ? "Try Again" : "Open Chrome and Identify") {
                         controller.start()
                     }
@@ -169,6 +194,16 @@ private final class ChromeElementCaptureController: ObservableObject {
     @Published var errorMessage: String?
     @Published var preview: ElementCapturePreview?
     @Published private(set) var hasStarted = false
+    /// v0.21.47 — exposes whether the active coordinator is currently in
+    /// the post-overlay-inject state (i.e. we have a live CDP client on
+    /// the target tab and re-injecting is a meaningful operation). The
+    /// "Re-inject Picker" button is hidden until this becomes true so we
+    /// don't show a button that would no-op against a disconnected
+    /// coordinator.
+    @Published private(set) var canReinjectPicker = false
+    /// v0.21.47 — set true while a re-inject is in flight so the button
+    /// disables itself and prevents double-firing.
+    @Published private(set) var isReinjectingPicker = false
 
     private var coordinator: ChromeIdentifyElementCoordinator?
     private var lastTargetID: String?
@@ -191,6 +226,11 @@ private final class ChromeElementCaptureController: ObservableObject {
         notice = "Opening Chrome/CDP picker…"
         errorMessage = nil
         preview = nil
+        // v0.21.47 — fresh start means no overlay is live yet; hide the
+        // "Re-inject Picker" button until the coordinator confirms the
+        // overlay was injected successfully.
+        canReinjectPicker = false
+        isReinjectingPicker = false
 
         let nextCoordinator = ChromeIdentifyElementCoordinator(
             renderMode: renderMode,
@@ -200,6 +240,9 @@ private final class ChromeElementCaptureController: ObservableObject {
                 self?.notice = nil
                 self?.errorMessage = nil
                 self?.preview = preview
+                // Preview captured → overlay no longer live → hide re-inject.
+                self?.canReinjectPicker = false
+                self?.isReinjectingPicker = false
             },
             onError: { [weak self] message, isTerminal in
                 self?.errorMessage = message
@@ -207,8 +250,14 @@ private final class ChromeElementCaptureController: ObservableObject {
                     self?.coordinator = nil
                     self?.isIdentifying = false
                     self?.notice = nil
+                    // Terminal failure → CDP client gone → re-inject impossible.
+                    self?.canReinjectPicker = false
+                    self?.isReinjectingPicker = false
                 } else {
                     self?.isIdentifying = true
+                    // Non-terminal failAndRearm reinjects internally, so the
+                    // re-inject button should remain available.
+                    self?.isReinjectingPicker = false
                 }
             },
             onNotice: { [weak self] message in
@@ -217,10 +266,19 @@ private final class ChromeElementCaptureController: ObservableObject {
             onTargetSelected: { [weak self] targetID in
                 self?.lastTargetID = targetID
             },
+            // v0.21.47 — coordinator pings this once it successfully injects
+            // the overlay so the UI knows the "Re-inject Picker" escape
+            // hatch is meaningful.
+            onOverlayReady: { [weak self] in
+                self?.canReinjectPicker = true
+                self?.isReinjectingPicker = false
+            },
             onCancelled: { [weak self] in
                 self?.coordinator = nil
                 self?.isIdentifying = false
                 self?.notice = "Identify Element canceled."
+                self?.canReinjectPicker = false
+                self?.isReinjectingPicker = false
             }
         )
 
@@ -228,10 +286,25 @@ private final class ChromeElementCaptureController: ObservableObject {
         nextCoordinator.start(url: url, preferredTargetID: lastTargetID)
     }
 
+    /// v0.21.47 — re-runs `injectOverlay` against the already-selected
+    /// target without restarting the whole identify flow. Cheap (~1
+    /// Runtime.evaluate roundtrip) and preserves the user's logged-in
+    /// page state. No-op if the coordinator isn't in the right state
+    /// (no CDP client / already completed / mid-validation).
+    func reinjectPicker() {
+        guard let coordinator else { return }
+        isReinjectingPicker = true
+        errorMessage = nil
+        notice = "Re-injecting picker…"
+        coordinator.reinjectOverlay()
+    }
+
     func cancel() {
         coordinator?.cancel()
         coordinator = nil
         isIdentifying = false
+        canReinjectPicker = false
+        isReinjectingPicker = false
     }
 
     func cancelIfActive() {
@@ -311,6 +384,11 @@ final class ChromeIdentifyElementCoordinator {
     private let onError: (String, Bool) -> Void
     private let onNotice: (String) -> Void
     private let onTargetSelected: (String) -> Void
+    // v0.21.47 — fired AFTER `injectOverlay` succeeds. Lets the UI flip
+    // the "Re-inject Picker" button to enabled state — we never want to
+    // show that button BEFORE the first successful inject (it would
+    // be a no-op against a not-yet-connected CDP client).
+    private let onOverlayReady: () -> Void
     private let onCancelled: () -> Void
 
     private var client: ChromeCDPClient?
@@ -334,6 +412,9 @@ final class ChromeIdentifyElementCoordinator {
         onError: @escaping (String, Bool) -> Void,
         onNotice: @escaping (String) -> Void,
         onTargetSelected: @escaping (String) -> Void,
+        // v0.21.47 — defaults to no-op for any future caller that
+        // doesn't care about the overlay-ready event.
+        onOverlayReady: @escaping () -> Void = {},
         onCancelled: @escaping () -> Void
     ) {
         self.renderMode = renderMode
@@ -341,6 +422,7 @@ final class ChromeIdentifyElementCoordinator {
         self.onError = onError
         self.onNotice = onNotice
         self.onTargetSelected = onTargetSelected
+        self.onOverlayReady = onOverlayReady
         self.onCancelled = onCancelled
     }
 
@@ -422,17 +504,83 @@ final class ChromeIdentifyElementCoordinator {
         case .success(let target):
             currentTarget = target
             onTargetSelected(target.id)
+
+            // v0.21.47 — fix for voice 4269 ("extra about: tab opens, picker
+            // never appears"). Two things go wrong post-v0.21.46 without this:
+            //
+            //   1. When `ensureLaunched(foreground: true)` tore down the
+            //      headless persistent-mode Chromium and spawned a fresh
+            //      headed instance, the new Chromium boots with one tab on
+            //      `about:blank` (from the trailing `["about:blank"]` arg in
+            //      `buildChromeLaunchArguments` + launch). That tab stays
+            //      FOREGROUND.
+            //   2. `openTab` creates a NEW tab via /json/new for the target
+            //      URL. Chromium does NOT auto-activate newly-created CDP
+            //      tabs — the user-visible window keeps `about:blank` as the
+            //      front tab, the target URL sits in the background, the
+            //      picker overlay gets injected into the (correct) background
+            //      tab but the user can't see it because they're looking at
+            //      `about:blank`. Flow looks broken even though the CDP
+            //      machinery is working.
+            //
+            // Fix: call `/json/activate/<id>` to bring the new target tab to
+            // the front BEFORE we start injecting. The REST endpoint is
+            // fire-and-forget and idempotent; Chromium 150 honors it instantly.
+            // Pair this with a single same-cycle orphan sweep that closes the
+            // stranded `about:blank` (and any other disposables) so the user
+            // ends up with one window, one tab — the right one.
+            if let configuration = currentConfiguration {
+                ChromeBrowserProfile.shared.activateTarget(id: target.id, configuration: configuration)
+
+                // Sweep about:blank / chrome://newtab/ orphans NOW (before
+                // we wait for documentReady + inject) so the Chrome window
+                // is visually clean by the time the user looks at it. We
+                // pin the just-selected target via `keepTargetIDs` so the
+                // sweep can NEVER nuke the tab we're about to inject into,
+                // regardless of URL classification or maxKeep cap. We also
+                // pin every in-flight scrape target to honor the v0.21.12
+                // parallel-scrape race fix (a sweep firing here must not
+                // race-kill a concurrent background scrape's page).
+                let pinnedIDs = ChromeCDPScraper.activeScrapeTargetIDs().union([target.id])
+                ChromeBrowserProfile.shared.closeOrphanPageTargets(
+                    configuration: configuration,
+                    keepURLs: [],
+                    keepTargetIDs: pinnedIDs,
+                    maxKeep: 8,
+                    completion: nil
+                )
+            }
+
             let client = ChromeCDPClient(webSocketURL: target.webSocketDebuggerURL)
             self.client = client
             client.connect()
             client.prepareOpenClawStylePage { [weak self] in
                 DispatchQueue.main.async {
+                    // v0.21.47 belt-and-suspenders: also call Page.bringToFront
+                    // on the CDP page websocket once domains are enabled. On
+                    // some macOS / Chromium combinations the /json/activate/
+                    // REST call queues the activation against the renderer
+                    // process but doesn't reliably raise the window itself;
+                    // Page.bringToFront sends a direct browser-level command
+                    // through the same socket the overlay JS will land on,
+                    // which Chromium-150 handles synchronously and is what
+                    // actually moves the target tab forward in headed mode.
+                    self?.bringTargetToFront()
                     self?.waitForDocumentReady(deadline: Date().addingTimeInterval(15))
                 }
             }
         case .failure(let error):
             finishWithError(error.localizedDescription)
         }
+    }
+
+    /// v0.21.47 — issue a CDP `Page.bringToFront` so the foreground Chrome
+    /// window actually focuses the newly-created target tab. Best-effort:
+    /// fire-and-forget. If Chromium ignores or the websocket is gone, the
+    /// `/json/activate/<id>` REST call issued upstream is the fallback.
+    private func bringTargetToFront() {
+        guard !didComplete, let client else { return }
+        client.sendBringToFront()
     }
 
     private func waitForDocumentReady(deadline: Date) {
@@ -488,10 +636,40 @@ final class ChromeIdentifyElementCoordinator {
         case .success:
             didInjectOverlay = true
             onNotice("Chrome/CDP Identify is active. In the Chrome window, hover an element, click to preview it, or press Esc to cancel.")
+            // v0.21.47 — overlay is live; tell the UI it can offer the
+            // "Re-inject Picker" button now. Safe to call multiple times
+            // (e.g. after failAndRearm); the UI just keeps the button on.
+            onOverlayReady()
             pollForPick(deadline: Date().addingTimeInterval(120))
         case .failure(let error):
             finishWithError("Identify Element could not start in the CDP browser: \(error.localizedDescription)")
         }
+    }
+
+    /// v0.21.47 — public escape hatch for the "Re-inject Picker" button.
+    ///
+    /// Reruns `injectOverlay` against the EXISTING target + CDP client. No
+    /// new tab is created, no new target selection happens, no Chrome
+    /// window is raised — just the JS overlay state is rebuilt on the
+    /// page that's already loaded. The overlay JS itself is idempotent
+    /// (`window.__statsWidgetInspectCleanup` is checked + called at the
+    /// top before the new overlay installs), so re-injecting is safe even
+    /// if the previous overlay was still partially live.
+    ///
+    /// No-op if:
+    ///   - the coordinator already completed (`didComplete == true`)
+    ///   - there's no CDP client (we haven't reached the inject step yet
+    ///     or we crashed out of it terminally)
+    ///   - validation is in flight (don't fight the validation roundtrip)
+    func reinjectOverlay() {
+        guard !didComplete else { return }
+        guard client != nil else { return }
+        guard !isValidatingPick else { return }
+        // Reset the inject flag so handleOverlayInjected's onOverlayReady
+        // ping is still meaningful on the second pass (some UIs key off
+        // the rising edge).
+        didInjectOverlay = false
+        injectOverlay()
     }
 
     private func pollForPick(deadline: Date) {

@@ -1203,6 +1203,56 @@ final class ChromeBrowserProfile {
         }.resume()
     }
 
+    /// v0.21.47 — fire-and-forget HTTP `/json/activate/<id>` REST call.
+    ///
+    /// Brings the given CDP page target to the front of its Chromium window
+    /// (Chromium implements this as Target.activateTarget under the hood,
+    /// which switches the tab strip's selected tab + raises the window).
+    ///
+    /// Why this exists: Identify-in-Chrome creates a new tab via `openTab` /
+    /// `/json/new` so the user can hover + click the element they want
+    /// extracted. Chromium does NOT automatically activate the newly-created
+    /// tab — the previously-focused tab (typically the launch-spawned
+    /// `about:blank` from `--user-data-dir` boot) STAYS foregrounded. The
+    /// user then sees `about:blank` when they switch to Chrome, the picker
+    /// overlay is sitting waiting in a background tab they can't see, and
+    /// the whole flow looks broken (voice 4269: "extra about: tab opens,
+    /// picker never appears").
+    ///
+    /// Pairing this REST call with `openTab` makes the target URL the
+    /// active tab the moment the window comes to the front, so the user
+    /// lands directly on the page where the overlay is injected.
+    ///
+    /// Fire-and-forget + idempotent (Chromium returns 200 with the target
+    /// JSON on success, 404 if the target was already closed, neither of
+    /// which is fatal here). Best-effort — logged for audit.
+    func activateTarget(id: String, configuration: ChromeBrowserLaunchConfiguration) {
+        guard !id.isEmpty,
+              let url = URL(string: "/json/activate/\(id)", relativeTo: configuration.cdpURL)?.absoluteURL else {
+            return
+        }
+
+        ChromeBrowserProfile.cdpRequestSession.dataTask(with: url) { _, response, error in
+            if let error {
+                ActivityLogger.log("browser", "REST tab activate failed", metadata: [
+                    "profile": configuration.profileName,
+                    "port": "\(configuration.cdpPort)",
+                    "target": id,
+                    "error": error.localizedDescription
+                ])
+                return
+            }
+
+            let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+            ActivityLogger.log("browser", "REST tab activate request completed", metadata: [
+                "profile": configuration.profileName,
+                "port": "\(configuration.cdpPort)",
+                "target": id,
+                "status": "\(status)"
+            ])
+        }.resume()
+    }
+
     func bestExistingPageTarget(
         preferredTargetID: String?,
         matching url: URL,
