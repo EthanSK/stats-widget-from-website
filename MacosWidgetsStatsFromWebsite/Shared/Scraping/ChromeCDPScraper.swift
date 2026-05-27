@@ -98,10 +98,33 @@ final class ChromeCDPScraper {
             activeScrapers[scraper.scrapeID] = scraper
             scraper.start()
         }
+
+        // v0.21.48 — defer the kickoff if an Identify-in-Chrome flow is
+        // currently driving the foreground Chromium for this profile's
+        // CDP port. Voice 4277 root cause: background scrapers fired
+        // their NSBackgroundActivityScheduler windows DURING an Identify
+        // session, each called `ensureLaunched(foreground: false)`, hit
+        // the `joined in-flight Chrome launch` path inside the same
+        // pending-launch slot the foreground identify was using, and
+        // ALL of those scrape completions ran `openTab(...)` the moment
+        // the visible Chromium booted — opening 3-4 extra tracker tabs
+        // in the user's window between the about:blank placeholder
+        // (now removed) and the Identify-target tab.
+        //
+        // `whenIdentifyClear` runs `body` immediately if the port is
+        // free, otherwise enqueues it. Combined with the v0.21.48
+        // `ensureLaunched(foreground: true)` rewrite that ALWAYS tears
+        // down + spawns fresh for foreground requests, this gives a
+        // single-tab Chromium window during Identify. Pending scrapes
+        // drain naturally when Identify finishes.
+        let port = ChromeBrowserProfile.shared.configuration(profileName: tracker.browserProfile).cdpPort
+        let dispatchKickoff = {
+            ChromeBrowserProfile.shared.whenIdentifyClear(port: port, kickoff)
+        }
         if delay > 0 {
-            DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: kickoff)
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: dispatchKickoff)
         } else {
-            DispatchQueue.main.async(execute: kickoff)
+            DispatchQueue.main.async(execute: dispatchKickoff)
         }
     }
 

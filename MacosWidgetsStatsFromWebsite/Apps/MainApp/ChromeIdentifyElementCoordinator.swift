@@ -405,6 +405,11 @@ final class ChromeIdentifyElementCoordinator {
     private var didCreateNewTab = false
     private var currentTarget: ChromeBrowserTarget?
     private var currentConfiguration: ChromeBrowserLaunchConfiguration?
+    /// v0.21.48 — CDP port for which this flow holds the identify-in-
+    /// progress lock (engaged in `start(...)`, released in every terminal
+    /// path). Nil until `start(...)` runs. Used by `releaseIdentifyLock`
+    /// which is idempotent — duplicate releases are safe.
+    private var identifyLockedPort: Int?
 
     init(
         renderMode: RenderMode,
@@ -428,7 +433,28 @@ final class ChromeIdentifyElementCoordinator {
 
     func start(url: URL, preferredTargetID: String? = nil) {
         armTimeout()
-        ChromeBrowserProfile.shared.ensureLaunched(profileName: Tracker.defaultBrowserProfile, foreground: true) { [weak self] result in
+        // v0.21.48 — engage the identify-in-progress lock BEFORE we kick
+        // off the foreground launch. This blocks background scrapers from
+        // joining the in-flight pending-launch slot and from race-creating
+        // extra tabs in the visible Chromium (voice 4277 root cause).
+        // Cleared in `finishWithPreview` / `finishWithError` /
+        // `finishCancelled` / `cancel` — the lock-release is idempotent
+        // so duplicate clears on the same flow are safe.
+        let lockPort = ChromeBrowserProfile.shared.configuration(profileName: Tracker.defaultBrowserProfile).cdpPort
+        self.identifyLockedPort = lockPort
+        ChromeBrowserProfile.shared.beginIdentifyInProgress(port: lockPort)
+
+        // v0.21.48 — pass the target URL through as `initialURL` so
+        // Chromium boots with the page as its FIRST/active tab. The
+        // foreground spawn skips `about:blank` entirely. With the lock
+        // engaged above, no background scraper can race-create a second
+        // tab between teardown and spawn. End-state: one window, one
+        // tab, on the right page, ready for the overlay injection.
+        ChromeBrowserProfile.shared.ensureLaunched(
+            profileName: Tracker.defaultBrowserProfile,
+            foreground: true,
+            initialURL: url
+        ) { [weak self] result in
             DispatchQueue.main.async {
                 self?.handleBrowserLaunch(result, url: url, preferredTargetID: preferredTargetID)
             }
@@ -443,6 +469,11 @@ final class ChromeIdentifyElementCoordinator {
         didComplete = true
         timeout?.cancel()
         cleanupAndClose()
+        // v0.21.48 — release the identify-in-progress lock so background
+        // scrapers can resume. Called BEFORE `onCancelled` so by the time
+        // any downstream UI code reacts to the cancel, scrapers are
+        // already free to run again.
+        releaseIdentifyLock()
         onCancelled()
     }
 
@@ -455,43 +486,100 @@ final class ChromeIdentifyElementCoordinator {
 
         switch result {
         case .success(let configuration):
-            ChromeBrowserProfile.shared.bestExistingPageTarget(
-                preferredTargetID: preferredTargetID,
-                matching: url,
-                configuration: configuration
-            ) { [weak self] existingResult in
-                DispatchQueue.main.async {
-                    self?.handleExistingTargetLookup(existingResult, configuration: configuration, fallbackURL: url)
-                }
-            }
+            currentConfiguration = configuration
+            // v0.21.48 — the foreground launch in `ensureLaunched` was given
+            // our target URL as `initialURL`, so the spawned Chromium boots
+            // with the target page as its FIRST (and only) tab. There is
+            // no longer any reason to call `openTab` to create a separate
+            // target tab — that path was the source of the "extra
+            // about:blank tab" bug in voice 4269 + the "4 tabs, one per
+            // tracker" bug in voice 4277 when scrapers race-piled their
+            // openTab calls onto the same pending-launch slot.
+            //
+            // Instead, we poll `/json/list` for the just-spawned tab.
+            // Polling is bounded (4s, 200ms cadence). The tab's URL may
+            // momentarily be `about:blank` in the first ~100ms of
+            // Chromium boot before the renderer commits the initialURL
+            // navigation, so we keep retrying until the tab's host/path
+            // matches our target. After timeout we fall back to creating
+            // a tab via `openTab` (legacy path) as a defensive backstop —
+            // but with the identify-in-progress lock blocking scrapers,
+            // we should never need that fallback in practice.
+            findLaunchedIdentifyTarget(
+                configuration: configuration,
+                requestedURL: url,
+                deadline: Date().addingTimeInterval(4)
+            )
         case .failure(let error):
             finishWithError(error.localizedDescription)
         }
     }
 
-    private func handleExistingTargetLookup(
-        _ result: Result<ChromeBrowserTarget, Error>,
+    /// v0.21.48 — poll `/json/list` for the tab the foreground spawn
+    /// created with the target URL. See `handleBrowserLaunch` for why
+    /// this replaces the v0.21.47 `bestExistingPageTarget → openTab`
+    /// fallback path.
+    ///
+    /// On match: hand off to `handleTarget` with `didCreateNewTab=true`
+    /// (the tab WAS created — by the launch arg, not by `openTab`).
+    /// On timeout: fall back to `openTab` via the legacy path so we
+    /// degrade gracefully if some future Chromium version stops honoring
+    /// trailing URL launch args.
+    private func findLaunchedIdentifyTarget(
         configuration: ChromeBrowserLaunchConfiguration,
-        fallbackURL: URL
+        requestedURL: URL,
+        deadline: Date
     ) {
         guard !didComplete else { return }
-        currentConfiguration = configuration
 
-        switch result {
-        case .success(let target):
-            // Reused — DO NOT close on exit; preserves the user's
-            // logged-in session.
-            didCreateNewTab = false
-            onNotice("Reusing the existing CDP browser tab so the logged-in profile/session is preserved.")
-            handleTarget(.success(target))
-        case .failure:
-            // Created — flag for cleanup so we don't leak the
-            // identify-launched tab once the user finishes (Ethan voice 3775).
-            didCreateNewTab = true
-            let safeURL = ChromeBrowserProfile.safeInitialURL(for: fallbackURL)
-            ChromeBrowserProfile.shared.openTab(url: safeURL, configuration: configuration) { [weak self] result in
-                DispatchQueue.main.async {
-                    self?.handleTarget(result)
+        ChromeBrowserProfile.shared.bestExistingPageTarget(
+            preferredTargetID: nil,
+            matching: requestedURL,
+            configuration: configuration
+        ) { [weak self] result in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                if self.didComplete { return }
+
+                switch result {
+                case .success(let target):
+                    // Launch-time tab found — Chromium honored the initial
+                    // URL arg. Treat as a CREATED tab (we DID open it, just
+                    // via the launch arg rather than /json/new) so the
+                    // cleanup path closes it on exit.
+                    self.didCreateNewTab = true
+                    self.handleTarget(.success(target))
+                case .failure:
+                    if Date() < deadline {
+                        // URL not yet visible in /json/list — Chromium is
+                        // probably still parsing the launch-arg URL. Poll
+                        // again at the standard 200ms cadence.
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
+                            self?.findLaunchedIdentifyTarget(
+                                configuration: configuration,
+                                requestedURL: requestedURL,
+                                deadline: deadline
+                            )
+                        }
+                        return
+                    }
+
+                    // Timed out waiting for the launch-time tab. Fall back
+                    // to the legacy openTab flow as a defensive backstop.
+                    // With the identify-in-progress lock holding scrapers
+                    // at bay this is still safe — only our flow can call
+                    // openTab on this CDP port during this window.
+                    ActivityLogger.log("identify", "launch-time tab not found, falling back to openTab", metadata: [
+                        "port": "\(configuration.cdpPort)",
+                        "url": requestedURL.absoluteString
+                    ])
+                    self.didCreateNewTab = true
+                    let safeURL = ChromeBrowserProfile.safeInitialURL(for: requestedURL)
+                    ChromeBrowserProfile.shared.openTab(url: safeURL, configuration: configuration) { [weak self] result in
+                        DispatchQueue.main.async {
+                            self?.handleTarget(result)
+                        }
+                    }
                 }
             }
         }
@@ -879,6 +967,9 @@ final class ChromeIdentifyElementCoordinator {
         // tabs are NOT closed so the user's existing session stays intact
         // (Ethan voice 3775 tab-leak fix).
         closeCreatedTabIfNeeded()
+        // v0.21.48 — release the identify-in-progress lock so background
+        // scrapers waiting in `whenIdentifyClear(...)` drain. Idempotent.
+        releaseIdentifyLock()
         onPreviewReady(preview)
     }
 
@@ -887,6 +978,10 @@ final class ChromeIdentifyElementCoordinator {
         didComplete = true
         timeout?.cancel()
         cleanupAndClose()
+        // v0.21.48 — even on error we MUST release the lock; otherwise
+        // background scrapers stay paused indefinitely and widgets go
+        // stale until the next foreground identify cycle.
+        releaseIdentifyLock()
         onError(message, true)
     }
 
@@ -896,7 +991,50 @@ final class ChromeIdentifyElementCoordinator {
         timeout?.cancel()
         client?.close()
         closeCreatedTabIfNeeded()
+        // v0.21.48 — see finishWithError comment.
+        releaseIdentifyLock()
         onCancelled()
+    }
+
+    /// v0.21.48 — release the identify-in-progress lock held since
+    /// `start(...)`. Safe to call multiple times — `endIdentifyInProgress`
+    /// is itself idempotent, and we also clear `identifyLockedPort` here
+    /// so a second invocation is a true no-op. Called from every terminal
+    /// path AND from `cancel()` so the lock can never leak.
+    ///
+    /// Also tears down the headed Chromium that Identify spawned, so the
+    /// user-visible window doesn't linger after the picker is done.
+    /// Background scrapers will spawn a fresh HEADLESS Chromium on their
+    /// next kickoff (which is now unblocked).
+    private func releaseIdentifyLock() {
+        guard let port = identifyLockedPort else { return }
+        identifyLockedPort = nil
+
+        // v0.21.48 — close the headed Chromium that Identify created
+        // BEFORE we release the lock. Otherwise the next scraper kickoff
+        // would see the headed Chromium as reachable and reuse it,
+        // leaving a stale window visible to the user. We close via the
+        // shared profile's tear-down path so the kill is the same one
+        // `ensureLaunched(foreground:true)` uses (SIGTERM → wait for CDP
+        // to go unreachable). Background scrapers will spawn a fresh
+        // headless Chromium on their next call to `ensureLaunched`.
+        if let configuration = currentConfiguration {
+            ChromeBrowserProfile.shared.terminateHeadedIdentifyInstance(
+                configuration: configuration
+            ) {
+                // Lock release happens AFTER the headed Chromium is gone
+                // so the first deferred scraper kickoff (which races to
+                // call `ensureLaunched` the moment the lock clears)
+                // sees a non-reachable CDP port and spawns a fresh
+                // headless Chromium rather than reusing the headed one.
+                ChromeBrowserProfile.shared.endIdentifyInProgress(port: port)
+            }
+        } else {
+            // No configuration captured yet (e.g. the launch failed before
+            // handleExistingTargetLookup). Just release the lock so scrapers
+            // can resume.
+            ChromeBrowserProfile.shared.endIdentifyInProgress(port: port)
+        }
     }
 
     private func cleanupAndClose() {

@@ -27,6 +27,54 @@ enum InspectOverlayJS {
     outline.style.cssText = 'position:fixed;border:2px solid #2997ff;box-sizing:border-box;pointer-events:none;z-index:2147483647;display:none;';
     root.appendChild(outline);
 
+    // v0.21.48 — VISIBLE banner so the user knows the picker is armed.
+    // Voice 4277: "I don't see the overlay being added either." The old
+    // overlay was just a 2px blue hover-outline — only rendered ONCE the
+    // user moves the mouse over an element. If the user landed on the
+    // page and DIDN'T move the mouse first, the flow looked like nothing
+    // happened. Adding a top-of-viewport banner makes it obvious the
+    // picker is live BEFORE any hover, and gives the user the keyboard
+    // shortcuts at-a-glance.
+    //
+    // Layout choices:
+    //   • position: fixed at top — survives page scroll, always in view
+    //   • full-width — unmissable, no horizontal-scroll edge case
+    //   • z-index 2147483647 (max int32) — sits above every site's UI
+    //     including modal overlays
+    //   • pointer-events: none — never blocks clicks on the underlying
+    //     element the user is trying to capture
+    //   • distinctive color (Apple blue #2997ff) — matches the hover
+    //     outline so the visual language is consistent
+    //   • inline-styled — no risk of the page's CSS stripping classes
+    //
+    // The banner CAN be dismissed via Esc (same as the whole picker),
+    // and the cleanup() function removes it alongside the outline.
+    const banner = document.createElement('div');
+    banner.setAttribute('data-stats-widget-inspect-banner', 'true');
+    banner.style.cssText = [
+      'position:fixed',
+      'top:0',
+      'left:0',
+      'right:0',
+      'padding:10px 16px',
+      'background:#2997ff',
+      'color:#ffffff',
+      'font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif',
+      'font-size:13px',
+      'font-weight:600',
+      'line-height:1.4',
+      'text-align:center',
+      'letter-spacing:0.2px',
+      'box-shadow:0 2px 8px rgba(0,0,0,0.25)',
+      'box-sizing:border-box',
+      'pointer-events:none',
+      'z-index:2147483647',
+      'user-select:none',
+      '-webkit-user-select:none'
+    ].join(';');
+    banner.textContent = 'Identify Element — hover the value you want, click to capture, or press Esc to cancel.';
+    root.appendChild(banner);
+
     let hoverElement = null;
     window.__statsWidgetHover = null;
 
@@ -157,6 +205,12 @@ enum InspectOverlayJS {
       document.removeEventListener('keydown', onKeyDown, true);
       if (outline.parentNode) {
         outline.parentNode.removeChild(outline);
+      }
+      // v0.21.48 — also remove the visible banner so post-cleanup the
+      // page goes back to a normal state. The DOM has no other artifacts
+      // of the picker — outline + banner are the entire surface.
+      if (banner.parentNode) {
+        banner.parentNode.removeChild(banner);
       }
       window.__statsWidgetHover = null;
       window.__statsWidgetInspectCleanup = null;

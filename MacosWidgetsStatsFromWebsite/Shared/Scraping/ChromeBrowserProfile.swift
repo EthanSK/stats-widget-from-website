@@ -73,6 +73,13 @@ final class ChromeBrowserProfile {
     private var backgroundUseCounts: [Int: Int] = [:]
     private var userVisiblePorts: Set<Int> = []
     private var pendingLaunchCompletions: [String: [(Result<ChromeBrowserLaunchConfiguration, Error>) -> Void]] = [:]
+    /// v0.21.48 — per-pending-launch initial URL (set by foreground-identify
+    /// callers so the spawned Chromium boots with the target page as its
+    /// first/active tab). Keyed by the same `launchKey` as
+    /// `pendingLaunchCompletions`. Absent key → no initial URL → falls
+    /// back to `about:blank` in `launch(...)`. Cleared in
+    /// `finishPendingLaunch`.
+    private var pendingLaunchInitialURLs: [String: URL] = [:]
     private var pendingTargetCreations: [Int: [PendingTargetCreation]] = [:]
     private var targetCreationPortsInFlight: Set<Int> = []
 
@@ -142,6 +149,140 @@ final class ChromeBrowserProfile {
     /// To roll back: flip to `false`. Reverts to the v0.21.45 lifecycle.
     static let persistentBrowserMode: Bool = true
 
+    // MARK: - v0.21.48 feature flags
+    //
+    // Established 2026-05-27 (voice 4277): "get rid of the whole secondary
+    // elements thing. Just put it behind the feature flag and comment it out
+    // or whatever." We keep the code path intact so the on-disk model
+    // (`Tracker.secondaryElements`) decodes the way it always has — and we
+    // can flip this back to `true` later without re-implementing the UI.
+    // The flag is read by TrackerEditorView when deciding whether to render
+    // the secondary-elements section + the "+ Add secondary element" button.
+    static let enableSecondaryElements: Bool = false
+
+    // MARK: - v0.21.48 Identify-in-Chrome serialization
+    //
+    // ## Why we need this
+    //
+    // Voice 4277 (2026-05-27): "I click identify them in Chrome. It opens
+    // Chromium and it opens the four tabs, one per tracker, I guess. But
+    // the one I'm trying to identify is not the last one is not the one
+    // the tab that's activated."
+    //
+    // Root cause we observed in `activity.log` (10:56:11–10:57:33Z BST):
+    // when user clicks Identify, background scrapers continue firing
+    // their NSBackgroundActivityScheduler windows. Each scrape calls
+    // `ensureLaunched(foreground: false)`. If a foreground spawn is
+    // already in-flight, the scrapes hit the
+    // `joined in-flight Chrome launch` path on line ~265 and pile their
+    // completion callbacks on the SAME pending-launch slot. When the
+    // headed Chromium finally boots, ALL of those scrapes fire
+    // simultaneously and each calls `openTab(...)` → N extra tracker tabs
+    // open in the visible window the user just asked for. The right tab
+    // (the one Identify created via /json/new) gets lost in the noise.
+    //
+    // ## The lock
+    //
+    // `identifyInProgressPorts` is the set of CDP ports for which an
+    // Identify flow is currently driving the user-visible Chromium. When
+    // a port is in this set:
+    //   • `ChromeCDPScraper.scrape(...)` defers its kickoff via
+    //     `whenIdentifyClear(...)` (see `ChromeCDPScraper.swift`). Scrapes
+    //     queue locally until the lock clears, then run normally.
+    //   • `endBackgroundUse(...)`'s persistent-mode teardown still applies,
+    //     but no NEW scrape can begin to add fresh tabs.
+    //
+    // Set via `beginIdentifyInProgress(port:)` at the start of
+    // `ChromeIdentifyElementCoordinator.start(...)` and cleared via
+    // `endIdentifyInProgress(port:)` in the coordinator's terminal paths
+    // (`finishWithPreview`, `finishWithError`, `finishCancelled`,
+    // `cancel`). The clear is idempotent.
+    //
+    // The lock is GLOBAL across the app (not per-tracker) because all
+    // trackers in a profile share the same CDP port; locking the port
+    // is what gates scrapers.
+    private var identifyInProgressPorts: Set<Int> = []
+
+    /// v0.21.48 — callbacks waiting for the identify lock to clear.
+    /// Each entry is a closure scheduled by `ChromeCDPScraper` via
+    /// `whenIdentifyClear`. When `endIdentifyInProgress` fires, all
+    /// callbacks for that port are dispatched to the main queue.
+    private var identifyLockWaiters: [Int: [() -> Void]] = [:]
+
+    /// v0.21.48 — set the identify-in-progress flag for the given port.
+    /// Idempotent (safe to call multiple times). Called at the start of
+    /// the Identify-in-Chrome flow.
+    func beginIdentifyInProgress(port: Int) {
+        queue.async { [weak self] in
+            guard let self else { return }
+            let wasInProgress = self.identifyInProgressPorts.contains(port)
+            self.identifyInProgressPorts.insert(port)
+            // Log the lock state transitions so the activity log can prove
+            // that scrapers actually paused during the Identify window.
+            if !wasInProgress {
+                ActivityLogger.log("identify", "identify lock engaged", metadata: [
+                    "port": "\(port)",
+                    "activeScrapeCount": "\(ChromeCDPScraper.currentActiveScrapeCount)"
+                ])
+            }
+        }
+    }
+
+    /// v0.21.48 — clear the identify-in-progress flag for the given port
+    /// and drain any pending scrape-kickoff waiters. Idempotent.
+    func endIdentifyInProgress(port: Int) {
+        queue.async { [weak self] in
+            guard let self else { return }
+            let wasInProgress = self.identifyInProgressPorts.remove(port) != nil
+            // Snapshot + clear waiters under the same queue tick so a new
+            // waiter that arrives after this point doesn't get drained twice.
+            let waitersToRun = self.identifyLockWaiters.removeValue(forKey: port) ?? []
+            if wasInProgress {
+                ActivityLogger.log("identify", "identify lock released", metadata: [
+                    "port": "\(port)",
+                    "drainedWaiters": "\(waitersToRun.count)"
+                ])
+            }
+            // Dispatch waiters on the main queue so they can safely call
+            // back into ChromeCDPScraper (which expects main-thread state).
+            if !waitersToRun.isEmpty {
+                DispatchQueue.main.async {
+                    for waiter in waitersToRun {
+                        waiter()
+                    }
+                }
+            }
+        }
+    }
+
+    /// v0.21.48 — fire `body` immediately on the main queue if no identify
+    /// is in progress for `port`, otherwise enqueue `body` so it runs when
+    /// the lock clears. Used by `ChromeCDPScraper.scrape(...)` to defer
+    /// scrape kickoffs until any in-flight identify finishes.
+    func whenIdentifyClear(port: Int, _ body: @escaping () -> Void) {
+        queue.async { [weak self] in
+            guard let self else {
+                DispatchQueue.main.async(execute: body)
+                return
+            }
+            if self.identifyInProgressPorts.contains(port) {
+                self.identifyLockWaiters[port, default: []].append(body)
+                ActivityLogger.log("identify", "scrape deferred behind identify lock", metadata: [
+                    "port": "\(port)",
+                    "waiterCount": "\(self.identifyLockWaiters[port]?.count ?? 0)"
+                ])
+            } else {
+                DispatchQueue.main.async(execute: body)
+            }
+        }
+    }
+
+    /// v0.21.48 — read-only snapshot of whether the identify lock is held
+    /// for `port`. Used in diagnostic logs.
+    func isIdentifyInProgress(port: Int) -> Bool {
+        queue.sync { identifyInProgressPorts.contains(port) }
+    }
+
     private init() {}
 
     func configuration(profileName: String = ChromeBrowserProfile.defaultProfileName) -> ChromeBrowserLaunchConfiguration {
@@ -193,60 +334,98 @@ final class ChromeBrowserProfile {
     func ensureLaunched(
         profileName: String = ChromeBrowserProfile.defaultProfileName,
         foreground: Bool = false,
+        initialURL: URL? = nil,
         completion: @escaping (Result<ChromeBrowserLaunchConfiguration, Error>) -> Void
     ) {
         let configuration = configuration(profileName: profileName)
         if isCDPReachable(configuration: configuration) {
             if foreground {
-                // Foreground (Identify-in-Chrome) callers need a VISIBLE Chrome window.
-                // The background scraper spawns headless Chrome on the same CDP port; if
-                // that headless instance is alive when the user clicks Identify, we MUST
-                // tear it down and spawn a headed instance — otherwise CDP is reachable
-                // but no window ever appears (the failure mode that caused v0.12.10's
-                // "identify is active but no Chrome opens" bug).
-                if isExistingInstanceHeadless(configuration: configuration) {
-                    // v0.21.8 item #6: log the foreground teardown decision
-                    // with the cross-references that matter — backgroundUseCount
-                    // (are scrapers actively using this profile?), activeScrapeCount
-                    // (will teardown collide with an in-flight scrape?), and
-                    // caller=foreground-identify so the logs distinguish this
-                    // teardown reason from end-of-scrape teardown later.
-                    let backgroundUseCount = queue.sync { backgroundUseCounts[configuration.cdpPort] ?? 0 }
-                    ActivityLogger.log("browser", "foreground teardown decision", metadata: [
-                        "profile": configuration.profileName,
-                        "port": "\(configuration.cdpPort)",
-                        "decision": "teardownHeadless",
-                        "caller": "foreground-identify",
-                        "backgroundUseCount": "\(backgroundUseCount)",
-                        "activeScrapeCount": "\(ChromeCDPScraper.currentActiveScrapeCount)"
-                    ])
-                    ActivityLogger.log("browser", "tearing down headless Chrome to spawn headed instance for foreground identify", metadata: [
-                        "profile": configuration.profileName,
-                        "port": "\(configuration.cdpPort)"
-                    ])
-                    terminateHeadlessInstance(configuration: configuration) { [weak self] in
-                        self?.spawnNewBrowser(configuration: configuration, foreground: true, completion: completion)
-                    }
-                    return
-                }
+                // v0.21.48 — REWRITTEN for voice 4277. Previous behavior (v0.21.47
+                // and earlier) was:
+                //   - if existing instance is HEADLESS → tear down + spawn headed.
+                //   - if existing instance is already HEADED → REUSE it as-is.
+                //
+                // The "reuse if headed" branch is what produced Ethan's "4 tabs,
+                // one per tracker" + "wrong tab activated" + "no overlay" bug.
+                // When persistent-Chromium mode keeps Chromium alive across
+                // scrapes, the SAME Chromium accumulates 4–6 tabs (one per
+                // scraper that recently ran). If the user clicked Identify
+                // earlier in the session, Chromium is also already headed —
+                // so the old code path simply reused it, leaving:
+                //   • all stale scraper tabs visible to the user
+                //   • the previously-foregrounded tab still in front (NOT
+                //     the one we're trying to identify)
+                //   • no clean known state for the picker overlay to inject
+                //     into
+                //
+                // The v0.21.48 fix is to ALWAYS tear down + spawn fresh for a
+                // foreground identify request, regardless of headless vs.
+                // headed. Combined with the `initialURL` parameter (which
+                // makes Chromium boot DIRECTLY with the target URL as the
+                // first/active tab, skipping `about:blank`), this gives a
+                // single-tab Chromium window in a known clean state every
+                // time. Background scrapers are paused via the
+                // `identifyInProgressPorts` lock so they cannot race-create
+                // extra tabs in the foreground Chromium between teardown
+                // and spawn.
+                //
+                // Trade-off: each Identify click now incurs the full
+                // Chromium browser-init cycle (~1–2s on a healthy machine).
+                // Acceptable because Identify is a user-initiated action
+                // they do rarely (selector re-capture, new tracker setup),
+                // NOT a hot path. The persistent-mode optimisation is
+                // about background scrapes, which still get to share a
+                // long-lived Chromium between themselves.
 
-                markUserVisible(configuration: configuration)
-                activateDedicatedBrowser(configuration: configuration)
-                ActivityLogger.log("browser", "reusing existing headed Chrome instance", metadata: [
+                // Always tear down the entire instance (process + all tabs)
+                // before spawning the headed Identify Chromium. We use
+                // `terminateHeadlessInstance` for both headless AND headed
+                // existing instances — its name is historical (v0.21.47).
+                // It SIGTERMs the parent process + waits for CDP to go
+                // unreachable, which is the right teardown for any state.
+                let backgroundUseCount = queue.sync { backgroundUseCounts[configuration.cdpPort] ?? 0 }
+                let wasHeadless = isExistingInstanceHeadless(configuration: configuration)
+                ActivityLogger.log("browser", "foreground teardown decision", metadata: [
                     "profile": configuration.profileName,
-                    "port": "\(configuration.cdpPort)"
+                    "port": "\(configuration.cdpPort)",
+                    "decision": "teardownAlways",
+                    "caller": "foreground-identify",
+                    "wasHeadless": wasHeadless ? "true" : "false",
+                    "backgroundUseCount": "\(backgroundUseCount)",
+                    "activeScrapeCount": "\(ChromeCDPScraper.currentActiveScrapeCount)",
+                    "initialURL": initialURL?.absoluteString ?? "(about:blank)"
                 ])
+                ActivityLogger.log("browser", "tearing down Chrome to spawn clean headed instance for foreground identify", metadata: [
+                    "profile": configuration.profileName,
+                    "port": "\(configuration.cdpPort)",
+                    "wasHeadless": wasHeadless ? "true" : "false"
+                ])
+                terminateHeadlessInstance(configuration: configuration) { [weak self] in
+                    self?.spawnNewBrowser(
+                        configuration: configuration,
+                        foreground: true,
+                        initialURL: initialURL,
+                        completion: completion
+                    )
+                }
+                return
             }
             completion(.success(configuration))
             return
         }
 
-        spawnNewBrowser(configuration: configuration, foreground: foreground, completion: completion)
+        spawnNewBrowser(
+            configuration: configuration,
+            foreground: foreground,
+            initialURL: initialURL,
+            completion: completion
+        )
     }
 
     private func spawnNewBrowser(
         configuration: ChromeBrowserLaunchConfiguration,
         foreground: Bool,
+        initialURL: URL? = nil,
         completion: @escaping (Result<ChromeBrowserLaunchConfiguration, Error>) -> Void
     ) {
         queue.async { [weak self] in
@@ -271,6 +450,13 @@ final class ChromeBrowserProfile {
             }
 
             self.pendingLaunchCompletions[launchKey] = [completion]
+            // v0.21.48 — `initialURL` is the launch-time URL Chromium should
+            // open as its FIRST/active tab. Set by `ensureLaunched` from the
+            // foreground-identify path so the visible window boots with the
+            // right page already active (no `about:blank` placeholder, no
+            // post-launch `openTab` round-trip). nil → fall back to the
+            // historical `["about:blank"]` launch arg.
+            self.pendingLaunchInitialURLs[launchKey] = initialURL
             self.startPendingLaunchWhenReady(
                 configuration: configuration,
                 foreground: foreground,
@@ -338,7 +524,18 @@ final class ChromeBrowserProfile {
         do {
             try fileManager.createDirectory(at: configuration.userDataDirectory, withIntermediateDirectories: true)
             let browser = try resolveBrowser()
-            try launch(browser: browser, configuration: configuration, foreground: foreground)
+            // v0.21.48 — pull the per-pending-launch initial URL set by the
+            // foreground-identify caller (if any). Read inside the same
+            // serial-queue tick that consumes `pendingLaunchCompletions` so
+            // there's no race with `spawnNewBrowser` writing the URL.
+            let launchKey = pendingLaunchKey(configuration: configuration, foreground: foreground)
+            let initialURL = pendingLaunchInitialURLs[launchKey] ?? nil
+            try launch(
+                browser: browser,
+                configuration: configuration,
+                foreground: foreground,
+                initialURL: initialURL
+            )
             waitUntilCDPReachable(configuration: configuration, deadline: Date().addingTimeInterval(12)) { [weak self] result in
                 self?.finishPendingLaunch(configuration: configuration, foreground: foreground, result: result)
             }
@@ -491,6 +688,12 @@ final class ChromeBrowserProfile {
             guard let self else { return }
             let launchKey = self.pendingLaunchKey(configuration: configuration, foreground: foreground)
             let completions = self.pendingLaunchCompletions.removeValue(forKey: launchKey) ?? []
+            // v0.21.48 — clear the corresponding initial-URL entry so a
+            // later background spawn for the same port doesn't accidentally
+            // inherit an old foreground-identify URL. Keep the cleanup in
+            // the same queue tick as the completions removal so the two
+            // can never drift out of sync.
+            self.pendingLaunchInitialURLs.removeValue(forKey: launchKey)
             DispatchQueue.main.async {
                 completions.forEach { $0(result) }
             }
@@ -745,6 +948,45 @@ final class ChromeBrowserProfile {
         lock.unlock()
 
         return String(data: snapshot, encoding: .utf8)
+    }
+
+    /// v0.21.48 — public entry point to terminate the headed Chromium
+    /// that Identify-in-Chrome spawned. Used by
+    /// `ChromeIdentifyElementCoordinator.releaseIdentifyLock` to ensure
+    /// the user-visible window doesn't linger after the picker is done.
+    /// Delegates to the same internal kill path used for the headless
+    /// teardown (the function is called `terminateHeadlessInstance` for
+    /// historical reasons but is the right teardown for any state — it
+    /// SIGTERMs the parent process + waits for CDP to go unreachable).
+    func terminateHeadedIdentifyInstance(
+        configuration: ChromeBrowserLaunchConfiguration,
+        completion: @escaping () -> Void
+    ) {
+        // Also clear foreground tracker state so the next launch doesn't
+        // see this PID as still-tracked and skip its teardown.
+        queue.async { [weak self] in
+            guard let self else {
+                DispatchQueue.global(qos: .userInitiated).async { completion() }
+                return
+            }
+            let trackedProcess = self.foregroundLaunchedProcesses.removeValue(forKey: configuration.cdpPort)
+            let trackedApplication = self.foregroundLaunchedApplications.removeValue(forKey: configuration.cdpPort)
+            self.userVisiblePorts.remove(configuration.cdpPort)
+
+            // Terminate any in-process tracked foreground first (mirrors
+            // the headless teardown flow exactly — same termination
+            // pattern, same wait-for-CDP-gone primitive).
+            if let trackedProcess, trackedProcess.isRunning {
+                trackedProcess.terminate()
+            }
+            if let trackedApplication, !trackedApplication.isTerminated {
+                DispatchQueue.main.async {
+                    trackedApplication.terminate()
+                }
+            }
+
+            self.terminateHeadlessInstance(configuration: configuration, completion: completion)
+        }
     }
 
     private func terminateHeadlessInstance(
@@ -1460,7 +1702,22 @@ final class ChromeBrowserProfile {
             //       Chromium-2026-05-26-{181559,184859}.ips
             //       (frame#0 imageOffset = 109142480 = 0x6816050)
             //       LEARNINGS.md "chromium-tahoe-26-browser-main-crash"
-            "--use-fake-ui-for-media-stream",
+            // v0.21.48 — REMOVED `--use-fake-ui-for-media-stream`. Chromium 150
+            // surfaces a yellow "You are using an unsupported command-line flag:
+            // --use-fake-ui-for-media-stream. Stability and security will suffer."
+            // BANNER inside the visible browser window when this flag is set in
+            // headed mode. The banner is the source of voice 4277's "using an
+            // unsupported command-line flag, use fake UI for media stream, and
+            // security will suffer" complaint. The flag is also redundant with
+            // the consolidated `--disable-features=MediaCapture,WebAudio,...`
+            // bundle below — that bundle kills the entire AV-capture init path
+            // BEFORE getUserMedia can ever prompt, so the auto-deny behaviour
+            // this flag provided is no longer load-bearing.
+            //
+            // `--use-fake-device-for-media-stream` is KEPT (it doesn't trigger
+            // the visible banner and is the belt-and-suspenders for any path
+            // that does still enumerate `MediaDevices` before the feature
+            // bundle bites).
             "--use-fake-device-for-media-stream",
             // Crash fix (v0.21.46): THIRD-WAVE defensive disables. v0.21.45's
             // bundle dropped the cluster mean but ~5/hour SIGTRAPs still hit
@@ -1639,8 +1896,30 @@ final class ChromeBrowserProfile {
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 " +
         "(KHTML, like Gecko) Chrome/150.0.7836.0 Safari/537.36"
 
-    private func launch(browser: ResolvedBrowser, configuration: ChromeBrowserLaunchConfiguration, foreground: Bool) throws {
-        let arguments = buildChromeLaunchArguments(configuration: configuration, headless: !foreground) + ["about:blank"]
+    private func launch(
+        browser: ResolvedBrowser,
+        configuration: ChromeBrowserLaunchConfiguration,
+        foreground: Bool,
+        initialURL: URL? = nil
+    ) throws {
+        // v0.21.48 — `initialURL` (Identify-in-Chrome flow) makes Chromium
+        // boot DIRECTLY with the target page as its first/active tab. This
+        // is what lets us avoid the "1 about:blank + 1 background openTab"
+        // two-tab state that was the source of voice 4277's "extra about:
+        // tab + wrong tab activated" bug.
+        //
+        // Headless launches always use `about:blank` because the scraper
+        // opens its target tab via /json/new immediately after launch
+        // anyway (the existing flow is correct there — multiple scrapes
+        // share the long-running headless Chromium so we don't want the
+        // browser-init page to load anything heavyweight).
+        let startupURL: String
+        if foreground, let initialURL {
+            startupURL = initialURL.absoluteString
+        } else {
+            startupURL = "about:blank"
+        }
+        let arguments = buildChromeLaunchArguments(configuration: configuration, headless: !foreground) + [startupURL]
 
         // We always exec the Chrome binary directly (bypassing LaunchServices) so a
         // pre-existing personal Chrome session cannot intercept the launch and absorb

@@ -202,7 +202,18 @@ struct TrackerEditorView: View {
                         // selector + a rename field + a remove button, plus
                         // a "+ Add secondary element" button that opens
                         // Identify-in-Chrome for the new element.
-                        if !trimmedSelector.isEmpty {
+                        //
+                        // v0.21.48 (voice 4277, 2026-05-27): hidden behind
+                        // the `enableSecondaryElements` static flag. Ethan
+                        // is removing the UX from the app for now — the
+                        // code path stays (Tracker.secondaryElements still
+                        // decodes/encodes the same way) so we can re-enable
+                        // by flipping ONE flag if/when we want it back.
+                        // The flag lives on ChromeBrowserProfile because
+                        // that's the cross-target spot already imported
+                        // everywhere; semantically it's a generic UX flag,
+                        // not a Chrome-specific one.
+                        if ChromeBrowserProfile.enableSecondaryElements && !trimmedSelector.isEmpty {
                             secondaryElementsSection
                         }
                     }

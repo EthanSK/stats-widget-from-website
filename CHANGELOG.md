@@ -5,7 +5,7 @@ Release-by-release notes for the Stats Widget from Website project.
 Format: each entry is dated, lists the user-visible changes first, then the
 under-the-hood / signing / packaging changes. Newest first.
 
-## v0.21.53 — 2026-05-27
+## v0.21.54 — 2026-05-27
 
 ### User-facing — Identify-in-Chrome flow actually works now (voice 4277)
 
@@ -18,7 +18,7 @@ under-the-hood / signing / packaging changes. Newest first.
   *"the one I'm trying to identify is not the last one is not the
   one the tab that's activated. Also there's literally no UI."*
 
-  Root causes (3, all fixed in v0.21.53):
+  Root causes (3, all fixed in v0.21.54):
   1. **Background scrapers race-piled tabs into the foreground
      Chromium.** When the user clicked Identify, the headless
      Chromium was torn down + a headed one was launched. Background
@@ -99,6 +99,8 @@ under-the-hood / signing / packaging changes. Newest first.
   trailing-URL launch arg. Falls back to `openTab` as a defensive
   backstop if some future Chromium version stops honoring trailing
   URL args.
+
+## v0.21.53 — 2026-05-27
 
 ### User-facing — single TCC dialog per reboot (not two)
 
