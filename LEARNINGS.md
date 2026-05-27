@@ -24,6 +24,16 @@ Each entry looks like:
 (newest first)
 
 ---
+**Date:** 2026-05-27T01:50:18Z
+**Trigger:** voice 4269 (2026-05-27)
+**Symptom:** Identify Element in Chrome opens extra about:blank tab + picker overlay never appears after v0.21.46 persistent-Chromium refactor
+**Root cause:** Two compounding bugs: (1) headless-teardown spawns fresh headed Chromium with about:blank launch tab → openTab creates target URL as SECOND tab → Chromium does not auto-activate newly-created CDP tabs → user-visible window stays on about:blank while overlay injects into background target tab. (2) No re-inject escape hatch — overlay flake forced full sheet restart.
+**Fix:** ChromeIdentifyElementCoordinator.handleTarget calls new activateTarget + Page.bringToFront after openTab, pre-sweeps about:blank via closeOrphanPageTargets with pinned new-target-ID. Added Re-inject Picker button via new reinjectOverlay() public method + onOverlayReady callback.
+**Commit:** 1e6975d
+**Guard:** Comments at handleTarget block name the bug + name the v0.21.46 interaction. Pin set in sweep includes activeScrapeTargetIDs union new target — honors v0.21.12 parallel-scrape race fix.
+---
+
+---
 **Date:** 2026-05-26T23:51:55Z
 **Trigger:** MBP-CC voice 4256: 'I just got Chromium crashed investigate. I think it was stats widget.'
 **Symptom:** Chromium 150 SIGTRAP at 0x6816xxx region still firing ~5/hour after v0.21.45 defensive bundle; ~13 crashes in 3 hours post-install
