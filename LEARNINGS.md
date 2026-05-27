@@ -24,6 +24,16 @@ Each entry looks like:
 (newest first)
 
 ---
+**Date:** 2026-05-27T11:45:14Z
+**Trigger:** voice 4275 (2026-05-27)
+**Symptom:** Widget configs list in Stats Widget preferences lacked drag-and-drop reorder (trackers list had it since v0.2). User wanted both lists reorderable for organisation only.
+**Root cause:** WidgetConfigsView.swift's ForEach over store.widgetConfigurations had no .onMove modifier. AppGroupStore had moveTrackers but no equivalent moveWidgetConfigurations.
+**Fix:** Added moveWidgetConfigurations(fromOffsets:toOffset:) to AppGroupStore.swift (mirrors moveTrackers — same SwiftUI .onMove destination-adjustment math). Added .onMove(perform: store.moveWidgetConfigurations) to the WidgetConfigsView ForEach. Pure cosmetic — widget bindings are by configuration id, not list index, so placed widgets keep their binding across reorder.
+**Commit:** fff95bc
+**Guard:** Inline comment block at both .onMove sites + the new store method names the voice 4275 directive + the 'no widget rebinding' invariant. CHANGELOG entry documents user-facing behaviour + the persistence path.
+---
+
+---
 **Date:** 2026-05-27T01:50:18Z
 **Trigger:** voice 4269 (2026-05-27)
 **Symptom:** Identify Element in Chrome opens extra about:blank tab + picker overlay never appears after v0.21.46 persistent-Chromium refactor
