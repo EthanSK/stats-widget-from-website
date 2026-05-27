@@ -84,6 +84,18 @@ struct WidgetConfigurationsView: View {
                                     }
                                 }
                         }
+                        // v0.21.50 — drag-and-drop reorder per voice 4275
+                        // (2026-05-27): "I can drag and drop the widgets and
+                        // the trackers around in the window the app window
+                        // in the list of items. It's just organization."
+                        // SwiftUI's native `.onMove` on `ForEach` inside a
+                        // `List` provides hover-revealed drag handles on
+                        // macOS 13+ — no edit-mode toggle required, no
+                        // NSTableView wrapping. Reorder persists via
+                        // AppGroupStore.moveWidgetConfigurations which
+                        // writes the new order back to trackers.json.
+                        // Mirror of the v0.2 .onMove on the trackers list.
+                        .onMove(perform: store.moveWidgetConfigurations)
                     } footer: {
                         WidgetSetupInstructionsFooter(configurationName: selectedConfiguration?.name ?? store.widgetConfigurations.first?.name)
                     }

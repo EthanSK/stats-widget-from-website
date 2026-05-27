@@ -84,6 +84,13 @@ struct TrackersListView: View {
                                 }
                             }
                     }
+                    // Drag-and-drop reorder per voice 4275 (2026-05-27).
+                    // SwiftUI's native `.onMove` on `ForEach` inside a
+                    // `List` provides hover-revealed drag handles on
+                    // macOS 13+. AppGroupStore.moveTrackers persists the
+                    // new order to trackers.json. Pure organisation — no
+                    // scrape impact, no id rewrites, no widget rebinding
+                    // (widgets bind by tracker id, not list index).
                     .onMove(perform: store.moveTrackers)
                 }
             }

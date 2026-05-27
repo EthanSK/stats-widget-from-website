@@ -98,6 +98,16 @@ final class AppGroupStore: ObservableObject {
         persist()
     }
 
+    /// Reorders the `trackers` array in response to a SwiftUI `.onMove`
+    /// callback fired from the trackers list. Used to let the user drag
+    /// rows to reorganise the order they appear in the preferences pane
+    /// (per voice 4275, 2026-05-27 — pure organisation, no scrape impact).
+    ///
+    /// The implementation has to handle the SwiftUI `.onMove` quirk where
+    /// the `destination` index is the slot the rows should land in BEFORE
+    /// the source rows are removed. Naively `remove + insert` corrupts
+    /// the destination if any source index sat above it, so we adjust the
+    /// destination by the count of source indices below it.
     func moveTrackers(fromOffsets source: IndexSet, toOffset destination: Int) {
         let sortedSource = source.sorted()
         guard !sortedSource.isEmpty else {
@@ -114,6 +124,42 @@ final class AppGroupStore: ObservableObject {
         let adjustedDestination = max(0, min(destination - adjustment, reordered.count))
         reordered.insert(contentsOf: movedTrackers, at: adjustedDestination)
         trackers = reordered
+        persist()
+    }
+
+    /// Reorders the `widgetConfigurations` array in response to a SwiftUI
+    /// `.onMove` callback fired from the widget-configurations list.
+    /// Same shape as `moveTrackers` above — see that function's doc comment
+    /// for the destination-adjustment rationale.
+    ///
+    /// Order in `widgetConfigurations` is what determines display order in
+    /// the preferences pane. WidgetKit uses the per-config `id` for
+    /// timeline lookup, so reorder is safe — no `id` rewrites, no widget
+    /// unbinding, no impact on which configuration a placed widget is
+    /// bound to. Established 2026-05-27 (voice 4275: "I can drag and drop
+    /// the widgets and the trackers around in the window the app window
+    /// in the list of items. It's just organization.").
+    func moveWidgetConfigurations(fromOffsets source: IndexSet, toOffset destination: Int) {
+        let sortedSource = source.sorted()
+        guard !sortedSource.isEmpty else {
+            return
+        }
+
+        let movedConfigurations = sortedSource.map { widgetConfigurations[$0] }
+        var reordered = widgetConfigurations
+        // Remove from highest index downward so earlier removals don't
+        // shift the indices we still have to remove.
+        for index in sortedSource.reversed() {
+            reordered.remove(at: index)
+        }
+
+        // Adjust destination by the count of source rows that sat ABOVE
+        // it — SwiftUI hands us the pre-removal destination index but our
+        // `reordered` array has already had those rows pulled out.
+        let adjustment = sortedSource.filter { $0 < destination }.count
+        let adjustedDestination = max(0, min(destination - adjustment, reordered.count))
+        reordered.insert(contentsOf: movedConfigurations, at: adjustedDestination)
+        widgetConfigurations = reordered
         persist()
     }
 

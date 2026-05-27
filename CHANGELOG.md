@@ -5,6 +5,29 @@ Release-by-release notes for the Stats Widget from Website project.
 Format: each entry is dated, lists the user-visible changes first, then the
 under-the-hood / signing / packaging changes. Newest first.
 
+## v0.21.50 — 2026-05-27
+
+### User-facing — drag-and-drop reorder for widgets list
+
+- **You can now drag-and-drop widget configurations in the Widgets pane**
+  to reorder them. Mirrors the existing drag-and-drop on the Trackers list
+  (shipped in v0.2). Order persists across app restarts via `trackers.json`.
+  Pure organisation — no scrape impact, no widget rebinding (placed
+  widgets keep their binding by configuration id, not list index). Per
+  voice 4275 (2026-05-27): *"make it so I can drag and drop the widgets
+  and the trackers around in the window the app window in the list of
+  items. It's just organization."*
+
+### Under the hood
+
+- New `AppGroupStore.moveWidgetConfigurations(fromOffsets:toOffset:)`
+  mirrors the existing `moveTrackers` method — same SwiftUI `.onMove`
+  destination-adjustment math, persists via the same `persist()` path.
+- WidgetConfigsView's `ForEach` over `store.widgetConfigurations` now has
+  `.onMove(perform: store.moveWidgetConfigurations)`. SwiftUI handles the
+  hover-revealed drag handles natively on macOS 13+ — no edit-mode
+  toggle, no NSTableView wrapping.
+
 ## v0.21.46 — 2026-05-27
 
 ### User-facing — third-wave Chromium crash fix (Tahoe 26)
