@@ -5,6 +5,131 @@ Release-by-release notes for the Stats Widget from Website project.
 Format: each entry is dated, lists the user-visible changes first, then the
 under-the-hood / signing / packaging changes. Newest first.
 
+## v0.21.53 — 2026-05-27
+
+### User-facing — Identify-in-Chrome flow actually works now (voice 4277)
+
+- **Click Identify in Chrome — one window, one tab, on the right
+  page, picker banner visible from the moment the page loads.**
+  v0.21.47 tried to fix this with `/json/activate/<id>` +
+  `Page.bringToFront` but Ethan still saw four tabs (one per tracker),
+  the wrong tab activated, no overlay UI, and a yellow Chromium banner
+  about "use-fake-ui-for-media-stream". Voice 4277 (2026-05-27):
+  *"the one I'm trying to identify is not the last one is not the
+  one the tab that's activated. Also there's literally no UI."*
+
+  Root causes (3, all fixed in v0.21.53):
+  1. **Background scrapers race-piled tabs into the foreground
+     Chromium.** When the user clicked Identify, the headless
+     Chromium was torn down + a headed one was launched. Background
+     scrapers' `NSBackgroundActivityScheduler` windows continued
+     firing during the launch, each one hit the
+     `joined in-flight Chrome launch` coalescing path inside the
+     same pending-launch slot, and ALL of them called `openTab(...)`
+     the moment the headed Chromium booted — opening 3-4 extra
+     tracker tabs in the user's window. The Identify-target tab
+     got buried under the noise. **Fix:** new
+     `identifyInProgressPorts` lock blocks scraper kickoffs for the
+     duration of the Identify flow. Scrapes queue locally and drain
+     when Identify finishes.
+  2. **`about:blank` placeholder tab from the launch arg.** The
+     spawn-headed code path always passed `["about:blank"]` as the
+     trailing launch arg, then called `openTab` for the actual
+     target URL. End-state: 1 placeholder tab + 1 target tab,
+     placeholder foregrounded. **Fix:** new `initialURL` parameter
+     on `ensureLaunched` makes Chromium boot DIRECTLY with the
+     target page as its first/active tab. No more `about:blank`
+     placeholder, no more `openTab` round-trip.
+  3. **No visible overlay UI.** The inspect overlay was just a 2px
+     blue hover-outline that only rendered AFTER the user moved
+     their mouse over an element. If the user landed on the page
+     and didn't move the mouse first, the flow looked like nothing
+     happened. **Fix:** a top-of-viewport banner ("Identify Element
+     — hover the value you want, click to capture, or press Esc to
+     cancel.") renders the moment the overlay JS is injected, with
+     `pointer-events: none` so it never blocks the underlying click
+     target.
+
+- **Yellow Chromium banner about "use-fake-ui-for-media-stream" is
+  gone.** Voice 4277: *"it says using an unsupported command line
+  flag, use fake UI for media stream, and security will suffer."*
+  The flag was added in v0.21.45 as defense-in-depth against
+  getUserMedia auto-prompts. It was always redundant with the
+  consolidated `--disable-features=MediaCapture,WebAudio,...`
+  bundle (which kills the entire AV-capture init path BEFORE any
+  prompt fires). **Fix:** removed the flag from the launch-args
+  list. `--use-fake-device-for-media-stream` (which does NOT
+  trigger the banner) is kept as belt-and-suspenders.
+
+- **Secondary-elements UX hidden behind a feature flag.** Voice
+  4277: *"get rid of the whole secondary elements thing. Just put
+  it behind the feature flag and comment it out or whatever."*
+  **Fix:** new `ChromeBrowserProfile.enableSecondaryElements`
+  static flag (default `false`). When false, the "Secondary
+  elements" section + "+ Add secondary element" button no longer
+  render in the tracker editor. The decoded model
+  (`Tracker.secondaryElements`) still loads + saves as before, so
+  existing trackers with stored secondary elements aren't broken
+  — they're just not editable until the flag is flipped.
+
+### Under-the-hood
+
+- **Identify-in-Chrome flow rewrites `ensureLaunched(foreground:)`
+  to ALWAYS tear down + spawn fresh.** Previous v0.21.47 behavior
+  was "tear down if existing instance was headless, REUSE if it
+  was already headed". The "reuse if headed" branch was a major
+  source of stale-tab and wrong-tab-activated bugs: when persistent
+  Chromium mode (v0.21.46+) keeps the browser alive across scrapes,
+  the SAME Chromium can accumulate 4-6 tabs from background
+  scrapes that Identify then inherited verbatim. Now: every
+  Identify click → SIGTERM the Chromium → spawn a brand-new
+  Chromium with the target URL as the only initial tab → known
+  clean single-tab state.
+
+- **Headed Chromium is torn down when Identify completes.**
+  Previously the identify-spawned headed Chromium would linger
+  until a scraper hit it on the next cycle. New
+  `terminateHeadedIdentifyInstance` is called from the coordinator's
+  terminal paths so the user-visible window vanishes cleanly. The
+  next scrape spawns a fresh HEADLESS Chromium (which is the right
+  default state for the background scrape loop).
+
+- **Launch-time tab discovery via `findLaunchedIdentifyTarget`
+  polls `/json/list` for up to 4s** to find the tab created by the
+  trailing-URL launch arg. Falls back to `openTab` as a defensive
+  backstop if some future Chromium version stops honoring trailing
+  URL args.
+
+### User-facing — single TCC dialog per reboot (not two)
+
+- **The "Stats Widget would like to access data from other apps"
+  dialog now appears only ONCE per reboot, not twice.** Pre-v0.21.53
+  the host fired 3–4 distinct file operations against the App Group
+  container during `App.init()` (activity-log write, legacy-container
+  migration, hook-scaffold backfill, store init) in rapid succession.
+  macOS Sonoma+ does not coalesce these into a single TCC prompt — it
+  queues one prompt per access, so the user saw TWO stacked dialogs
+  per reboot. Per voice 4274 (2026-05-27): *"After restarting my
+  computer, I always get stats widget. Would like to access data TCC
+  dialogue, and there's two of them, and I have to click allow every
+  time."*
+
+  v0.21.53 adds a `TCCPrewarmer` that synchronously writes a tiny
+  sentinel file to the Group Container as the absolute first line of
+  `App.init()`, before any other code path can touch the directory.
+  This issues exactly ONE TCC prompt; the calling thread blocks until
+  the user clicks Allow. From that point on in the boot session, all
+  subsequent accesses reuse the boot-bound TCC grant and prompt
+  nothing further.
+
+  The architecturally correct fix is to re-add the App Group
+  entitlement to the host. That path is blocked by AMFI -413
+  (restricted entitlements require an embedded Developer ID Direct
+  Distribution provisioning profile, which the Sparkle release flow
+  ships profile-free per v0.21.31). Embedding a profile is a larger
+  CI change tracked for v0.22 — v0.21.53 ships the per-reboot
+  single-dialog improvement now while the long-term fix is scoped.
+
 ## v0.21.50 — 2026-05-27
 
 ### User-facing — drag-and-drop reorder for widgets list

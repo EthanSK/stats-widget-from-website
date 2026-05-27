@@ -24,6 +24,16 @@ Each entry looks like:
 (newest first)
 
 ---
+**Date:** 2026-05-27T11:56:52Z
+**Trigger:** voice 4274 (2026-05-27): 'After restarting my computer, I always get stats widget. Would like to access data TCC dialogue, and there's two of them, and I have to click allow every time. What the fuck's going on? Fix it.'
+**Symptom:** After every macOS reboot, TWO 'Stats Widget would like to access data from other apps' TCC dialogs appear (kTCCServiceSystemPolicyAppData), each requiring an Allow click
+**Root cause:** host app is unsandboxed AND has no 'com.apple.security.application-groups' entitlement (removed in v0.21.31 to avoid AMFI -413). macOS Sonoma+ binds the TCC grant for unsandboxed Group Container access to the current boot UUID (auth_value=5 in TCC.db) — every reboot invalidates the grant. App.init() then fires 3-4 distinct file ops against ~/Library/Group Containers/<id>/ in rapid succession (ActivityLogger.log, AppGroupStore.migrate..., backfillDefaultHookScaffold..., AppGroupStore init) before the user can dismiss the first dialog. macOS does NOT coalesce these into one prompt — each access fires its own TCC dialog, stacking two on the user.
+**Fix:** v0.21.53: added MacosWidgetsStatsFromWebsite/Shared/AppGroup/TCCPrewarmer.swift. Called as the absolute first line of MacosWidgetsStatsFromWebsiteApp.init() (before ActivityLogger.log, before everything). Performs ONE synchronous write to a sentinel file (.tcc-prewarm-sentinel) inside the Group Container, blocks the main thread until the dialog resolves, then returns. From that point on in the boot session, all subsequent file ops reuse the boot-bound grant — no further dialogs. Net effect: ONE dialog per reboot instead of TWO. The architectural fix (re-add application-groups entitlement + embed Direct Distribution provisioning profile to eliminate the dialog entirely) is deferred to v0.22.
+**Commit:** pending
+**Guard:** TCCPrewarmer's call site in MacosWidgetsStatsFromWebsiteApp.init() has an 80-line comment block explaining the ordering invariant — DO NOT REORDER below any Group Container access or the double-dialog bug returns. TCCPrewarmer.swift itself has a multi-paragraph header comment documenting the boot_uuid TCC binding mechanism so the next agent can trace the root cause via TCC.db forensics.
+---
+
+---
 **Date:** 2026-05-27T11:45:14Z
 **Trigger:** voice 4275 (2026-05-27)
 **Symptom:** Widget configs list in Stats Widget preferences lacked drag-and-drop reorder (trackers list had it since v0.2). User wanted both lists reorderable for organisation only.
