@@ -63,6 +63,13 @@ final class IdentifyElementRegressionTests: XCTestCase {
         XCTAssertEqual(ChromeBrowserProfile.strictMatchScore(for: target, requestedURL: requestedURL), 750)
     }
 
+    func testStrictIdentifyTargetMatchAcceptsCloudflareChallengeQueryForSamePage() throws {
+        let target = try pageTarget(id: "challenge", url: "https://claude.ai/settings/usage?__cf_chl_rt_tk=abc")
+        let requestedURL = try XCTUnwrap(URL(string: "https://claude.ai/settings/usage"))
+
+        XCTAssertEqual(ChromeBrowserProfile.strictMatchScore(for: target, requestedURL: requestedURL), 750)
+    }
+
     func testStrictIdentifyTargetMatchRejectsDifferentQueryWhenRequestedURLHasQuery() throws {
         let staleTarget = try pageTarget(id: "old", url: "https://example.com/dashboard?account=old")
         let requestedURL = try XCTUnwrap(URL(string: "https://example.com/dashboard?account=new"))

@@ -20,6 +20,7 @@ struct TrackerEditorView: View {
     @State private var accentColor: Color
     @State private var browserPresentation: IdentifyBrowserPresentation?
     @State private var capturedText: String
+    @State private var didCaptureElement = false
     @State private var chromiumAvailable: Bool = ChromeBrowserProfile.shared.chromiumIsAvailable()
     @State private var isShowingChromiumInstallSheet: Bool = false
     @State private var previewState: PreviewState = .idle
@@ -33,13 +34,13 @@ struct TrackerEditorView: View {
 
     let mode: Mode
     let autoStartIdentify: Bool
-    let onSave: (Tracker) -> Void
+    let onSave: (Tracker, Bool) -> Void
 
     init(
         mode: Mode,
         tracker: Tracker,
         autoStartIdentify: Bool = false,
-        onSave: @escaping (Tracker) -> Void
+        onSave: @escaping (Tracker, Bool) -> Void
     ) {
         self.mode = mode
         self.autoStartIdentify = autoStartIdentify
@@ -591,7 +592,7 @@ struct TrackerEditorView: View {
         savedTracker.accentColorHex = accentColor.hexString ?? Tracker.defaultAccentColorHex
         savedTracker.browserProfile = Tracker.defaultBrowserProfile
         savedTracker.selector = trimmedSelector
-        onSave(savedTracker)
+        onSave(savedTracker, didCaptureElement)
         dismiss()
     }
 
@@ -648,12 +649,14 @@ struct TrackerEditorView: View {
             draft.selector = pick.selector
             draft.elementBoundingBox = pick.bbox
             capturedText = pick.text
+            didCaptureElement = true
         case .secondary(let elementID):
             guard let index = draft.secondaryElements.firstIndex(where: { $0.id == elementID }) else {
                 return
             }
             draft.secondaryElements[index].selector = pick.selector
             draft.secondaryElements[index].elementBoundingBox = pick.bbox
+            didCaptureElement = true
             // Auto-name from the captured text on first capture if the user
             // hasn't customized the name. Keeps "Element 2" → "73% used"
             // discoverable in the widget picker.

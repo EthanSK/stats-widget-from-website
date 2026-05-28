@@ -134,9 +134,19 @@ struct TrackersListView: View {
                 mode: presentation.mode,
                 tracker: presentation.tracker,
                 autoStartIdentify: presentation.autoStartIdentify
-            ) { savedTracker in
+            ) { savedTracker, didCaptureElement in
+                let shouldResetFailureState = didCaptureElement
+                    || scrapeRelevantFieldsChanged(from: presentation.tracker, to: savedTracker)
                 store.upsertTracker(savedTracker)
                 selectedTrackerID = savedTracker.id
+                if shouldResetFailureState {
+                    resetFailureStateAfterTrackerUpdate(
+                        for: savedTracker.id,
+                        reason: didCaptureElement
+                            ? "Element was re-identified; waiting for the next scrape to verify it."
+                            : "Tracker configuration changed; waiting for the next scrape to verify it."
+                    )
+                }
             }
             .frame(width: 620, height: 680)
         }
@@ -314,6 +324,34 @@ struct TrackersListView: View {
             tracker: tracker,
             autoStartIdentify: startIdentify
         )
+    }
+
+    private func scrapeRelevantFieldsChanged(from old: Tracker, to new: Tracker) -> Bool {
+        old.url != new.url
+            || old.selector != new.selector
+            || old.contentSelectorHint != new.contentSelectorHint
+            || old.elementBoundingBox != new.elementBoundingBox
+            || old.renderMode != new.renderMode
+            || old.hideElements != new.hideElements
+            || old.secondaryElements != new.secondaryElements
+    }
+
+    private func resetFailureStateAfterTrackerUpdate(for trackerID: UUID, reason: String) {
+        do {
+            let reading = try AppGroupStore.resetFailureState(
+                for: trackerID,
+                reason: reason
+            )
+            readingsByTrackerID[trackerID] = reading
+            NotificationCenter.default.post(
+                name: BackgroundScheduler.trackerReadingDidChangeNotification,
+                object: nil,
+                userInfo: ["trackerID": trackerID]
+            )
+            WidgetCenterDiagnostics.reloadTimelines(reason: "tracker failure state reset")
+        } catch {
+            selectorPackExportMessage = error.localizedDescription
+        }
     }
 }
 

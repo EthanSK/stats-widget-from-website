@@ -53,6 +53,7 @@ final class ChromeCDPScraper {
     private var configuration: ChromeBrowserLaunchConfiguration?
     private var backgroundUseConfiguration: ChromeBrowserLaunchConfiguration?
     private var target: ChromeBrowserTarget?
+    private var shouldCloseTargetOnFinish = false
     private var client: ChromeCDPClient?
     private var timeout: DispatchWorkItem?
     private var didComplete = false
@@ -227,12 +228,8 @@ final class ChromeCDPScraper {
                 return
             }
 
-            beginPhase("openTab")
-            ChromeBrowserProfile.shared.openTab(url: url, configuration: configuration) { [weak self] result in
-                DispatchQueue.main.async {
-                    self?.handleTarget(result)
-                }
-            }
+            beginPhase("selectTarget")
+            selectTarget(for: url, configuration: configuration)
         case .failure(let error):
             ActivityLogger.log("scrape", "ensureLaunched ended", metadata: [
                 "scrapeID": scrapeID.uuidString,
@@ -250,19 +247,49 @@ final class ChromeCDPScraper {
         }
     }
 
-    private func handleTarget(_ result: Result<ChromeBrowserTarget, Error>) {
-        let openTabElapsedMs = elapsedMsInPhase()
+    private func selectTarget(for url: URL, configuration: ChromeBrowserLaunchConfiguration) {
+        ChromeBrowserProfile.shared.pageTargetStrictlyMatching(url, configuration: configuration) { [weak self] result in
+            DispatchQueue.main.async {
+                guard let self, !self.didComplete else { return }
+
+                switch result {
+                case .success(let target):
+                    self.handleTarget(.success(target), shouldCloseOnFinish: false)
+                case .failure(let reuseError):
+                    ActivityLogger.log("scrape", "no reusable scrape target, opening new tab", metadata: [
+                        "scrapeID": self.scrapeID.uuidString,
+                        "tracker": self.tracker.id.uuidString,
+                        "url": url.absoluteString,
+                        "reason": reuseError.localizedDescription
+                    ])
+                    ChromeBrowserProfile.shared.openTab(url: url, configuration: configuration) { [weak self] openResult in
+                        DispatchQueue.main.async {
+                            self?.handleTarget(openResult, shouldCloseOnFinish: true)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func handleTarget(
+        _ result: Result<ChromeBrowserTarget, Error>,
+        shouldCloseOnFinish: Bool
+    ) {
+        let targetSelectionElapsedMs = elapsedMsInPhase()
         switch result {
         case .success(let target):
             self.target = target
-            ActivityLogger.log("scrape", "openTab ended", metadata: [
+            self.shouldCloseTargetOnFinish = shouldCloseOnFinish
+            ActivityLogger.log("scrape", "target selection ended", metadata: [
                 "scrapeID": scrapeID.uuidString,
                 "tracker": tracker.id.uuidString,
                 "target": target.id,
-                "elapsedMs": "\(openTabElapsedMs)",
-                "result": "success"
+                "elapsedMs": "\(targetSelectionElapsedMs)",
+                "result": "success",
+                "reusedTarget": shouldCloseOnFinish ? "false" : "true"
             ])
-            ActivityLogger.log("scrape", "opened CDP target", metadata: [
+            ActivityLogger.log("scrape", shouldCloseOnFinish ? "opened CDP target" : "reused CDP target", metadata: [
                 "scrapeID": scrapeID.uuidString,
                 "tracker": tracker.id.uuidString,
                 "target": target.id
@@ -295,10 +322,10 @@ final class ChromeCDPScraper {
             if retryOnceAfterBrowserDisconnect(error, context: "openTab") {
                 return
             }
-            ActivityLogger.log("scrape", "openTab ended", metadata: [
+            ActivityLogger.log("scrape", "target selection ended", metadata: [
                 "scrapeID": scrapeID.uuidString,
                 "tracker": tracker.id.uuidString,
-                "elapsedMs": "\(openTabElapsedMs)",
+                "elapsedMs": "\(targetSelectionElapsedMs)",
                 "result": "failure",
                 "error": error.localizedDescription
             ])
@@ -418,7 +445,7 @@ final class ChromeCDPScraper {
         ])
 
         client?.close()
-        if let configuration, let target {
+        if shouldCloseTargetOnFinish, let configuration, let target {
             ChromeBrowserProfile.shared.closeTarget(id: target.id, configuration: configuration)
         }
         if let backgroundUseConfiguration {
@@ -427,6 +454,7 @@ final class ChromeCDPScraper {
 
         client = nil
         target = nil
+        shouldCloseTargetOnFinish = false
         configuration = nil
         backgroundUseConfiguration = nil
         timeout?.cancel()
@@ -943,8 +971,15 @@ final class ChromeCDPScraper {
         let teardown: () -> Void = {
             DispatchQueue.main.async {
                 captured.client?.close()
-                if let configuration = captured.configuration, let target = captured.target {
+                if captured.shouldCloseTargetOnFinish,
+                   let configuration = captured.configuration,
+                   let target = captured.target {
                     ChromeBrowserProfile.shared.closeTarget(id: target.id, configuration: configuration)
+                } else if let target = captured.target {
+                    ActivityLogger.log("scrape", "left reused scrape target open", metadata: [
+                        "tracker": captured.tracker.id.uuidString,
+                        "target": target.id
+                    ])
                 }
                 // Diagnostic: tab count AFTER our explicit close. Logged
                 // before endBackgroundUse so the count reflects the state
@@ -971,9 +1006,13 @@ final class ChromeCDPScraper {
                                 // Page.close above and excluded from the pin
                                 // set (else we'd pin a dead ID, harmless but
                                 // misleading in logs).
-                                let pinnedIDs = ChromeCDPScraper.activeScrapeTargetIDs(
+                                var pinnedIDs = ChromeCDPScraper.activeScrapeTargetIDs(
                                     excluding: captured.scrapeID
                                 )
+                                if !captured.shouldCloseTargetOnFinish,
+                                   let targetID = captured.target?.id {
+                                    pinnedIDs.insert(targetID)
+                                }
                                 ActivityLogger.log("scrape", "tab count over threshold, sweeping orphan tabs", metadata: [
                                     "port": "\(configuration.cdpPort)",
                                     "tabCount": "\(count)",
@@ -1000,7 +1039,7 @@ final class ChromeCDPScraper {
             }
         }
 
-        if let client = client, target != nil {
+        if shouldCloseTargetOnFinish, let client = client, target != nil {
             client.closePageTarget { closeResult in
                 switch closeResult {
                 case .success:
