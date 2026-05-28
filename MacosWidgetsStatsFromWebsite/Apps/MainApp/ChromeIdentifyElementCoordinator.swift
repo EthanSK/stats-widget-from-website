@@ -399,6 +399,7 @@ final class ChromeIdentifyElementCoordinator {
     private var overlayGeneration = 0
     private var overlayRecoveryAttempts = 0
     private let maxOverlayRecoveryAttempts = 8
+    private var activeScrapeDrainStartedAt: Date?
     /// Tracks whether the tab in use was created by THIS identify flow
     /// (vs. reused from an existing CDP target). Set in handleTarget /
     /// handleExistingTargetLookup so cleanupAndClose can REST-close the
@@ -435,7 +436,6 @@ final class ChromeIdentifyElementCoordinator {
     }
 
     func start(url: URL, preferredTargetID: String? = nil) {
-        armTimeout()
         // v0.21.48 — engage the identify-in-progress lock BEFORE we kick
         // off the foreground launch. This blocks background scrapers from
         // joining the in-flight pending-launch slot and from race-creating
@@ -446,6 +446,72 @@ final class ChromeIdentifyElementCoordinator {
         let lockPort = ChromeBrowserProfile.shared.configuration(profileName: Tracker.defaultBrowserProfile).cdpPort
         self.identifyLockedPort = lockPort
         ChromeBrowserProfile.shared.beginIdentifyInProgress(port: lockPort)
+
+        // v0.21.56 — the lock above stops *new* scrape kickoffs from racing
+        // into the headed Identify Chromium, but it cannot retroactively
+        // stop a scrape that was already active on the same CDP port. If we
+        // immediately tear down Chromium while `activeScrapers` is non-empty,
+        // that scrape records a stale failure even though the page is fine.
+        // Wait briefly for already-active scrapes to drain, then proceed with
+        // the same clean foreground launch path.
+        waitForActiveScrapesToDrainThenLaunch(
+            url: url,
+            preferredTargetID: preferredTargetID,
+            deadline: Date().addingTimeInterval(30)
+        )
+    }
+
+    private func waitForActiveScrapesToDrainThenLaunch(
+        url: URL,
+        preferredTargetID: String?,
+        deadline: Date
+    ) {
+        guard !didComplete else { return }
+
+        let activeScrapeCount = ChromeCDPScraper.currentActiveScrapeCount
+        if activeScrapeCount > 0, activeScrapeDrainStartedAt == nil {
+            activeScrapeDrainStartedAt = Date()
+            ActivityLogger.log("identify", "waiting for active scrapes before identify launch", metadata: [
+                "activeScrapeCount": "\(activeScrapeCount)",
+                "maxWaitSec": "30",
+                "port": "\(identifyLockedPort ?? 0)"
+            ])
+            onNotice("Waiting for the current scrape to finish before opening Chromium…")
+        }
+
+        if activeScrapeCount == 0 {
+            if let startedAt = activeScrapeDrainStartedAt {
+                ActivityLogger.log("identify", "active scrapes drained; continuing identify launch", metadata: [
+                    "elapsedMs": "\(Int(Date().timeIntervalSince(startedAt) * 1000))",
+                    "port": "\(identifyLockedPort ?? 0)"
+                ])
+            }
+            launchIdentifyBrowser(url: url, preferredTargetID: preferredTargetID)
+            return
+        }
+
+        guard Date() < deadline else {
+            ActivityLogger.log("identify", "active scrapes still running; proceeding with identify launch", metadata: [
+                "activeScrapeCount": "\(activeScrapeCount)",
+                "port": "\(identifyLockedPort ?? 0)"
+            ])
+            launchIdentifyBrowser(url: url, preferredTargetID: preferredTargetID)
+            return
+        }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
+            self?.waitForActiveScrapesToDrainThenLaunch(
+                url: url,
+                preferredTargetID: preferredTargetID,
+                deadline: deadline
+            )
+        }
+    }
+
+    private func launchIdentifyBrowser(url: URL, preferredTargetID: String?) {
+        guard !didComplete else { return }
+
+        armTimeout()
 
         // v0.21.48 — pass the target URL through as `initialURL` so
         // Chromium boots with the page as its FIRST/active tab. The
@@ -1000,8 +1066,16 @@ final class ChromeIdentifyElementCoordinator {
             DispatchQueue.main.async {
                 switch result {
                 case .success(let data):
+                    ActivityLogger.log("identify", "preview screenshot captured", metadata: [
+                        "target": self?.currentTarget?.id ?? "",
+                        "bytes": "\(data.count)"
+                    ])
                     self?.finishWithPreview(ElementCapturePreview(pick: pick, snapshot: NSImage(data: data)))
-                case .failure:
+                case .failure(let error):
+                    ActivityLogger.log("identify", "preview screenshot unavailable; continuing without snapshot", metadata: [
+                        "target": self?.currentTarget?.id ?? "",
+                        "error": error.localizedDescription
+                    ])
                     self?.finishWithPreview(ElementCapturePreview(pick: pick, snapshot: nil))
                 }
             }

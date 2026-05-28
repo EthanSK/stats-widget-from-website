@@ -149,8 +149,33 @@ final class ChromeCDPClient {
 
     func captureScreenshot(
         clip: [String: Any]? = nil,
+        timeout: TimeInterval = 5,
         completion: @escaping (Result<Data, Error>) -> Void
     ) {
+        let lock = NSLock()
+        var didFinish = false
+
+        func finishOnce(_ result: Result<Data, Error>) {
+            let shouldFinish: Bool
+            lock.lock()
+            if didFinish {
+                shouldFinish = false
+            } else {
+                didFinish = true
+                shouldFinish = true
+            }
+            lock.unlock()
+
+            guard shouldFinish else { return }
+            completion(result)
+        }
+
+        if timeout > 0 {
+            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + timeout) {
+                finishOnce(.failure(ChromeCDPClientError.protocolError("Page.captureScreenshot timed out after \(Int(timeout))s")))
+            }
+        }
+
         var params: [String: Any] = [
             "format": "png",
             "fromSurface": true,
@@ -166,12 +191,12 @@ final class ChromeCDPClient {
                 guard let outer = response["result"] as? [String: Any],
                       let base64 = outer["data"] as? String,
                       let data = Data(base64Encoded: base64) else {
-                    completion(.failure(ChromeCDPClientError.invalidMessage))
+                    finishOnce(.failure(ChromeCDPClientError.invalidMessage))
                     return
                 }
-                completion(.success(data))
+                finishOnce(.success(data))
             case .failure(let error):
-                completion(.failure(error))
+                finishOnce(.failure(error))
             }
         }
     }
