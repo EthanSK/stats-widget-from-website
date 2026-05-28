@@ -1081,6 +1081,14 @@ private enum MCPToolDispatcher {
         guard let tracker = configuration.trackers.first(where: { $0.id == id }) else {
             throw MCPError.notFound("Tracker \(id.uuidString) was not found.")
         }
+        guard tracker.isScrapeReady else {
+            ActivityLogger.log("mcp", "trigger_scrape skipped incomplete tracker", metadata: [
+                "reason": "selector-empty",
+                "trackerID": tracker.id.uuidString,
+                "trackerName": tracker.name
+            ])
+            throw MCPError.validation("Tracker selector is empty. Finish Identify Element before triggering a scrape.")
+        }
 
         let result = blockingScrape(tracker)
         let reading: TrackerReading

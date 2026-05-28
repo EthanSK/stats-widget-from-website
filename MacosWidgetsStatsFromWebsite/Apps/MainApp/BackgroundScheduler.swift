@@ -68,9 +68,10 @@ final class BackgroundScheduler: ObservableObject {
 
     func sync() {
         let trackers = store.trackers
-        let trackerIDs = Set(trackers.map(\.id))
+        let scrapeReadyTrackers = trackers.filter(\.isScrapeReady)
+        let scrapeReadyTrackerIDs = Set(scrapeReadyTrackers.map(\.id))
 
-        for removedID in activeTrackerIDs.subtracting(trackerIDs) {
+        for removedID in Set(schedulers.keys).subtracting(scrapeReadyTrackerIDs) {
             schedulers[removedID]?.invalidate()
             schedulers[removedID] = nil
         }
@@ -82,13 +83,21 @@ final class BackgroundScheduler: ObservableObject {
         // pinned shows a placeholder for the whole first interval. We
         // trigger a one-shot scrape immediately so AppGroupStore gets a
         // reading + the widget lights up within seconds.
-        let newlyAddedIDs = trackerIDs.subtracting(activeTrackerIDs)
+        let newlyAddedIDs = scrapeReadyTrackerIDs.subtracting(activeTrackerIDs)
 
-        for tracker in trackers {
+        for tracker in scrapeReadyTrackers {
             schedule(tracker)
         }
 
-        activeTrackerIDs = trackerIDs
+        for tracker in trackers where !tracker.isScrapeReady {
+            ActivityLogger.log("scheduler", "skipped incomplete tracker", metadata: [
+                "reason": "selector-empty",
+                "trackerID": tracker.id.uuidString,
+                "trackerName": tracker.name
+            ])
+        }
+
+        activeTrackerIDs = scrapeReadyTrackerIDs
 
         for newID in newlyAddedIDs {
             triggerScrapeNow(trackerID: newID)
@@ -105,17 +114,22 @@ final class BackgroundScheduler: ObservableObject {
         let now = Date()
         let candidates: [Tracker]
         if force {
-            candidates = configuration.trackers
+            candidates = configuration.trackers.filter(\.isScrapeReady)
         } else {
             candidates = configuration.trackers.filter { tracker in
+                guard tracker.isScrapeReady else {
+                    return false
+                }
                 let reading = readings[tracker.id.uuidString]
                 return ScrapeDuePolicy.isDue(tracker: tracker, reading: reading, now: now)
             }
         }
+        let skippedIncompleteCount = configuration.trackers.count - configuration.trackers.filter(\.isScrapeReady).count
         ActivityLogger.log("scheduler", "scrapeAllDueTrackers", metadata: [
             "force": "\(force)",
             "candidates": "\(candidates.count)",
-            "configured": "\(configuration.trackers.count)"
+            "configured": "\(configuration.trackers.count)",
+            "skippedIncomplete": "\(skippedIncompleteCount)"
         ])
         for tracker in candidates {
             triggerScrapeNow(trackerID: tracker.id)
@@ -139,6 +153,14 @@ final class BackgroundScheduler: ObservableObject {
 
     func triggerScrapeNow(trackerID: UUID) {
         guard let tracker = store.trackers.first(where: { $0.id == trackerID }) else {
+            return
+        }
+        guard tracker.isScrapeReady else {
+            ActivityLogger.log("scheduler", "skipped immediate scrape for incomplete tracker", metadata: [
+                "reason": "selector-empty",
+                "trackerID": tracker.id.uuidString,
+                "trackerName": tracker.name
+            ])
             return
         }
 
@@ -167,6 +189,17 @@ final class BackgroundScheduler: ObservableObject {
     }
 
     private func schedule(_ tracker: Tracker) {
+        guard tracker.isScrapeReady else {
+            schedulers[tracker.id]?.invalidate()
+            schedulers[tracker.id] = nil
+            ActivityLogger.log("scheduler", "skipped scheduling incomplete tracker", metadata: [
+                "reason": "selector-empty",
+                "trackerID": tracker.id.uuidString,
+                "trackerName": tracker.name
+            ])
+            return
+        }
+
         let identifier = "com.ethansk.macos-widgets-stats-from-website.scrape.\(tracker.id.uuidString)"
         let scheduler = schedulers[tracker.id] ?? NSBackgroundActivityScheduler(identifier: identifier)
         scheduler.invalidate()
@@ -206,6 +239,15 @@ final class BackgroundScheduler: ObservableObject {
                 completion(.finished)
                 return
             }
+            guard currentTracker.isScrapeReady else {
+                ActivityLogger.log("scheduler", "skipped scheduled scrape for incomplete tracker", metadata: [
+                    "reason": "selector-empty",
+                    "trackerID": currentTracker.id.uuidString,
+                    "trackerName": currentTracker.name
+                ])
+                completion(.finished)
+                return
+            }
 
             scrape(currentTracker) {
                 completion(.finished)
@@ -214,6 +256,16 @@ final class BackgroundScheduler: ObservableObject {
     }
 
     private func scrape(_ tracker: Tracker, completion: (() -> Void)? = nil) {
+        guard tracker.isScrapeReady else {
+            ActivityLogger.log("scheduler", "skipped scrape for incomplete tracker", metadata: [
+                "reason": "selector-empty",
+                "trackerID": tracker.id.uuidString,
+                "trackerName": tracker.name
+            ])
+            completion?()
+            return
+        }
+
         ChromeCDPScraper.scrape(tracker: tracker) { [weak self] result in
             self?.record(result: result, for: tracker)
             completion?()

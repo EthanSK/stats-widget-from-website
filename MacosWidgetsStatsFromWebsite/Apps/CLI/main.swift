@@ -73,18 +73,23 @@ private enum ScrapeAllCommand {
         let candidates: [Tracker]
         if dueOnly {
             candidates = configuration.trackers.filter { tracker in
+                guard tracker.isScrapeReady else {
+                    return false
+                }
                 let reading = readings[tracker.id.uuidString]
                 return ScrapeDuePolicy.isDue(tracker: tracker, reading: reading, now: now)
             }
         } else {
-            candidates = configuration.trackers
+            candidates = configuration.trackers.filter(\.isScrapeReady)
         }
+        let skippedIncompleteCount = configuration.trackers.count - configuration.trackers.filter(\.isScrapeReady).count
 
         guard !candidates.isEmpty else {
             print("scrape-all: nothing due (\(configuration.trackers.count) trackers configured)")
             ActivityLogger.log("cli", "scrape-all skipped: no due trackers", metadata: [
                 "configured": "\(configuration.trackers.count)",
-                "due_only": "\(dueOnly)"
+                "due_only": "\(dueOnly)",
+                "skippedIncomplete": "\(skippedIncompleteCount)"
             ])
             exit(0)
         }
@@ -92,7 +97,8 @@ private enum ScrapeAllCommand {
         ActivityLogger.log("cli", "scrape-all starting", metadata: [
             "candidates": "\(candidates.count)",
             "configured": "\(configuration.trackers.count)",
-            "due_only": "\(dueOnly)"
+            "due_only": "\(dueOnly)",
+            "skippedIncomplete": "\(skippedIncompleteCount)"
         ])
 
         var pending = candidates.count

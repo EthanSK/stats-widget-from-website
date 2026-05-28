@@ -6,6 +6,7 @@
 //
 
 import XCTest
+import JavaScriptCore
 
 final class IdentifyElementRegressionTests: XCTestCase {
     func testTrackerURLValidatorRejectsRepeatedPastedSchemes() {
@@ -16,6 +17,22 @@ final class IdentifyElementRegressionTests: XCTestCase {
         let url = TrackerURLValidator.httpOrHTTPSURL(from: "https://example.com/login?next=https://example.com/dashboard")
         XCTAssertEqual(url?.host, "example.com")
         XCTAssertEqual(url?.query, "next=https://example.com/dashboard")
+    }
+
+    func testTrackerScrapeReadinessRequiresNonBlankSelector() {
+        XCTAssertFalse(Tracker(name: "pending", url: "https://example.com", selector: "").isScrapeReady)
+        XCTAssertFalse(Tracker(name: "pending", url: "https://example.com", selector: " \n\t ").isScrapeReady)
+        XCTAssertTrue(Tracker(name: "ready", url: "https://example.com", selector: "h1").isScrapeReady)
+    }
+
+    func testIdentifyPollTreatsMissingOverlayDOMAsInactive() throws {
+        XCTAssertFalse(try pollActive(cleanupPresent: true, bannerPresent: false, outlinePresent: true))
+        XCTAssertFalse(try pollActive(cleanupPresent: true, bannerPresent: true, outlinePresent: false))
+    }
+
+    func testIdentifyPollRequiresCleanupHookAndOverlayMarkers() throws {
+        XCTAssertTrue(try pollActive(cleanupPresent: true, bannerPresent: true, outlinePresent: true))
+        XCTAssertFalse(try pollActive(cleanupPresent: false, bannerPresent: true, outlinePresent: true))
     }
 
     func testStrictIdentifyTargetMatchRejectsUnrelatedHTTPPage() throws {
@@ -60,5 +77,35 @@ final class IdentifyElementRegressionTests: XCTestCase {
             title: "",
             webSocketDebuggerURL: try XCTUnwrap(URL(string: "ws://127.0.0.1/devtools/page/\(id)"))
         )
+    }
+
+    private func pollActive(
+        cleanupPresent: Bool,
+        bannerPresent: Bool,
+        outlinePresent: Bool
+    ) throws -> Bool {
+        let context = try XCTUnwrap(JSContext())
+        context.evaluateScript("""
+        var window = {
+          __statsWidgetPicked: null,
+          __statsWidgetInspectError: null,
+          __statsWidgetInspectCanceled: false,
+          __statsWidgetInspectCleanup: \(cleanupPresent ? "function() {}" : "null")
+        };
+        var document = {
+          querySelector: function(selector) {
+            if (selector === '[data-stats-widget-inspect-banner]') {
+              return \(bannerPresent ? "{}" : "null");
+            }
+            if (selector === '[data-stats-widget-inspect-outline]') {
+              return \(outlinePresent ? "{}" : "null");
+            }
+            return null;
+          }
+        };
+        """)
+        let value = try XCTUnwrap(context.evaluateScript(IdentifyOverlayPollJS.pollScript))
+        let state = try XCTUnwrap(value.toDictionary() as? [String: Any])
+        return try XCTUnwrap(state["active"] as? Bool)
     }
 }

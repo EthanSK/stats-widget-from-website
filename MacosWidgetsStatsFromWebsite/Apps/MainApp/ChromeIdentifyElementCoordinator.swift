@@ -904,7 +904,7 @@ final class ChromeIdentifyElementCoordinator {
             return
         }
 
-        client.evaluate(Self.pollScript) { [weak self] result in
+        client.evaluate(IdentifyOverlayPollJS.pollScript) { [weak self] result in
             DispatchQueue.main.async {
                 self?.handlePoll(result, deadline: deadline, generation: generation)
             }
@@ -1286,15 +1286,6 @@ final class ChromeIdentifyElementCoordinator {
         title: String(document.title || '')
       };
     })()
-    """
-
-    private static let pollScript = """
-    (() => ({
-      picked: window.__statsWidgetPicked || null,
-      error: window.__statsWidgetInspectError || null,
-      canceled: !!window.__statsWidgetInspectCanceled,
-      active: !!window.__statsWidgetInspectCleanup
-    }))()
     """
 
     private static func snapshotRectScript(for selector: String) -> String {

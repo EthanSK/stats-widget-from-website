@@ -266,6 +266,12 @@ struct Tracker: Codable, Identifiable {
         }
         return refreshIntervalSec
     }
+
+    /// Pending Identify-created trackers are persisted before the user picks
+    /// an element, so they must not enter scheduled/on-demand scraping yet.
+    var isScrapeReady: Bool {
+        !selector.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
 }
 
 /// One secondary element on a tracker (v0.21.9+). The primary element's
