@@ -179,7 +179,19 @@ struct PreferencesWindow: View {
         }
 
         selection = .trackers
-        mcpIdentifyPresentation = MCPIdentifyPresentation(trackerID: trackerID, url: url, renderMode: renderMode)
+        let presentation = MCPIdentifyPresentation(trackerID: trackerID, url: url, renderMode: renderMode)
+        guard mcpIdentifyPresentation != nil else {
+            mcpIdentifyPresentation = presentation
+            return
+        }
+
+        // Esc cancels the picker inside Chromium but can leave the SwiftUI
+        // sheet alive. Force a fresh sheet instance so a repeated MCP
+        // identify request re-arms instead of reusing a canceled controller.
+        mcpIdentifyPresentation = nil
+        DispatchQueue.main.async {
+            mcpIdentifyPresentation = presentation
+        }
     }
 
     private func completeMCPIdentifyRequest(_ presentation: MCPIdentifyPresentation, pick: ElementPick) {

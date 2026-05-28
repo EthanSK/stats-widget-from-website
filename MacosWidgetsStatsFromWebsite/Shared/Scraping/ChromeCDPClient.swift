@@ -117,6 +117,71 @@ final class ChromeCDPClient {
         }
     }
 
+    /// Move the Chromium top-level window that owns `targetID`.
+    ///
+    /// Chromium on macOS can ignore launch-time `--window-position` /
+    /// `--window-size` when the profile restores prior window state. The
+    /// Browser domain applies bounds after the target exists, which is the
+    /// reliable point for foreground Identify placement.
+    func setWindowBoundsForTarget(
+        targetID: String,
+        bounds: [String: Any],
+        timeout: TimeInterval = 2,
+        completion: @escaping (Result<Void, Error>) -> Void
+    ) {
+        let lock = NSLock()
+        var didFinish = false
+
+        func finishOnce(_ result: Result<Void, Error>) {
+            let shouldFinish: Bool
+            lock.lock()
+            if didFinish {
+                shouldFinish = false
+            } else {
+                didFinish = true
+                shouldFinish = true
+            }
+            lock.unlock()
+
+            guard shouldFinish else { return }
+            completion(result)
+        }
+
+        if timeout > 0 {
+            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + timeout) {
+                finishOnce(.failure(ChromeCDPClientError.protocolError("Browser.setWindowBounds timed out after \(Int(timeout))s")))
+            }
+        }
+
+        send(method: "Browser.getWindowForTarget", params: ["targetId": targetID]) { [weak self] result in
+            switch result {
+            case .success(let response):
+                guard let outer = response["result"] as? [String: Any],
+                      let windowID = outer["windowId"] as? Int else {
+                    finishOnce(.failure(ChromeCDPClientError.invalidMessage))
+                    return
+                }
+
+                self?.send(
+                    method: "Browser.setWindowBounds",
+                    params: [
+                        "windowId": windowID,
+                        "bounds": bounds
+                    ]
+                ) { result in
+                    switch result {
+                    case .success:
+                        finishOnce(.success(()))
+                    case .failure(let error):
+                        finishOnce(.failure(error))
+                    }
+                }
+            case .failure(let error):
+                finishOnce(.failure(error))
+            }
+        }
+    }
+
     func evaluate(
         _ expression: String,
         returnByValue: Bool = true,

@@ -962,23 +962,16 @@ final class ChromeBrowserProfile {
         configuration: ChromeBrowserLaunchConfiguration,
         completion: @escaping () -> Void
     ) {
-        // Also clear foreground tracker state so the next launch doesn't
-        // see this PID as still-tracked and skip its teardown.
+        // Reuse the shared teardown path, but keep the foreground Process
+        // tracked until that path can use it as a bounded fallback. Dropping
+        // it here made Browser.close timeouts wait on CDP discovery with no
+        // PID to terminate.
         queue.async { [weak self] in
             guard let self else {
                 DispatchQueue.global(qos: .userInitiated).async { completion() }
                 return
             }
-            let trackedProcess = self.foregroundLaunchedProcesses.removeValue(forKey: configuration.cdpPort)
-            let trackedApplication = self.foregroundLaunchedApplications.removeValue(forKey: configuration.cdpPort)
             self.userVisiblePorts.remove(configuration.cdpPort)
-
-            // Do not SIGTERM the foreground process here. The shared teardown
-            // path now asks Chromium to close over CDP first so the profile is
-            // marked as a clean exit and the next launch does not restore the
-            // previous Identify tabs.
-            _ = trackedProcess
-            _ = trackedApplication
             self.terminateHeadlessInstance(configuration: configuration, completion: completion)
         }
     }
@@ -1000,8 +993,8 @@ final class ChromeBrowserProfile {
                 return
             }
 
-            let preTrackedProcessCount = self.backgroundLaunchedProcesses.count
-            let preTrackedApplicationCount = self.backgroundLaunchedApplications.count
+            let preTrackedProcessCount = self.backgroundLaunchedProcesses.count + self.foregroundLaunchedProcesses.count
+            let preTrackedApplicationCount = self.backgroundLaunchedApplications.count + self.foregroundLaunchedApplications.count
 
             ActivityLogger.log("browser", "terminateHeadlessInstance started", metadata: [
                 "profile": configuration.profileName,
@@ -1016,8 +1009,11 @@ final class ChromeBrowserProfile {
             // Remove in-process tracking before shutdown so another caller
             // cannot decide this instance is reusable while it is closing.
             let trackedProcess = self.backgroundLaunchedProcesses.removeValue(forKey: port)
+                ?? self.foregroundLaunchedProcesses.removeValue(forKey: port)
             let trackedApplication = self.backgroundLaunchedApplications.removeValue(forKey: port)
+                ?? self.foregroundLaunchedApplications.removeValue(forKey: port)
             self.backgroundUseCounts[port] = nil
+            self.userVisiblePorts.remove(port)
             let trackedProcessPID = (trackedProcess?.isRunning == true) ? trackedProcess?.processIdentifier : nil
 
             // For untracked-but-running headless (started in a previous app session),
@@ -1042,7 +1038,9 @@ final class ChromeBrowserProfile {
                             var fallbackKillPID: pid_t? = nil
                             var usedTrackedFallback = false
 
-                            if self.isCDPReachable(configuration: configuration) || !cdpReachableAtStart {
+                            let trackedStillRunning = trackedProcess?.isRunning == true
+                                || trackedApplication?.isTerminated == false
+                            if self.isCDPReachable(configuration: configuration) || trackedStillRunning || !cdpReachableAtStart {
                                 if let trackedProcess, trackedProcess.isRunning {
                                     usedTrackedFallback = true
                                     trackedProcess.terminate()
@@ -1646,10 +1644,24 @@ final class ChromeBrowserProfile {
                 "--window-size=\(width),\(height)"
             ]
         }
+
+        var cdpBounds: [String: Any] {
+            [
+                "left": x,
+                "top": y,
+                "width": width,
+                "height": height,
+                "windowState": "normal"
+            ]
+        }
     }
 
     private func foregroundWindowPlacementArguments() -> [String] {
         Self.foregroundWindowPlacement()?.arguments ?? []
+    }
+
+    func foregroundWindowPlacementBoundsForCDP() -> [String: Any]? {
+        Self.foregroundWindowPlacement()?.cdpBounds
     }
 
     /// Places user-visible Chromium on the same physical display as the Stats
@@ -1683,17 +1695,29 @@ final class ChromeBrowserProfile {
     }
 
     private static func activeDisplayBounds() -> [CGRect] {
-        var displayCount: UInt32 = 0
-        guard CGGetActiveDisplayList(0, nil, &displayCount) == .success, displayCount > 0 else {
-            return []
+        let screenBounds = onMainThread {
+            NSScreen.screens.map(\.frame)
+        }
+        if !screenBounds.isEmpty {
+            return screenBounds
         }
 
-        var displayIDs = [CGDirectDisplayID](repeating: 0, count: Int(displayCount))
-        guard CGGetActiveDisplayList(displayCount, &displayIDs, &displayCount) == .success else {
+        var displayIDs = [CGDirectDisplayID](repeating: 0, count: 16)
+        var displayCount: UInt32 = 0
+        guard CGGetActiveDisplayList(UInt32(displayIDs.count), &displayIDs, &displayCount) == .success,
+              displayCount > 0 else {
             return []
         }
 
         return displayIDs.prefix(Int(displayCount)).map { CGDisplayBounds($0) }
+    }
+
+    private static func onMainThread<T>(_ work: @escaping () -> T) -> T {
+        if Thread.isMainThread {
+            return work()
+        }
+
+        return DispatchQueue.main.sync(execute: work)
     }
 
     private static func referenceWindowBoundsForCurrentProcess() -> CGRect? {

@@ -729,8 +729,7 @@ final class ChromeIdentifyElementCoordinator {
                     // through the same socket the overlay JS will land on,
                     // which Chromium-150 handles synchronously and is what
                     // actually moves the target tab forward in headed mode.
-                    self?.bringTargetToFront()
-                    self?.waitForDocumentReady(deadline: Date().addingTimeInterval(15))
+                    self?.positionIdentifyWindowThenContinue()
                 }
             }
         case .failure(let error):
@@ -745,6 +744,43 @@ final class ChromeIdentifyElementCoordinator {
     private func bringTargetToFront() {
         guard !didComplete, let client else { return }
         client.sendBringToFront()
+    }
+
+    private func positionIdentifyWindowThenContinue() {
+        guard !didComplete, let client, let targetID = currentTarget?.id else {
+            bringTargetToFront()
+            waitForDocumentReady(deadline: Date().addingTimeInterval(15))
+            return
+        }
+
+        guard let bounds = ChromeBrowserProfile.shared.foregroundWindowPlacementBoundsForCDP() else {
+            ActivityLogger.log("identify", "foreground window CDP placement unavailable", metadata: [
+                "target": targetID
+            ])
+            bringTargetToFront()
+            waitForDocumentReady(deadline: Date().addingTimeInterval(15))
+            return
+        }
+
+        client.setWindowBoundsForTarget(targetID: targetID, bounds: bounds) { [weak self] result in
+            DispatchQueue.main.async {
+                switch result {
+                case .success:
+                    ActivityLogger.log("identify", "foreground window positioned via CDP", metadata: [
+                        "target": targetID,
+                        "bounds": "\(bounds)"
+                    ])
+                case .failure(let error):
+                    ActivityLogger.log("identify", "foreground window CDP placement failed", metadata: [
+                        "target": targetID,
+                        "error": error.localizedDescription
+                    ])
+                }
+
+                self?.bringTargetToFront()
+                self?.waitForDocumentReady(deadline: Date().addingTimeInterval(15))
+            }
+        }
     }
 
     private func waitForDocumentReady(deadline: Date) {
