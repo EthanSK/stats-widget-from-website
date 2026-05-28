@@ -76,7 +76,7 @@ struct PreferencesWindow: View {
             openMCPIdentifyRequest(notification)
         }
         .sheet(item: $mcpIdentifyPresentation) { presentation in
-            ChromeElementCaptureView(url: presentation.url, renderMode: presentation.renderMode) { pick in
+            ChromeElementCaptureView(url: presentation.url, renderMode: presentation.renderMode, contextLabel: presentation.contextLabel) { pick in
                 completeMCPIdentifyRequest(presentation, pick: pick)
             }
         }
@@ -177,9 +177,18 @@ struct PreferencesWindow: View {
         if !store.trackers.contains(where: { $0.id == trackerID }) {
             store.addTracker(Tracker(id: trackerID, name: "Pending \(url.host ?? "Tracker")", url: url.absoluteString, renderMode: renderMode, selector: ""))
         }
+        let contextLabel = store.trackers
+            .first(where: { $0.id == trackerID })?
+            .name
+            .trimmingCharacters(in: .whitespacesAndNewlines)
 
         selection = .trackers
-        presentMCPIdentifySheet(MCPIdentifyPresentation(trackerID: trackerID, url: url, renderMode: renderMode))
+        presentMCPIdentifySheet(MCPIdentifyPresentation(
+            trackerID: trackerID,
+            url: url,
+            renderMode: renderMode,
+            contextLabel: contextLabel?.isEmpty == false ? contextLabel : nil
+        ))
     }
 
     private func presentMCPIdentifySheet(_ presentation: MCPIdentifyPresentation) {
@@ -238,6 +247,7 @@ private struct MCPIdentifyPresentation: Identifiable {
     let trackerID: UUID
     let url: URL
     let renderMode: RenderMode
+    let contextLabel: String?
 }
 
 enum PreferencesSection: String, CaseIterable, Hashable, Identifiable {

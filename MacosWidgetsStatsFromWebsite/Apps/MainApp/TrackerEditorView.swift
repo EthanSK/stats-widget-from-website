@@ -264,7 +264,7 @@ struct TrackerEditorView: View {
                 case .secondary: return .text
                 }
             }()
-            ChromeElementCaptureView(url: presentation.url, renderMode: captureMode) { pick in
+            ChromeElementCaptureView(url: presentation.url, renderMode: captureMode, contextLabel: presentation.contextLabel) { pick in
                 applyCapturedElement(pick)
             }
         }
@@ -597,7 +597,7 @@ struct TrackerEditorView: View {
         }
 
         identifyTarget = .primary
-        browserPresentation = IdentifyBrowserPresentation(url: url)
+        browserPresentation = IdentifyBrowserPresentation(url: url, contextLabel: identifyContextLabel(for: .primary))
     }
 
     private func openIdentifyBrowserForSecondary(elementID: UUID) {
@@ -605,8 +605,28 @@ struct TrackerEditorView: View {
             return
         }
 
-        identifyTarget = .secondary(elementID: elementID)
-        browserPresentation = IdentifyBrowserPresentation(url: url)
+        let target = IdentifyTarget.secondary(elementID: elementID)
+        identifyTarget = target
+        browserPresentation = IdentifyBrowserPresentation(url: url, contextLabel: identifyContextLabel(for: target))
+    }
+
+    private func identifyContextLabel(for target: IdentifyTarget) -> String? {
+        let trackerName = trimmedName.nilIfEmpty ?? "Unnamed Tracker"
+
+        switch target {
+        case .primary:
+            return trackerName
+        case .secondary(let elementID):
+            let secondaryName = draft.secondaryElements
+                .first(where: { $0.id == elementID })?
+                .name
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .nilIfEmpty
+            guard let secondaryName else {
+                return trackerName
+            }
+            return "\(trackerName) - \(secondaryName)"
+        }
     }
 
     private func addSecondaryElement() {
@@ -902,6 +922,7 @@ struct TrackerEditorView: View {
 private struct IdentifyBrowserPresentation: Identifiable {
     let id = UUID()
     let url: URL
+    let contextLabel: String?
 }
 
 private extension String {

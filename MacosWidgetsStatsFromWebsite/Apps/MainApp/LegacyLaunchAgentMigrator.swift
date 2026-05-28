@@ -26,9 +26,11 @@
 //       c. We don't delete user-touchable state — if the user later
 //          wants to revert to the LaunchAgent model they can rename
 //          it back.
-//    4. Persist a "migrated" sentinel in UserDefaults so we never
-//       re-do the migration on subsequent launches even if the plist
-//       file gets re-created somehow.
+//    4. Persist a "migrated" sentinel in UserDefaults so clean launches
+//       stay quiet. We still check for the plist every launch: debug builds,
+//       restores, or manual testing can recreate the legacy file after the
+//       sentinel was written, and that stale LaunchAgent must be disabled
+//       again rather than firing a second scraper forever.
 //
 
 import Foundation
@@ -43,24 +45,25 @@ enum LegacyLaunchAgentMigrator {
     /// did real work, false = nothing to do).
     @discardableResult
     static func migrateIfNeeded() -> Bool {
-        if UserDefaults.standard.bool(forKey: migratedSentinelKey) {
-            return false
-        }
-
         let plistURL = plistDestinationURL()
         let plistExists = FileManager.default.fileExists(atPath: plistURL.path)
+        let alreadyMarkedMigrated = UserDefaults.standard.bool(forKey: migratedSentinelKey)
 
         if !plistExists {
-            // Nothing to migrate (fresh install). Mark sentinel so we
-            // don't re-check on every launch.
-            UserDefaults.standard.set(true, forKey: migratedSentinelKey)
-            ActivityLogger.log("migrator", "no legacy LaunchAgent present; marking migrated")
+            if !alreadyMarkedMigrated {
+                UserDefaults.standard.set(true, forKey: migratedSentinelKey)
+                ActivityLogger.log("migrator", "no legacy LaunchAgent present; marking migrated")
+            }
             return false
         }
 
-        ActivityLogger.log("migrator", "legacy LaunchAgent detected; tearing down", metadata: [
-            "path": plistURL.path
-        ])
+        ActivityLogger.log(
+            "migrator",
+            alreadyMarkedMigrated
+                ? "legacy LaunchAgent reappeared after migration; tearing down"
+                : "legacy LaunchAgent detected; tearing down",
+            metadata: ["path": plistURL.path]
+        )
 
         // bootout first so the running job stops cleanly. Status is
         // typically non-zero if the job isn't loaded — that's fine,
@@ -78,12 +81,17 @@ enum LegacyLaunchAgentMigrator {
         // The naive rename targets a file with a `.plist.DISABLED-...`
         // double extension — that's fine; we just want a name that
         // launchd will NOT pick up.
-        let actualDisabledURL = URL(fileURLWithPath: plistURL.path + disabledSuffix)
+        var actualDisabledURL = URL(fileURLWithPath: plistURL.path + disabledSuffix)
         do {
             // If a stale disabled file from a prior migration already
-            // exists, remove it first so the rename can succeed.
+            // exists, keep it and add a timestamp to this migration's
+            // disabled copy. The legacy file is user-touchable state, so
+            // preserve every copy rather than deleting a previous disabled
+            // plist to make room.
             if FileManager.default.fileExists(atPath: actualDisabledURL.path) {
-                try FileManager.default.removeItem(at: actualDisabledURL)
+                let timestamp = ISO8601DateFormatter().string(from: Date())
+                    .replacingOccurrences(of: ":", with: "")
+                actualDisabledURL = URL(fileURLWithPath: "\(plistURL.path)\(disabledSuffix)-\(timestamp)")
             }
             try FileManager.default.moveItem(at: plistURL, to: actualDisabledURL)
             ActivityLogger.log("migrator", "renamed legacy plist", metadata: [

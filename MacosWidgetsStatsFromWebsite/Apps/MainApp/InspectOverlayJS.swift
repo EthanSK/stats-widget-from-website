@@ -6,7 +6,10 @@
 //
 
 enum InspectOverlayJS {
-    static let inspectOverlayJS = #"""
+    static func inspectOverlayJS(contextLabel: String? = nil) -> String {
+        let bannerText = IdentifyOverlayBanner.javaScriptStringLiteral(IdentifyOverlayBanner.bannerText(contextLabel: contextLabel))
+
+        return #"""
 (() => {
   try {
     if (window.__statsWidgetInspectCleanup) {
@@ -72,7 +75,7 @@ enum InspectOverlayJS {
       'user-select:none',
       '-webkit-user-select:none'
     ].join(';');
-    banner.textContent = 'Identify Element — hover the value you want, click to capture, or press Esc to cancel.';
+    banner.textContent = \#(bannerText);
     root.appendChild(banner);
 
     let hoverElement = null;
@@ -289,4 +292,5 @@ enum InspectOverlayJS {
   }
 })();
 """#
+    }
 }

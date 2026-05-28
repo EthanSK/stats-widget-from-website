@@ -30,6 +30,8 @@ enum ChromeCDPClientError: LocalizedError {
 }
 
 final class ChromeCDPClient {
+    static let pagePreparationDomains = ["Page.enable", "Network.enable", "DOM.enable"]
+
     private let task: URLSessionWebSocketTask
     private let queue = DispatchQueue(label: "ChromeCDPClient")
     private var nextID = 1
@@ -48,8 +50,11 @@ final class ChromeCDPClient {
     func prepareOpenClawStylePage(completion: @escaping () -> Void) {
         // Match the useful OpenClaw/CDP setup domains while deliberately
         // leaving Runtime.enable OFF. Runtime.evaluate below is still allowed
-        // and is all selector extraction needs.
-        enableDomains(["Page.enable", "Network.enable", "DOM.enable", "Accessibility.enable"], completion: completion)
+        // and is all selector extraction needs. Accessibility.enable is
+        // intentionally omitted: the scraper never reads the accessibility
+        // tree, and Chromium 150 on macOS 26 has shown native AppKit recursion
+        // crashes in this area.
+        enableDomains(Self.pagePreparationDomains, completion: completion)
     }
 
     func close() {
@@ -311,8 +316,8 @@ final class ChromeCDPClient {
         }
 
         // v0.21.8 item #9: per-CDP-command timing for the page-prep sequence
-        // (Page.enable, Network.enable, DOM.enable, Accessibility.enable). The
-        // failure mode this catches: a Chromium that ACKs the page-target
+        // (Page.enable, Network.enable, DOM.enable). The failure mode this
+        // catches: a Chromium that ACKs the page-target
         // creation but then never replies to Page.enable, leaving the scrape
         // stuck in `prepareOpenClawStylePage` until the outer 30s timeout
         // fires with no other useful log signal.

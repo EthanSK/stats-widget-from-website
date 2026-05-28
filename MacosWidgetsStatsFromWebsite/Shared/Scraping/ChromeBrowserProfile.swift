@@ -2192,7 +2192,7 @@ final class ChromeBrowserProfile {
         let cdpPortString = "\(configuration.cdpPort)"
         let profileNameForLog = configuration.profileName
         let foregroundForLog = foreground
-        process.terminationHandler = { proc in
+        process.terminationHandler = { [weak self] proc in
             ActivityLogger.log("browser", "Chrome process terminated", metadata: [
                 "profile": profileNameForLog,
                 "port": cdpPortString,
@@ -2200,6 +2200,11 @@ final class ChromeBrowserProfile {
                 "exit": "\(proc.terminationStatus)",
                 "reason": "\(proc.terminationReason.rawValue)"
             ])
+            self?.clearTerminatedProcessTracking(
+                pid: proc.processIdentifier,
+                port: configuration.cdpPort,
+                foreground: foregroundForLog
+            )
         }
 
         try process.run()
@@ -2242,6 +2247,46 @@ final class ChromeBrowserProfile {
             }
         } else {
             backgroundLaunchedProcesses[configuration.cdpPort] = process
+        }
+    }
+
+    private func clearTerminatedProcessTracking(pid: pid_t, port: Int, foreground: Bool) {
+        queue.async { [weak self] in
+            guard let self else { return }
+
+            var clearedProcess = false
+            if self.backgroundLaunchedProcesses[port]?.processIdentifier == pid {
+                self.backgroundLaunchedProcesses.removeValue(forKey: port)
+                clearedProcess = true
+            }
+            if self.foregroundLaunchedProcesses[port]?.processIdentifier == pid {
+                self.foregroundLaunchedProcesses.removeValue(forKey: port)
+                clearedProcess = true
+            }
+
+            var clearedApplication = false
+            if self.backgroundLaunchedApplications[port]?.processIdentifier == pid {
+                self.backgroundLaunchedApplications.removeValue(forKey: port)
+                clearedApplication = true
+            }
+            if self.foregroundLaunchedApplications[port]?.processIdentifier == pid {
+                self.foregroundLaunchedApplications.removeValue(forKey: port)
+                clearedApplication = true
+            }
+
+            if foreground {
+                self.userVisiblePorts.remove(port)
+            }
+
+            if clearedProcess || clearedApplication || foreground {
+                ActivityLogger.log("browser", "cleared terminated Chrome tracking", metadata: [
+                    "port": "\(port)",
+                    "pid": "\(pid)",
+                    "foreground": foreground ? "true" : "false",
+                    "clearedProcess": clearedProcess ? "true" : "false",
+                    "clearedApplication": clearedApplication ? "true" : "false"
+                ])
+            }
         }
     }
 

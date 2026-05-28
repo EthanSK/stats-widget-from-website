@@ -45,7 +45,7 @@ struct FirstLaunchWizardView: View {
         .frame(width: 640)
         .frame(minHeight: 470)
         .sheet(item: $identifyBrowser) { presentation in
-            ChromeElementCaptureView(url: presentation.url, renderMode: renderMode) { pick in
+            ChromeElementCaptureView(url: presentation.url, renderMode: renderMode, contextLabel: presentation.contextLabel) { pick in
                 applyCapturedElement(pick)
             }
         }
@@ -380,7 +380,10 @@ struct FirstLaunchWizardView: View {
         }
 
         errorMessage = nil
-        identifyBrowser = BrowserPresentation(url: url)
+        identifyBrowser = BrowserPresentation(
+            url: url,
+            contextLabel: trimmedTrackerName.nilIfEmpty ?? defaultTrackerName(for: url)
+        )
     }
 
     private func applyCapturedElement(_ pick: ElementPick) {
@@ -499,6 +502,7 @@ private enum Step {
 private struct BrowserPresentation: Identifiable {
     let id = UUID()
     let url: URL
+    let contextLabel: String?
 }
 
 private extension String {

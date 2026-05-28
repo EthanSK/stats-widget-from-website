@@ -32,9 +32,10 @@ struct ChromeElementCaptureView: View {
     init(
         url: URL,
         renderMode: RenderMode,
+        contextLabel: String? = nil,
         onElementCaptured: @escaping (ElementPick) -> Void
     ) {
-        _controller = StateObject(wrappedValue: ChromeElementCaptureController(url: url, renderMode: renderMode))
+        _controller = StateObject(wrappedValue: ChromeElementCaptureController(url: url, renderMode: renderMode, contextLabel: contextLabel))
         self.onElementCaptured = onElementCaptured
     }
 
@@ -188,6 +189,7 @@ struct ChromeElementCaptureView: View {
 private final class ChromeElementCaptureController: ObservableObject {
     let url: URL
     let renderMode: RenderMode
+    let contextLabel: String?
 
     @Published var isIdentifying = false
     @Published var notice: String?
@@ -208,9 +210,10 @@ private final class ChromeElementCaptureController: ObservableObject {
     private var coordinator: ChromeIdentifyElementCoordinator?
     private var lastTargetID: String?
 
-    init(url: URL, renderMode: RenderMode) {
+    init(url: URL, renderMode: RenderMode, contextLabel: String?) {
         self.url = url
         self.renderMode = renderMode
+        self.contextLabel = contextLabel
     }
 
     func startIfNeeded() {
@@ -234,6 +237,7 @@ private final class ChromeElementCaptureController: ObservableObject {
 
         let nextCoordinator = ChromeIdentifyElementCoordinator(
             renderMode: renderMode,
+            contextLabel: contextLabel,
             onPreviewReady: { [weak self] preview in
                 self?.coordinator = nil
                 self?.isIdentifying = false
@@ -380,6 +384,7 @@ struct ElementCapturePreviewSheet: View {
 
 final class ChromeIdentifyElementCoordinator {
     private let renderMode: RenderMode
+    private let contextLabel: String?
     private let onPreviewReady: (ElementCapturePreview) -> Void
     private let onError: (String, Bool) -> Void
     private let onNotice: (String) -> Void
@@ -417,6 +422,7 @@ final class ChromeIdentifyElementCoordinator {
 
     init(
         renderMode: RenderMode,
+        contextLabel: String? = nil,
         onPreviewReady: @escaping (ElementCapturePreview) -> Void,
         onError: @escaping (String, Bool) -> Void,
         onNotice: @escaping (String) -> Void,
@@ -427,6 +433,7 @@ final class ChromeIdentifyElementCoordinator {
         onCancelled: @escaping () -> Void
     ) {
         self.renderMode = renderMode
+        self.contextLabel = contextLabel
         self.onPreviewReady = onPreviewReady
         self.onError = onError
         self.onNotice = onNotice
@@ -829,7 +836,7 @@ final class ChromeIdentifyElementCoordinator {
 
         overlayGeneration += 1
         let generation = overlayGeneration
-        client.evaluate(InspectOverlayJS.inspectOverlayJS, returnByValue: false) { [weak self] result in
+        client.evaluate(InspectOverlayJS.inspectOverlayJS(contextLabel: contextLabel), returnByValue: false) { [weak self] result in
             DispatchQueue.main.async {
                 self?.handleOverlayInjected(result, generation: generation)
             }

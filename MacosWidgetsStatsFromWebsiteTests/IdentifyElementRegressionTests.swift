@@ -70,6 +70,31 @@ final class IdentifyElementRegressionTests: XCTestCase {
         XCTAssertNil(ChromeBrowserProfile.strictMatchScore(for: staleTarget, requestedURL: requestedURL))
     }
 
+    func testInspectOverlayBannerIncludesTrackerName() {
+        XCTAssertEqual(
+            IdentifyOverlayBanner.bannerText(contextLabel: "chatgpt"),
+            "Identify Element for \"chatgpt\" — hover the value you want, click to capture, or press Esc to cancel."
+        )
+        XCTAssertEqual(
+            IdentifyOverlayBanner.bannerText(contextLabel: " \n\t "),
+            "Identify Element — hover the value you want, click to capture, or press Esc to cancel."
+        )
+    }
+
+    func testInspectOverlayBannerEscapesTrackerNameForJavaScript() throws {
+        let original = "Tracker \"Quotes\" \\ line\nnext"
+        let literal = IdentifyOverlayBanner.javaScriptStringLiteral(original)
+        let context = try XCTUnwrap(JSContext())
+        let value = try XCTUnwrap(context.evaluateScript("var label = \(literal); label;"))
+
+        XCTAssertEqual(value.toString(), original)
+    }
+
+    func testScrapePreparationDoesNotEnableAccessibilityDomain() {
+        XCTAssertEqual(ChromeCDPClient.pagePreparationDomains, ["Page.enable", "Network.enable", "DOM.enable"])
+        XCTAssertFalse(ChromeCDPClient.pagePreparationDomains.contains("Accessibility.enable"))
+    }
+
     private func pageTarget(id: String, url: String) throws -> ChromeBrowserPageTarget {
         ChromeBrowserPageTarget(
             id: id,

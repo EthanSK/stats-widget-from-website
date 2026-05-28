@@ -56,6 +56,7 @@ final class ChromeCDPScraper {
     private var client: ChromeCDPClient?
     private var timeout: DispatchWorkItem?
     private var didComplete = false
+    private var didRetryAfterBrowserDisconnect = false
 
     // v0.21.8 phase-level instrumentation (observability-only, no behavior change).
     // Tracks where the scraper is in its pipeline so the 30s timeout-trip
@@ -293,6 +294,9 @@ final class ChromeCDPScraper {
                 }
             }
         case .failure(let error):
+            if retryOnceAfterBrowserDisconnect(error, context: "openTab") {
+                return
+            }
             ActivityLogger.log("scrape", "openTab ended", metadata: [
                 "scrapeID": scrapeID.uuidString,
                 "tracker": tracker.id.uuidString,
@@ -373,6 +377,9 @@ final class ChromeCDPScraper {
                 self?.waitForSelector(deadline: deadline, lastStatus: status)
             }
         case .failure(let error):
+            if retryOnceAfterBrowserDisconnect(error, context: "selectorPoll") {
+                return
+            }
             // CDP evaluate failed — log every Nth (errors are rarer and noisier).
             if attempts == 1 || attempts % Self.selectorPollLogEveryN == 0 {
                 ActivityLogger.log("scrape", "selector poll", metadata: [
@@ -393,6 +400,61 @@ final class ChromeCDPScraper {
                 self?.waitForSelector(deadline: deadline, lastStatus: lastStatus)
             }
         }
+    }
+
+    private func retryOnceAfterBrowserDisconnect(_ error: Error, context: String) -> Bool {
+        guard !didComplete,
+              !didRetryAfterBrowserDisconnect,
+              Self.isBrowserDisconnect(error) else {
+            return false
+        }
+
+        didRetryAfterBrowserDisconnect = true
+        ActivityLogger.log("scrape", "browser disconnected; retrying scrape once", metadata: [
+            "scrapeID": scrapeID.uuidString,
+            "tracker": tracker.id.uuidString,
+            "trackerName": tracker.name,
+            "context": context,
+            "error": error.localizedDescription,
+            "elapsedMs": "\(elapsedMsSinceStart())"
+        ])
+
+        client?.close()
+        if let configuration, let target {
+            ChromeBrowserProfile.shared.closeTarget(id: target.id, configuration: configuration)
+        }
+        if let backgroundUseConfiguration {
+            ChromeBrowserProfile.shared.endBackgroundUse(configuration: backgroundUseConfiguration)
+        }
+
+        client = nil
+        target = nil
+        configuration = nil
+        backgroundUseConfiguration = nil
+        timeout?.cancel()
+        timeout = nil
+        selectorPollAttempts = 0
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
+            guard let self, !self.didComplete else { return }
+            self.start()
+        }
+        return true
+    }
+
+    private static func isBrowserDisconnect(_ error: Error) -> Bool {
+        if let cdpError = error as? ChromeCDPClientError {
+            if case .disconnected = cdpError {
+                return true
+            }
+        }
+
+        let message = error.localizedDescription.lowercased()
+        return message.contains("cdp websocket disconnected")
+            || message.contains("socket is not connected")
+            || message.contains("connection reset")
+            || message.contains("connection was lost")
+            || message.contains("could not connect to the server")
     }
 
     /// v0.21.8 item #4: emit a single structured poll entry. Called for the
