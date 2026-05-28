@@ -396,6 +396,14 @@ struct Tracker: Codable, Identifiable {
         return refreshIntervalSec
     }
 
+    /// Protected pages keep a reusable CDP target between scrapes. Opening a
+    /// fresh tab every scrape makes Cloudflare-style verification more likely
+    /// on Claude/ChatGPT; keeping one same-page tab lets challenges settle
+    /// naturally and lets sibling trackers scrape the same DOM.
+    var preservesScrapeTabBetweenRuns: Bool {
+        Tracker.isCloudflareSensitiveDomain(url: url)
+    }
+
     /// Pending Identify-created trackers are persisted before the user picks
     /// an element, so they must not enter scheduled/on-demand scraping yet.
     var isScrapeReady: Bool {

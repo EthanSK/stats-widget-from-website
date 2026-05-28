@@ -256,15 +256,17 @@ final class ChromeCDPScraper {
                 case .success(let target):
                     self.handleTarget(.success(target), shouldCloseOnFinish: false)
                 case .failure(let reuseError):
+                    let shouldCloseNewTarget = !self.tracker.preservesScrapeTabBetweenRuns
                     ActivityLogger.log("scrape", "no reusable scrape target, opening new tab", metadata: [
                         "scrapeID": self.scrapeID.uuidString,
                         "tracker": self.tracker.id.uuidString,
                         "url": url.absoluteString,
+                        "willPreserveNewTarget": shouldCloseNewTarget ? "false" : "true",
                         "reason": reuseError.localizedDescription
                     ])
                     ChromeBrowserProfile.shared.openTab(url: url, configuration: configuration) { [weak self] openResult in
                         DispatchQueue.main.async {
-                            self?.handleTarget(openResult, shouldCloseOnFinish: true)
+                            self?.handleTarget(openResult, shouldCloseOnFinish: shouldCloseNewTarget)
                         }
                     }
                 }

@@ -153,6 +153,13 @@ final class IdentifyElementRegressionTests: XCTestCase {
         XCTAssertTrue(Tracker.isCloudflareSensitiveDomain(url: tracker.url))
         XCTAssertEqual(tracker.scrapeTimeoutSec, 60)
         XCTAssertEqual(tracker.effectiveRefreshIntervalSec, 900)
+        XCTAssertTrue(tracker.preservesScrapeTabBetweenRuns)
+    }
+
+    func testOnlyProtectedDomainsPreserveScrapeTabsBetweenRuns() {
+        XCTAssertTrue(Tracker(name: "ChatGPT", url: "https://chatgpt.com/codex/cloud/settings/analytics").preservesScrapeTabBetweenRuns)
+        XCTAssertTrue(Tracker(name: "Claude", url: "https://claude.ai/settings/usage").preservesScrapeTabBetweenRuns)
+        XCTAssertFalse(Tracker(name: "Example", url: "https://example.com/dashboard").preservesScrapeTabBetweenRuns)
     }
 
     func testDuePolicyUsesEffectiveProtectedDomainCadence() {
