@@ -77,7 +77,7 @@ settings:
     # from Bundle.main.infoDictionary at runtime, so nothing else needs touching.
     # Enforced by .githooks/pre-commit (see core.hooksPath in repo config) and
     # by scripts/validate_release_metadata.py.
-    MARKETING_VERSION: "0.21.54"
+    MARKETING_VERSION: "0.21.55"
     # v0.21.43 (Ethan voice 4212, 2026-05-26) — jump-leap past historical
     # mega-numbers. Pre-v0.21.43 build-suffix releases (e.g. v0.21.41-build.90)
     # encoded CFBundleVersion as `base_build * 100000 + run_number`,
@@ -97,7 +97,7 @@ settings:
     # tag-channel only) so the mega-number space never grows again.
     # See LEARNINGS.md "sparkle:version mega-number drift" entry for
     # the full incident.
-    CURRENT_PROJECT_VERSION: "129700103"
+    CURRENT_PROJECT_VERSION: "129700104"
 
 packages:
   Sparkle:
@@ -429,12 +429,11 @@ targets:
         keychain-access-groups:
           - T34G959ZG8.com.ethansk.macos-widgets-stats-from-website
 
-  # Hook-system unit tests (v0.18.0+). Lightweight XCTest target — pulls
-  # in only the Shared/ sources it needs (Models + AppGroup + Hooks),
-  # not the MainApp's SwiftUI surface, so the tests stay fast and have
-  # no UI side effects. The test launcher replaces the production
-  # HookProcessLauncher with a fake so the suite never opens Terminal
-  # windows or shells out to claude.
+  # Hook-system + lightweight browser-selection unit tests. The target
+  # pulls in Shared/ sources only (no MainApp SwiftUI surface), so tests
+  # stay fast and have no UI side effects. The hook test launcher replaces
+  # the production HookProcessLauncher with a fake so the suite never opens
+  # Terminal windows or shells out to claude.
   MacosWidgetsStatsFromWebsiteHookTests:
     type: bundle.unit-test
     platform: macOS
@@ -445,7 +444,6 @@ targets:
       - path: MacosWidgetsStatsFromWebsite/Shared
         excludes:
           - MCP
-          - Scraping
           - SelectorPacks
           - SignIn
     settings:

@@ -500,20 +500,7 @@ struct TrackerEditorView: View {
     }
 
     private var validatedURL: URL? {
-        guard !trimmedURL.isEmpty else {
-            return nil
-        }
-
-        let normalized = trimmedURL.contains("://") ? trimmedURL : "https://\(trimmedURL)"
-        guard let components = URLComponents(string: normalized),
-              let scheme = components.scheme?.lowercased(),
-              scheme == "http" || scheme == "https",
-              components.host?.isEmpty == false,
-              let url = components.url else {
-            return nil
-        }
-
-        return url
+        TrackerURLValidator.httpOrHTTPSURL(from: trimmedURL)
     }
 
     private var urlValidationMessage: String {

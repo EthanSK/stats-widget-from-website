@@ -9,6 +9,17 @@ import Combine
 import Darwin
 import Foundation
 
+enum AppGroupStoreError: LocalizedError, Equatable {
+    case emptyConfigurationOverwriteBlocked
+
+    var errorDescription: String? {
+        switch self {
+        case .emptyConfigurationOverwriteBlocked:
+            return "Refusing to overwrite existing trackers with an empty configuration."
+        }
+    }
+}
+
 final class AppGroupStore: ObservableObject {
     private static let configurationMutationQueue = DispatchQueue(label: "com.ethansk.macos-widgets-stats-from-website.configuration-mutations")
     private static let readingsMutationQueue = DispatchQueue(label: "com.ethansk.macos-widgets-stats-from-website.readings-mutations")
@@ -67,7 +78,7 @@ final class AppGroupStore: ObservableObject {
             updated.trackerIDs.removeAll { $0 == id }
             return updated
         }
-        persist()
+        persist(allowEmptyOverwrite: true)
     }
 
     func addWidgetConfiguration(_ configuration: WidgetConfiguration) {
@@ -95,7 +106,7 @@ final class AppGroupStore: ObservableObject {
 
     func deleteWidgetConfiguration(id: UUID) {
         widgetConfigurations.removeAll { $0.id == id }
-        persist()
+        persist(allowEmptyOverwrite: true)
     }
 
     /// Reorders the `trackers` array in response to a SwiftUI `.onMove`
@@ -163,7 +174,7 @@ final class AppGroupStore: ObservableObject {
         persist()
     }
 
-    func persist() {
+    func persist(allowEmptyOverwrite: Bool = false) {
         do {
             let configuration = AppConfiguration(
                 schemaVersion: currentSchemaVersion,
@@ -171,7 +182,7 @@ final class AppGroupStore: ObservableObject {
                 widgetConfigurations: widgetConfigurations,
                 preferences: preferences
             )
-            try Self.save(configuration: configuration)
+            try Self.save(configuration: configuration, allowEmptyOverwrite: allowEmptyOverwrite)
 
             schemaVersion = currentSchemaVersion
             lastPersistenceError = nil
@@ -623,28 +634,48 @@ final class AppGroupStore: ObservableObject {
         }
     }
 
-    static func save(configuration: AppConfiguration) throws {
+    static func save(configuration: AppConfiguration, allowEmptyOverwrite: Bool = false) throws {
         try withConfigurationMutationLock {
-            try saveUnlocked(configuration: configuration)
+            try saveUnlocked(configuration: configuration, allowEmptyOverwrite: allowEmptyOverwrite)
         }
     }
 
-    private static func saveUnlocked(configuration: AppConfiguration) throws {
+    private static func saveUnlocked(configuration: AppConfiguration, allowEmptyOverwrite: Bool = false) throws {
         var normalized = configuration
         normalized.schemaVersion = currentSchemaVersion
-        try write(configuration: normalized, to: AppGroupPaths.canonicalTrackersURL())
+        let canonicalURL = AppGroupPaths.canonicalTrackersURL()
+        let appGroupURL = AppGroupPaths.appGroupTrackersURL()
+        ActivityLogger.log("store", "writing configuration", metadata: [
+            "trackers": "\(normalized.trackers.count)",
+            "widgets": "\(normalized.widgetConfigurations.count)",
+            "canonicalPath": canonicalURL.path,
+            "appGroupPath": appGroupURL?.path ?? "",
+            "allowEmptyOverwrite": allowEmptyOverwrite ? "true" : "false"
+        ])
+        if !allowEmptyOverwrite {
+            try blockAccidentalEmptyOverwriteIfNeeded(
+                configuration: normalized,
+                destinationURLs: uniqueFileURLs([canonicalURL, appGroupURL].compactMap { $0 })
+            )
+        }
+        try backupNonEmptyConfigurationIfNeeded(beforeWriting: normalized, to: canonicalURL)
+        try write(configuration: normalized, to: canonicalURL)
 
-        if let appGroupURL = AppGroupPaths.appGroupTrackersURL() {
+        if let appGroupURL {
+            try backupNonEmptyConfigurationIfNeeded(beforeWriting: normalized, to: appGroupURL)
             try write(configuration: normalized, to: appGroupURL)
         }
     }
 
     @discardableResult
-    static func mutateSharedConfiguration(_ mutate: (inout AppConfiguration) throws -> Void) throws -> AppConfiguration {
+    static func mutateSharedConfiguration(
+        allowEmptyOverwrite: Bool = false,
+        _ mutate: (inout AppConfiguration) throws -> Void
+    ) throws -> AppConfiguration {
         try withConfigurationMutationLock {
             var configuration = loadSharedConfiguration()
             try mutate(&configuration)
-            try saveUnlocked(configuration: configuration)
+            try saveUnlocked(configuration: configuration, allowEmptyOverwrite: allowEmptyOverwrite)
             return configuration
         }
     }
@@ -855,6 +886,84 @@ final class AppGroupStore: ObservableObject {
 
     private static func write(configuration: AppConfiguration, to destinationURL: URL) throws {
         try writeJSON(configuration, to: destinationURL)
+    }
+
+    private static func backupNonEmptyConfigurationIfNeeded(
+        beforeWriting configuration: AppConfiguration,
+        to destinationURL: URL
+    ) throws {
+        guard !hasUserConfigurationData(configuration),
+              let counts = rawConfigurationCounts(at: destinationURL),
+              counts.trackers > 0 || counts.widgets > 0 else {
+            return
+        }
+
+        let stamp = ISO8601DateFormatter()
+            .string(from: Date())
+            .replacingOccurrences(of: ":", with: "")
+            .replacingOccurrences(of: "-", with: "")
+        let backupURL = destinationURL
+            .deletingLastPathComponent()
+            .appendingPathComponent("\(destinationURL.lastPathComponent).nonempty-before-empty-\(stamp)")
+        try FileManager.default.copyItem(at: destinationURL, to: backupURL)
+        ActivityLogger.log("store", "backed up non-empty configuration before empty overwrite", metadata: [
+            "path": destinationURL.path,
+            "backup": backupURL.path,
+            "previousTrackers": "\(counts.trackers)",
+            "previousWidgets": "\(counts.widgets)"
+        ])
+    }
+
+    private static func blockAccidentalEmptyOverwriteIfNeeded(
+        configuration: AppConfiguration,
+        destinationURLs: [URL]
+    ) throws {
+        guard !hasUserConfigurationData(configuration) else {
+            return
+        }
+
+        let nonEmptyDestinations = destinationURLs.compactMap { url -> (URL, Int, Int)? in
+            guard let counts = rawConfigurationCounts(at: url),
+                  counts.trackers > 0 || counts.widgets > 0 else {
+                return nil
+            }
+            return (url, counts.trackers, counts.widgets)
+        }
+
+        guard !nonEmptyDestinations.isEmpty else {
+            return
+        }
+
+        for destination in nonEmptyDestinations {
+            try backupNonEmptyConfigurationIfNeeded(beforeWriting: configuration, to: destination.0)
+        }
+
+        ActivityLogger.log("store", "blocked empty configuration overwrite", metadata: [
+            "destinations": nonEmptyDestinations.map { $0.0.path }.joined(separator: ","),
+            "previousTrackers": nonEmptyDestinations.map { "\($0.1)" }.joined(separator: ","),
+            "previousWidgets": nonEmptyDestinations.map { "\($0.2)" }.joined(separator: ",")
+        ])
+        throw AppGroupStoreError.emptyConfigurationOverwriteBlocked
+    }
+
+    private static func uniqueFileURLs(_ urls: [URL]) -> [URL] {
+        var seen = Set<String>()
+        return urls.filter { url in
+            seen.insert(url.standardizedFileURL.path).inserted
+        }
+    }
+
+    private static func rawConfigurationCounts(at url: URL) -> (trackers: Int, widgets: Int)? {
+        guard let data = try? Data(contentsOf: url),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return nil
+        }
+
+        let trackers = (object["trackers"] as? [Any])?.count
+            ?? (object["metrics"] as? [Any])?.count
+            ?? 0
+        let widgets = (object["widgetConfigurations"] as? [Any])?.count ?? 0
+        return (trackers, widgets)
     }
 
     private static func write(readingsFile: TrackerReadingsFile) throws {

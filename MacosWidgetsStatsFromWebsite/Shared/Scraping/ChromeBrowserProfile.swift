@@ -973,18 +973,12 @@ final class ChromeBrowserProfile {
             let trackedApplication = self.foregroundLaunchedApplications.removeValue(forKey: configuration.cdpPort)
             self.userVisiblePorts.remove(configuration.cdpPort)
 
-            // Terminate any in-process tracked foreground first (mirrors
-            // the headless teardown flow exactly — same termination
-            // pattern, same wait-for-CDP-gone primitive).
-            if let trackedProcess, trackedProcess.isRunning {
-                trackedProcess.terminate()
-            }
-            if let trackedApplication, !trackedApplication.isTerminated {
-                DispatchQueue.main.async {
-                    trackedApplication.terminate()
-                }
-            }
-
+            // Do not SIGTERM the foreground process here. The shared teardown
+            // path now asks Chromium to close over CDP first so the profile is
+            // marked as a clean exit and the next launch does not restore the
+            // previous Identify tabs.
+            _ = trackedProcess
+            _ = trackedApplication
             self.terminateHeadlessInstance(configuration: configuration, completion: completion)
         }
     }
@@ -1017,24 +1011,20 @@ final class ChromeBrowserProfile {
                 "trackedApplications": "\(preTrackedApplicationCount)"
             ])
 
-            // Terminate any in-process tracked headless first.
+            let cdpReachableAtStart = self.isCDPReachable(configuration: configuration)
+
+            // Remove in-process tracking before shutdown so another caller
+            // cannot decide this instance is reusable while it is closing.
             let trackedProcess = self.backgroundLaunchedProcesses.removeValue(forKey: port)
             let trackedApplication = self.backgroundLaunchedApplications.removeValue(forKey: port)
             self.backgroundUseCounts[port] = nil
             let trackedProcessPID = (trackedProcess?.isRunning == true) ? trackedProcess?.processIdentifier : nil
 
-            if let trackedProcess, trackedProcess.isRunning {
-                trackedProcess.terminate()
-            }
-            if let trackedApplication, !trackedApplication.isTerminated {
-                DispatchQueue.main.async {
-                    trackedApplication.terminate()
-                }
-            }
-
             // For untracked-but-running headless (started in a previous app session),
-            // ask Chrome to close over CDP first. This works in the Release sandbox,
-            // where execing `/bin/ps` is denied.
+            // ask Chrome to close over CDP first. This also matters for tracked
+            // app-owned Chromium: a graceful Browser.close keeps the profile's
+            // exit_type clean, while SIGTERM marks it crashed and makes the next
+            // launch restore stale Identify tabs.
             self.requestBrowserCloseViaCDP(configuration: configuration) { [weak self] in
                 guard let self else {
                     DispatchQueue.global(qos: .userInitiated).async { completion() }
@@ -1042,34 +1032,54 @@ final class ChromeBrowserProfile {
                 }
 
                 self.queue.async {
-                    // Non-sandbox fallback: if CDP close did not make the port go away,
-                    // resolve via ps and SIGTERM the parent.
-                    var fallbackKillPID: pid_t? = nil
-                    if self.isCDPReachable(configuration: configuration),
-                       let pid = self.findDedicatedBrowserPID(configuration: configuration) {
-                        fallbackKillPID = pid
-                        kill(pid, SIGTERM)
-                    }
-
                     let cdpGoneStartedAt = Date()
                     // Wait briefly for the CDP port to actually go down so the subsequent
                     // launch sees a non-reachable port. waitUntilCDPGone polls every 100ms
                     // up to 3s.
                     self.waitUntilCDPGone(configuration: configuration, deadline: Date().addingTimeInterval(3)) {
-                        let waitMs = Int(Date().timeIntervalSince(cdpGoneStartedAt) * 1000)
-                        let finalCDPReachable = self.isCDPReachable(configuration: configuration)
-                        let totalElapsedMs = Int(Date().timeIntervalSince(startedAt) * 1000)
-                        ActivityLogger.log("browser", "terminateHeadlessInstance ended", metadata: [
-                            "profile": configuration.profileName,
-                            "port": "\(port)",
-                            "totalElapsedMs": "\(totalElapsedMs)",
-                            "waitMsUntilCDPGone": "\(waitMs)",
-                            "finalCDPReachable": finalCDPReachable ? "true" : "false",
-                            "trackedProcessPID": trackedProcessPID.map(String.init) ?? "",
-                            "fallbackKillPID": fallbackKillPID.map(String.init) ?? "",
-                            "activeScrapeCountAtEnd": "\(ChromeCDPScraper.currentActiveScrapeCount)"
-                        ])
-                        completion()
+                        self.queue.async {
+                            let gracefulWaitMs = Int(Date().timeIntervalSince(cdpGoneStartedAt) * 1000)
+                            var fallbackKillPID: pid_t? = nil
+                            var usedTrackedFallback = false
+
+                            if self.isCDPReachable(configuration: configuration) || !cdpReachableAtStart {
+                                if let trackedProcess, trackedProcess.isRunning {
+                                    usedTrackedFallback = true
+                                    trackedProcess.terminate()
+                                }
+                                if let trackedApplication, !trackedApplication.isTerminated {
+                                    usedTrackedFallback = true
+                                    DispatchQueue.main.async {
+                                        trackedApplication.terminate()
+                                    }
+                                }
+                                if self.isCDPReachable(configuration: configuration),
+                                   let pid = self.findDedicatedBrowserPID(configuration: configuration) {
+                                    fallbackKillPID = pid
+                                    kill(pid, SIGTERM)
+                                }
+                            }
+
+                            let finalWaitStartedAt = Date()
+                            self.waitUntilCDPGone(configuration: configuration, deadline: Date().addingTimeInterval(3)) {
+                                let fallbackWaitMs = Int(Date().timeIntervalSince(finalWaitStartedAt) * 1000)
+                                let finalCDPReachable = self.isCDPReachable(configuration: configuration)
+                                let totalElapsedMs = Int(Date().timeIntervalSince(startedAt) * 1000)
+                                ActivityLogger.log("browser", "terminateHeadlessInstance ended", metadata: [
+                                    "profile": configuration.profileName,
+                                    "port": "\(port)",
+                                    "totalElapsedMs": "\(totalElapsedMs)",
+                                    "waitMsUntilCDPGone": "\(gracefulWaitMs + fallbackWaitMs)",
+                                    "gracefulCloseAttempted": cdpReachableAtStart ? "true" : "false",
+                                    "usedTrackedFallback": usedTrackedFallback ? "true" : "false",
+                                    "finalCDPReachable": finalCDPReachable ? "true" : "false",
+                                    "trackedProcessPID": trackedProcessPID.map(String.init) ?? "",
+                                    "fallbackKillPID": fallbackKillPID.map(String.init) ?? "",
+                                    "activeScrapeCountAtEnd": "\(ChromeCDPScraper.currentActiveScrapeCount)"
+                                ])
+                                completion()
+                            }
+                        }
                     }
                 }
             }
@@ -1536,6 +1546,203 @@ final class ChromeBrowserProfile {
         }
     }
 
+    /// Strict target lookup for foreground Identify launches.
+    ///
+    /// Unlike `bestExistingPageTarget`, this only succeeds when the target
+    /// URL actually matches the requested page. Foreground Identify uses this
+    /// while polling for the tab created by the Chromium launch URL. A loose
+    /// "any usable HTTP tab" match is unsafe here because Chromium can restore
+    /// stale session tabs from the dedicated profile before the launch URL
+    /// commits, and selecting one of those stale tabs is exactly the wrong-tab
+    /// flake this path is meant to prevent.
+    func pageTargetStrictlyMatching(
+        _ url: URL,
+        configuration: ChromeBrowserLaunchConfiguration,
+        completion: @escaping (Result<ChromeBrowserTarget, Error>) -> Void
+    ) {
+        listPageTargets(configuration: configuration) { result in
+            switch result {
+            case .success(let targets):
+                let rankedTargets: [(score: Int, listIndex: Int, target: ChromeBrowserPageTarget)] = targets.enumerated().compactMap { index, target in
+                    guard let score = Self.strictMatchScore(for: target, requestedURL: url) else { return nil }
+                    return (score, index, target)
+                }.sorted { lhs, rhs in
+                    if lhs.score != rhs.score {
+                        return lhs.score > rhs.score
+                    }
+                    return lhs.listIndex < rhs.listIndex
+                }
+
+                if let bestTarget = rankedTargets.first?.target {
+                    completion(.success(bestTarget.asTarget))
+                    return
+                }
+
+                completion(.failure(ChromeBrowserProfileError.targetCreationFailed("No CDP page target matched \(url.absoluteString).")))
+            case .failure(let error):
+                completion(.failure(error))
+            }
+        }
+    }
+
+    func closePageTargetsExcept(
+        configuration: ChromeBrowserLaunchConfiguration,
+        keepTargetIDs: Set<String>,
+        completion: ((Int) -> Void)? = nil
+    ) {
+        listPageTargets(configuration: configuration) { [weak self] result in
+            switch result {
+            case .success(let targets):
+                guard let self else {
+                    completion?(0)
+                    return
+                }
+
+                let disposables = targets.filter { !keepTargetIDs.contains($0.id) }
+                if disposables.isEmpty {
+                    ActivityLogger.log("browser", "strict tab cleanup — nothing to close", metadata: [
+                        "profile": configuration.profileName,
+                        "port": "\(configuration.cdpPort)",
+                        "tabCount": "\(targets.count)",
+                        "keptIDs": keepTargetIDs.sorted().joined(separator: ",")
+                    ])
+                    completion?(0)
+                    return
+                }
+
+                for target in disposables {
+                    self.closeTarget(id: target.id, configuration: configuration)
+                }
+
+                ActivityLogger.log("browser", "strict tab cleanup — closed non-selected targets", metadata: [
+                    "profile": configuration.profileName,
+                    "port": "\(configuration.cdpPort)",
+                    "before": "\(targets.count)",
+                    "closed": "\(disposables.count)",
+                    "kept": "\(targets.count - disposables.count)",
+                    "keptIDs": keepTargetIDs.sorted().joined(separator: ",")
+                ])
+                completion?(disposables.count)
+            case .failure(let error):
+                ActivityLogger.log("browser", "strict tab cleanup — list failed", metadata: [
+                    "profile": configuration.profileName,
+                    "port": "\(configuration.cdpPort)",
+                    "error": error.localizedDescription
+                ])
+                completion?(0)
+            }
+        }
+    }
+
+    private struct ForegroundWindowPlacement {
+        let x: Int
+        let y: Int
+        let width: Int
+        let height: Int
+
+        var arguments: [String] {
+            [
+                "--window-position=\(x),\(y)",
+                "--window-size=\(width),\(height)"
+            ]
+        }
+    }
+
+    private func foregroundWindowPlacementArguments() -> [String] {
+        Self.foregroundWindowPlacement()?.arguments ?? []
+    }
+
+    /// Places user-visible Chromium on the same physical display as the Stats
+    /// app window. Without explicit placement, macOS/Chromium tends to open
+    /// headed Identify windows on the main external monitor even when the
+    /// user is configuring a tracker from another screen.
+    private static func foregroundWindowPlacement() -> ForegroundWindowPlacement? {
+        let displays = activeDisplayBounds()
+        guard !displays.isEmpty else { return nil }
+
+        let referenceBounds = referenceWindowBoundsForCurrentProcess()
+        let mainDisplayBounds = CGDisplayBounds(CGMainDisplayID())
+        let display = referenceBounds.flatMap { bestDisplay(for: $0, displays: displays) }
+            ?? displays.first(where: { $0.equalTo(mainDisplayBounds) })
+            ?? displays[0]
+
+        let margin: CGFloat = 24
+        let width = min(CGFloat(1000), max(CGFloat(640), display.width - margin * 2))
+        let height = min(CGFloat(720), max(CGFloat(480), display.height - margin * 2))
+
+        let desiredX = referenceBounds?.minX ?? display.minX + margin
+        let x = clamp(desiredX, min: display.minX + margin, max: display.maxX - width - margin)
+        let y = clamp(display.minY + margin, min: display.minY + margin, max: display.maxY - height - margin)
+
+        return ForegroundWindowPlacement(
+            x: Int(x.rounded()),
+            y: Int(y.rounded()),
+            width: Int(width.rounded()),
+            height: Int(height.rounded())
+        )
+    }
+
+    private static func activeDisplayBounds() -> [CGRect] {
+        var displayCount: UInt32 = 0
+        guard CGGetActiveDisplayList(0, nil, &displayCount) == .success, displayCount > 0 else {
+            return []
+        }
+
+        var displayIDs = [CGDirectDisplayID](repeating: 0, count: Int(displayCount))
+        guard CGGetActiveDisplayList(displayCount, &displayIDs, &displayCount) == .success else {
+            return []
+        }
+
+        return displayIDs.prefix(Int(displayCount)).map { CGDisplayBounds($0) }
+    }
+
+    private static func referenceWindowBoundsForCurrentProcess() -> CGRect? {
+        let options: CGWindowListOption = [.optionOnScreenOnly, .excludeDesktopElements]
+        guard let windows = CGWindowListCopyWindowInfo(options, kCGNullWindowID) as? [[String: Any]] else {
+            return nil
+        }
+
+        let currentPID = Int(getpid())
+        let candidates: [(bounds: CGRect, area: CGFloat)] = windows.compactMap { info in
+            guard (info[kCGWindowOwnerPID as String] as? Int) == currentPID,
+                  (info[kCGWindowLayer as String] as? Int) == 0,
+                  let boundsDictionary = info[kCGWindowBounds as String] as? NSDictionary,
+                  let bounds = CGRect(dictionaryRepresentation: boundsDictionary as CFDictionary),
+                  bounds.width >= 320,
+                  bounds.height >= 200 else {
+                return nil
+            }
+
+            let alpha = info[kCGWindowAlpha as String] as? Double ?? 1.0
+            guard alpha > 0 else { return nil }
+            return (bounds, bounds.width * bounds.height)
+        }
+
+        return candidates.max { lhs, rhs in lhs.area < rhs.area }?.bounds
+    }
+
+    private static func bestDisplay(for bounds: CGRect, displays: [CGRect]) -> CGRect? {
+        let center = CGPoint(x: bounds.midX, y: bounds.midY)
+        if let containing = displays.first(where: { $0.contains(center) }) {
+            return containing
+        }
+
+        return displays.max { lhs, rhs in
+            intersectionArea(lhs, bounds) < intersectionArea(rhs, bounds)
+        }
+    }
+
+    private static func intersectionArea(_ lhs: CGRect, _ rhs: CGRect) -> CGFloat {
+        let intersection = lhs.intersection(rhs)
+        guard !intersection.isNull else { return 0 }
+        return max(0, intersection.width) * max(0, intersection.height)
+    }
+
+    private static func clamp(_ value: CGFloat, min minimum: CGFloat, max maximum: CGFloat) -> CGFloat {
+        guard maximum >= minimum else { return minimum }
+        return Swift.min(Swift.max(value, minimum), maximum)
+    }
+
     private func buildChromeLaunchArguments(configuration: ChromeBrowserLaunchConfiguration, headless: Bool) -> [String] {
         var arguments = [
             "--remote-debugging-address=127.0.0.1",
@@ -1919,7 +2126,11 @@ final class ChromeBrowserProfile {
         } else {
             startupURL = "about:blank"
         }
-        let arguments = buildChromeLaunchArguments(configuration: configuration, headless: !foreground) + [startupURL]
+        var arguments = buildChromeLaunchArguments(configuration: configuration, headless: !foreground)
+        if foreground {
+            arguments.append(contentsOf: foregroundWindowPlacementArguments())
+        }
+        arguments.append(startupURL)
 
         // We always exec the Chrome binary directly (bypassing LaunchServices) so a
         // pre-existing personal Chrome session cannot intercept the launch and absorb
@@ -1985,7 +2196,8 @@ final class ChromeBrowserProfile {
             "port": "\(configuration.cdpPort)",
             "executable": executableURL.path,
             "userDataDir": configuration.userDataDirectory.path,
-            "pid": "\(process.processIdentifier)"
+            "pid": "\(process.processIdentifier)",
+            "windowPlacement": foreground ? arguments.filter { $0.hasPrefix("--window-") }.joined(separator: " ") : ""
         ])
 
         if foreground {
@@ -2575,6 +2787,39 @@ final class ChromeBrowserProfile {
         }
 
         return score
+    }
+
+    static func strictMatchScore(for target: ChromeBrowserPageTarget, requestedURL: URL) -> Int? {
+        guard let targetURL = target.url,
+              isUsableExistingPageURL(targetURL) else {
+            return nil
+        }
+
+        if equivalentPageURL(targetURL, requestedURL) {
+            return 1_000
+        }
+
+        guard let requestedHost = requestedURL.host?.lowercased(),
+              targetURL.host?.lowercased() == requestedHost else {
+            return nil
+        }
+
+        let requestedPath = normalizedPath(requestedURL)
+        let targetPath = normalizedPath(targetURL)
+        guard targetPath == requestedPath else {
+            return nil
+        }
+
+        if requestedURL.query?.isEmpty == false,
+           targetURL.query != requestedURL.query {
+            return nil
+        }
+
+        // Same host/path, and the requested URL did not require a specific
+        // query. This covers redirects that append benign campaign/session
+        // parameters while still rejecting a stale tab when the requested
+        // URL itself carried a meaningful query.
+        return 750
     }
 
     private static func equivalentPageURL(_ lhs: URL, _ rhs: URL) -> Bool {

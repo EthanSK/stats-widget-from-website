@@ -100,4 +100,40 @@ final class HookMCPTests: XCTestCase {
         XCTAssertEqual(stored[1].hooks.onSuccess.first?.name, "user-hook")
         XCTAssertEqual(stored[1].hooks.onFailure.count, 0)
     }
+
+    func testSavingEmptyConfigurationBlocksAndBacksUpNonEmptyConfiguration() throws {
+        let tracker = Tracker(name: "t", url: "https://example.com", selector: ".x", hooks: TrackerHooks())
+
+        try AppGroupStore.mutateSharedConfiguration { configuration in
+            configuration.trackers = [tracker]
+        }
+
+        XCTAssertThrowsError(try AppGroupStore.save(configuration: .empty)) { error in
+            XCTAssertEqual(error as? AppGroupStoreError, .emptyConfigurationOverwriteBlocked)
+        }
+
+        let backups = try FileManager.default.contentsOfDirectory(
+            at: testContainerURL,
+            includingPropertiesForKeys: nil
+        ).filter { $0.lastPathComponent.hasPrefix("trackers.json.nonempty-before-empty-") }
+
+        XCTAssertEqual(backups.count, 1)
+        let restored = try JSONDecoder().decode(AppConfiguration.self, from: Data(contentsOf: backups[0]))
+        XCTAssertEqual(restored.trackers.map(\.id), [tracker.id])
+        XCTAssertEqual(AppGroupStore.loadSharedConfiguration().trackers.map(\.id), [tracker.id])
+    }
+
+    func testExplicitEmptyConfigurationOverwriteAllowsUserDelete() throws {
+        let tracker = Tracker(name: "t", url: "https://example.com", selector: ".x", hooks: TrackerHooks())
+
+        try AppGroupStore.mutateSharedConfiguration { configuration in
+            configuration.trackers = [tracker]
+        }
+
+        try AppGroupStore.save(configuration: .empty, allowEmptyOverwrite: true)
+
+        let stored = AppGroupStore.loadSharedConfiguration()
+        XCTAssertEqual(stored.trackers.count, 0)
+        XCTAssertEqual(stored.widgetConfigurations.count, 0)
+    }
 }

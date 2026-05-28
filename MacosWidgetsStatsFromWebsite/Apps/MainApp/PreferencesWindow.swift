@@ -166,7 +166,7 @@ struct PreferencesWindow: View {
         guard let trackerIDString = notification.userInfo?["trackerID"] as? String,
               let trackerID = UUID(uuidString: trackerIDString),
               let urlString = notification.userInfo?["url"] as? String,
-              let url = URL(string: urlString) else {
+              let url = TrackerURLValidator.httpOrHTTPSURL(from: urlString, defaultScheme: nil) else {
             return
         }
         let renderMode = RenderMode(rawValue: notification.userInfo?["renderMode"] as? String ?? "") ?? .text

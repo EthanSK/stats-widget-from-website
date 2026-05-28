@@ -116,7 +116,9 @@ struct MacosWidgetsStatsFromWebsiteApp: App {
         scheduler.sync()
         scheduler.drainPendingScrapeRequests()
         DockBadgeUpdater.update()
-        WidgetCenterDiagnostics.reloadTimelines(reason: "app init")
+        if !AppGroupPaths.isUsingTestContainerOverride {
+            WidgetCenterDiagnostics.reloadTimelines(reason: "app init")
+        }
     }
 
     var body: some Scene {

@@ -444,19 +444,7 @@ struct FirstLaunchWizardView: View {
     }
 
     private func validatedURL(from string: String) -> URL? {
-        guard !string.isEmpty else {
-            return nil
-        }
-
-        let normalized = string.contains("://") ? string : "https://\(string)"
-        guard let url = URL(string: normalized),
-              let scheme = url.scheme?.lowercased(),
-              scheme == "http" || scheme == "https",
-              url.host?.isEmpty == false else {
-            return nil
-        }
-
-        return url
+        TrackerURLValidator.httpOrHTTPSURL(from: string)
     }
 
     private func defaultTrackerName(for url: URL) -> String {

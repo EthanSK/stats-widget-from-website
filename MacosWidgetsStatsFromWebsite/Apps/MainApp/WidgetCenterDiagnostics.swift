@@ -14,11 +14,21 @@ enum WidgetCenterDiagnostics {
     static let widgetKind = "MacosWidgetsStatsFromWebsite"
 
     static func reloadTimelines(ofKind kind: String = widgetKind, reason: String) {
+        guard !AppGroupPaths.isUsingTestContainerOverride else {
+            log("skipped WidgetCenter.reloadTimelines for isolated test container", reason: reason, kind: kind)
+            return
+        }
+
         log("WidgetCenter.reloadTimelines", reason: reason, kind: kind)
         WidgetCenter.shared.reloadTimelines(ofKind: kind)
     }
 
     static func reloadAllTimelines(reason: String) {
+        guard !AppGroupPaths.isUsingTestContainerOverride else {
+            log("skipped WidgetCenter.reloadAllTimelines for isolated test container", reason: reason, kind: "all")
+            return
+        }
+
         log("WidgetCenter.reloadAllTimelines", reason: reason, kind: "all")
         WidgetCenter.shared.reloadAllTimelines()
     }

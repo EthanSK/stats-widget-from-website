@@ -1,0 +1,64 @@
+//
+//  IdentifyElementRegressionTests.swift
+//  MacosWidgetsStatsFromWebsiteHookTests
+//
+//  Focused pure-function guards for the Identify-in-Chrome tab picker.
+//
+
+import XCTest
+
+final class IdentifyElementRegressionTests: XCTestCase {
+    func testTrackerURLValidatorRejectsRepeatedPastedSchemes() {
+        XCTAssertNil(TrackerURLValidator.httpOrHTTPSURL(from: "https://example.comhttps://example.comhttps://example.com"))
+    }
+
+    func testTrackerURLValidatorAllowsNestedRedirectURLInQuery() {
+        let url = TrackerURLValidator.httpOrHTTPSURL(from: "https://example.com/login?next=https://example.com/dashboard")
+        XCTAssertEqual(url?.host, "example.com")
+        XCTAssertEqual(url?.query, "next=https://example.com/dashboard")
+    }
+
+    func testStrictIdentifyTargetMatchRejectsUnrelatedHTTPPage() throws {
+        let staleTarget = try pageTarget(id: "old", url: "https://unrelated.example/dashboard")
+        let requestedURL = try XCTUnwrap(URL(string: "https://example.com/dashboard"))
+
+        XCTAssertNil(ChromeBrowserProfile.strictMatchScore(for: staleTarget, requestedURL: requestedURL))
+    }
+
+    func testStrictIdentifyTargetMatchRejectsSameHostWrongPath() throws {
+        let staleTarget = try pageTarget(id: "old", url: "https://example.com/settings")
+        let requestedURL = try XCTUnwrap(URL(string: "https://example.com/dashboard"))
+
+        XCTAssertNil(ChromeBrowserProfile.strictMatchScore(for: staleTarget, requestedURL: requestedURL))
+    }
+
+    func testStrictIdentifyTargetMatchAcceptsExactURL() throws {
+        let target = try pageTarget(id: "new", url: "https://example.com/dashboard?range=week")
+        let requestedURL = try XCTUnwrap(URL(string: "https://example.com/dashboard?range=week"))
+
+        XCTAssertEqual(ChromeBrowserProfile.strictMatchScore(for: target, requestedURL: requestedURL), 1_000)
+    }
+
+    func testStrictIdentifyTargetMatchAcceptsSamePathWhenQueryChanges() throws {
+        let target = try pageTarget(id: "new", url: "https://example.com/dashboard?utm_source=login")
+        let requestedURL = try XCTUnwrap(URL(string: "https://example.com/dashboard"))
+
+        XCTAssertEqual(ChromeBrowserProfile.strictMatchScore(for: target, requestedURL: requestedURL), 750)
+    }
+
+    func testStrictIdentifyTargetMatchRejectsDifferentQueryWhenRequestedURLHasQuery() throws {
+        let staleTarget = try pageTarget(id: "old", url: "https://example.com/dashboard?account=old")
+        let requestedURL = try XCTUnwrap(URL(string: "https://example.com/dashboard?account=new"))
+
+        XCTAssertNil(ChromeBrowserProfile.strictMatchScore(for: staleTarget, requestedURL: requestedURL))
+    }
+
+    private func pageTarget(id: String, url: String) throws -> ChromeBrowserPageTarget {
+        ChromeBrowserPageTarget(
+            id: id,
+            url: try XCTUnwrap(URL(string: url)),
+            title: "",
+            webSocketDebuggerURL: try XCTUnwrap(URL(string: "ws://127.0.0.1/devtools/page/\(id)"))
+        )
+    }
+}

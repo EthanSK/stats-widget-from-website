@@ -46,6 +46,10 @@ enum AppGroupPaths {
         return URL(fileURLWithPath: path, isDirectory: true)
     }
 
+    static var isUsingTestContainerOverride: Bool {
+        testContainerURL() != nil
+    }
+
     // v0.21.31 (post-AMFI fix): the HOST app no longer carries the
     // `com.apple.security.application-groups` entitlement at runtime. AMFI
     // treats `application-groups` as a restricted entitlement on macOS
@@ -184,6 +188,10 @@ enum AppGroupPaths {
     // it would orphan every install's state. Only the socket — which is
     // ephemeral, recreated on every launch, and not user-visible — moves.
     static func mcpSocketURL() -> URL {
+        if let testContainerURL = testContainerURL() {
+            return testContainerURL.appendingPathComponent(mcpSocketFileName, isDirectory: false)
+        }
+
         let tmpDir = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
         return tmpDir.appendingPathComponent(mcpSocketFileName, isDirectory: false)
     }

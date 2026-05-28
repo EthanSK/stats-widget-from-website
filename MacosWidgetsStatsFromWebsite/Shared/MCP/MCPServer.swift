@@ -1059,7 +1059,7 @@ private enum MCPToolDispatcher {
     private static func deleteTracker(_ arguments: [String: Any]) throws -> Any {
         let id = try uuidArgument("id", arguments)
 
-        try AppGroupStore.mutateSharedConfiguration { configuration in
+        try AppGroupStore.mutateSharedConfiguration(allowEmptyOverwrite: true) { configuration in
             guard configuration.trackers.contains(where: { $0.id == id }) else {
                 throw MCPError.notFound("Tracker \(id.uuidString) was not found.")
             }
@@ -1267,7 +1267,7 @@ private enum MCPToolDispatcher {
     private static func deleteWidgetConfiguration(_ arguments: [String: Any]) throws -> Any {
         let id = try uuidArgument("id", arguments)
 
-        try AppGroupStore.mutateSharedConfiguration { configuration in
+        try AppGroupStore.mutateSharedConfiguration(allowEmptyOverwrite: true) { configuration in
             guard configuration.widgetConfigurations.contains(where: { $0.id == id }) else {
                 throw MCPError.notFound("Widget configuration \(id.uuidString) was not found.")
             }
@@ -1906,18 +1906,15 @@ private enum MCPToolDispatcher {
     }
 
     private static func validatedURL(from string: String) throws -> URL {
-        guard let url = URL(string: string),
-              let scheme = url.scheme?.lowercased(),
-              let host = url.host?.lowercased(),
-              !host.isEmpty else {
-            throw MCPError.validation("URL is invalid.")
+        guard let url = TrackerURLValidator.httpOrHTTPSURL(
+            from: string,
+            defaultScheme: nil,
+            allowHTTPOnlyForLocalhost: true
+        ) else {
+            throw MCPError.validation("Scrape URLs must be https://, or http://localhost for testing.")
         }
 
-        if scheme == "https" || (scheme == "http" && (host == "localhost" || host == "127.0.0.1" || host == "::1")) {
-            return url
-        }
-
-        throw MCPError.validation("Scrape URLs must be https://, or http://localhost for testing.")
+        return url
     }
 
     private static func isValidWebhookURL(_ string: String) -> Bool {

@@ -40,6 +40,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     /// same-bundle-relaunch case where a single-window focus is the right
     /// behaviour.
     static func terminatePriorInstancesIfNeeded() {
+        if AppGroupPaths.isUsingTestContainerOverride {
+            NSLog("[startup] skipping prior-instance termination for isolated test container launch")
+            return
+        }
+
         let myPID = NSRunningApplication.current.processIdentifier
         let others = NSRunningApplication
             .runningApplications(withBundleIdentifier: mainBundleIdentifier)
@@ -85,10 +90,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        let isolatedTestLaunch = AppGroupPaths.isUsingTestContainerOverride
         UNUserNotificationCenter.current().delegate = self
         TrackerAttentionNotifier.shared.configure()
-        UpdateController.shared.start()
-        MCPServer.shared.startSocketServer()
+        if isolatedTestLaunch {
+            ActivityLogger.log("startup", "isolated test container launch — skipped updater, MCP socket, WidgetCenter refresh, login item, and launch-agent migration")
+        } else {
+            UpdateController.shared.start()
+            MCPServer.shared.startSocketServer()
+        }
 
         // v0.21.44 — POST-SPARKLE-INSTALL WIDGET EXTENSION REFRESH.
         //
@@ -113,7 +123,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         //
         // See `refreshWidgetExtensionsIfHostJustUpdated()` below for the
         // actual mechanism + escalation chain.
-        refreshWidgetExtensionsIfHostJustUpdated()
+        if !isolatedTestLaunch {
+            refreshWidgetExtensionsIfHostJustUpdated()
+        }
 
         // v0.21.35 — SWITCH FROM LaunchAgent TO SMAppService FOR LOGIN ITEM.
         //
@@ -151,7 +163,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         // "Could not find service" — which the stats-widget-host-watchdog
         // already handles as "host_plist_missing app_likely_uninstalled"
         // (no-op). The watchdog will be deprecated in a follow-up.
-        LaunchAgentManager.removeLegacyHostLaunchAgent()
+        if !isolatedTestLaunch {
+            LaunchAgentManager.removeLegacyHostLaunchAgent()
+        }
 
         // Register the .app as a macOS login item via SMAppService.
         // Quiet-fails if the user has it disabled in System Settings >
@@ -164,15 +178,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         // launch path via LaunchServices, so the resulting process has a
         // proper foreground identity (Dock icon, Cmd-Tab presence,
         // double-click coexistence with the running process).
-        do {
-            try LoginItemManager.setEnabled(true)
-            ActivityLogger.log("startup", "SMAppService login item registered (or already enabled)")
-        } catch {
-            // Non-fatal — user can re-enable via menu-bar "Launch at Login"
-            // toggle, or via System Settings if they revoked the entry.
-            ActivityLogger.log("startup", "SMAppService register failed (non-fatal)", metadata: [
-                "error": error.localizedDescription
-            ])
+        if !isolatedTestLaunch {
+            do {
+                try LoginItemManager.setEnabled(true)
+                ActivityLogger.log("startup", "SMAppService login item registered (or already enabled)")
+            } catch {
+                // Non-fatal — user can re-enable via menu-bar "Launch at Login"
+                // toggle, or via System Settings if they revoked the entry.
+                ActivityLogger.log("startup", "SMAppService register failed (non-fatal)", metadata: [
+                    "error": error.localizedDescription
+                ])
+            }
         }
 
         // v0.21.0 — long-running-host architecture (UPDATED v0.21.32:
@@ -207,7 +223,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         //
         // Migration: tear down any legacy LaunchAgent from prior
         // installs so we don't end up with both schedulers fighting.
-        let migrated = LegacyLaunchAgentMigrator.migrateIfNeeded()
+        let migrated = isolatedTestLaunch ? false : LegacyLaunchAgentMigrator.migrateIfNeeded()
 
         // Install menu-bar status item. Wires up "Open Preferences",
         // "Scrape Trackers Now", "Launch at Login", "Quit", etc.

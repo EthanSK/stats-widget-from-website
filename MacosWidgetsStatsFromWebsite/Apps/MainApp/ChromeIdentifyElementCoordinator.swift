@@ -396,6 +396,9 @@ final class ChromeIdentifyElementCoordinator {
     private var didComplete = false
     private var didInjectOverlay = false
     private var isValidatingPick = false
+    private var overlayGeneration = 0
+    private var overlayRecoveryAttempts = 0
+    private let maxOverlayRecoveryAttempts = 8
     /// Tracks whether the tab in use was created by THIS identify flow
     /// (vs. reused from an existing CDP target). Set in handleTarget /
     /// handleExistingTargetLookup so cleanupAndClose can REST-close the
@@ -505,6 +508,10 @@ final class ChromeIdentifyElementCoordinator {
             // a tab via `openTab` (legacy path) as a defensive backstop —
             // but with the identify-in-progress lock blocking scrapers,
             // we should never need that fallback in practice.
+            ActivityLogger.log("identify", "foreground browser launched for identify", metadata: [
+                "port": "\(configuration.cdpPort)",
+                "url": url.absoluteString
+            ])
             findLaunchedIdentifyTarget(
                 configuration: configuration,
                 requestedURL: url,
@@ -532,9 +539,8 @@ final class ChromeIdentifyElementCoordinator {
     ) {
         guard !didComplete else { return }
 
-        ChromeBrowserProfile.shared.bestExistingPageTarget(
-            preferredTargetID: nil,
-            matching: requestedURL,
+        ChromeBrowserProfile.shared.pageTargetStrictlyMatching(
+            requestedURL,
             configuration: configuration
         ) { [weak self] result in
             DispatchQueue.main.async {
@@ -547,6 +553,11 @@ final class ChromeIdentifyElementCoordinator {
                     // URL arg. Treat as a CREATED tab (we DID open it, just
                     // via the launch arg rather than /json/new) so the
                     // cleanup path closes it on exit.
+                    ActivityLogger.log("identify", "launch-time target matched requested URL", metadata: [
+                        "port": "\(configuration.cdpPort)",
+                        "target": target.id,
+                        "url": requestedURL.absoluteString
+                    ])
                     self.didCreateNewTab = true
                     self.handleTarget(.success(target))
                 case .failure:
@@ -592,6 +603,10 @@ final class ChromeIdentifyElementCoordinator {
         case .success(let target):
             currentTarget = target
             onTargetSelected(target.id)
+            ActivityLogger.log("identify", "target selected for overlay injection", metadata: [
+                "target": target.id,
+                "port": "\(currentConfiguration?.cdpPort ?? 0)"
+            ])
 
             // v0.21.47 — fix for voice 4269 ("extra about: tab opens, picker
             // never appears"). Two things go wrong post-v0.21.46 without this:
@@ -620,21 +635,16 @@ final class ChromeIdentifyElementCoordinator {
             if let configuration = currentConfiguration {
                 ChromeBrowserProfile.shared.activateTarget(id: target.id, configuration: configuration)
 
-                // Sweep about:blank / chrome://newtab/ orphans NOW (before
-                // we wait for documentReady + inject) so the Chrome window
-                // is visually clean by the time the user looks at it. We
-                // pin the just-selected target via `keepTargetIDs` so the
-                // sweep can NEVER nuke the tab we're about to inject into,
-                // regardless of URL classification or maxKeep cap. We also
-                // pin every in-flight scrape target to honor the v0.21.12
-                // parallel-scrape race fix (a sweep firing here must not
-                // race-kill a concurrent background scrape's page).
+                // Close every non-selected restored tab NOW (before we wait
+                // for documentReady + inject) so the visible Chromium window
+                // has one active Identify tab. Chromium can restore stale
+                // profile tabs during startup even when we pass the requested
+                // URL as the launch argument; keeping those stale pages is
+                // what lets Identify appear attached to the wrong tab.
                 let pinnedIDs = ChromeCDPScraper.activeScrapeTargetIDs().union([target.id])
-                ChromeBrowserProfile.shared.closeOrphanPageTargets(
+                ChromeBrowserProfile.shared.closePageTargetsExcept(
                     configuration: configuration,
-                    keepURLs: [],
                     keepTargetIDs: pinnedIDs,
-                    maxKeep: 8,
                     completion: nil
                 )
             }
@@ -690,6 +700,11 @@ final class ChromeIdentifyElementCoordinator {
         if case .success(let value) = result,
            let status = SelectorExtractionJS.dictionary(from: value),
            SelectorExtractionJS.boolValue(status["ready"]) == true {
+            ActivityLogger.log("identify", "document ready for overlay injection", metadata: [
+                "target": currentTarget?.id ?? "",
+                "href": "\(status["href"] ?? "")",
+                "title": "\(status["title"] ?? "")"
+            ])
             injectOverlay()
             return
         }
@@ -710,25 +725,32 @@ final class ChromeIdentifyElementCoordinator {
             return
         }
 
+        overlayGeneration += 1
+        let generation = overlayGeneration
         client.evaluate(InspectOverlayJS.inspectOverlayJS, returnByValue: false) { [weak self] result in
             DispatchQueue.main.async {
-                self?.handleOverlayInjected(result)
+                self?.handleOverlayInjected(result, generation: generation)
             }
         }
     }
 
-    private func handleOverlayInjected(_ result: Result<Any?, Error>) {
-        guard !didComplete else { return }
+    private func handleOverlayInjected(_ result: Result<Any?, Error>, generation: Int) {
+        guard !didComplete, generation == overlayGeneration else { return }
 
         switch result {
         case .success:
             didInjectOverlay = true
+            ActivityLogger.log("identify", "overlay injected", metadata: [
+                "target": currentTarget?.id ?? "",
+                "generation": "\(generation)",
+                "recoveryAttempts": "\(overlayRecoveryAttempts)"
+            ])
             onNotice("Chrome/CDP Identify is active. In the Chrome window, hover an element, click to preview it, or press Esc to cancel.")
             // v0.21.47 — overlay is live; tell the UI it can offer the
             // "Re-inject Picker" button now. Safe to call multiple times
             // (e.g. after failAndRearm); the UI just keeps the button on.
             onOverlayReady()
-            pollForPick(deadline: Date().addingTimeInterval(120))
+            pollForPick(deadline: Date().addingTimeInterval(120), generation: generation)
         case .failure(let error):
             finishWithError("Identify Element could not start in the CDP browser: \(error.localizedDescription)")
         }
@@ -757,11 +779,16 @@ final class ChromeIdentifyElementCoordinator {
         // ping is still meaningful on the second pass (some UIs key off
         // the rising edge).
         didInjectOverlay = false
+        overlayRecoveryAttempts = 0
+        ActivityLogger.log("identify", "manual picker re-inject requested", metadata: [
+            "target": currentTarget?.id ?? ""
+        ])
         injectOverlay()
     }
 
-    private func pollForPick(deadline: Date) {
-        guard !didComplete, !isValidatingPick, let client else {
+    private func pollForPick(deadline: Date, generation: Int) {
+        guard !didComplete, generation == overlayGeneration else { return }
+        guard !isValidatingPick, let client else {
             if !didComplete {
                 finishWithError(ChromeCDPClientError.disconnected.localizedDescription)
             }
@@ -770,13 +797,13 @@ final class ChromeIdentifyElementCoordinator {
 
         client.evaluate(Self.pollScript) { [weak self] result in
             DispatchQueue.main.async {
-                self?.handlePoll(result, deadline: deadline)
+                self?.handlePoll(result, deadline: deadline, generation: generation)
             }
         }
     }
 
-    private func handlePoll(_ result: Result<Any?, Error>, deadline: Date) {
-        guard !didComplete else { return }
+    private func handlePoll(_ result: Result<Any?, Error>, deadline: Date, generation: Int) {
+        guard !didComplete, generation == overlayGeneration else { return }
 
         switch result {
         case .success(let value):
@@ -790,6 +817,11 @@ final class ChromeIdentifyElementCoordinator {
                     failAndRearm("The selected element payload was not readable.")
                     return
                 }
+                ActivityLogger.log("identify", "element pick received", metadata: [
+                    "target": currentTarget?.id ?? "",
+                    "selectorLength": "\(pick.selector.count)",
+                    "textLength": "\(pick.text.count)"
+                ])
                 validate(pick)
                 return
             }
@@ -807,7 +839,7 @@ final class ChromeIdentifyElementCoordinator {
             }
 
             if didInjectOverlay, SelectorExtractionJS.boolValue(state["active"]) != true {
-                finishWithError("The CDP page navigated or reloaded before an element was picked. Finish sign-in in Chrome, then try Identify in CDP Browser again.")
+                recoverOverlayAfterNavigation(deadline: deadline)
                 return
             }
         case .failure(let error):
@@ -823,8 +855,31 @@ final class ChromeIdentifyElementCoordinator {
         }
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
-            self?.pollForPick(deadline: deadline)
+            self?.pollForPick(deadline: deadline, generation: generation)
         }
+    }
+
+    private func recoverOverlayAfterNavigation(deadline: Date) {
+        guard !didComplete else { return }
+        guard Date() < deadline else {
+            finishWithError("Timed out waiting for an element pick in the CDP browser.")
+            return
+        }
+
+        overlayRecoveryAttempts += 1
+        guard overlayRecoveryAttempts <= maxOverlayRecoveryAttempts else {
+            finishWithError("The CDP page kept navigating or reloading before an element was picked. Finish sign-in in Chrome, then try Identify in CDP Browser again.")
+            return
+        }
+
+        didInjectOverlay = false
+        ActivityLogger.log("identify", "overlay disappeared; re-arming after navigation", metadata: [
+            "target": currentTarget?.id ?? "",
+            "attempt": "\(overlayRecoveryAttempts)",
+            "maxAttempts": "\(maxOverlayRecoveryAttempts)"
+        ])
+        onNotice("The page changed, so Identify is re-arming the picker…")
+        waitForDocumentReady(deadline: Date().addingTimeInterval(15))
     }
 
     private func validate(_ pick: ElementPick) {
@@ -890,6 +945,11 @@ final class ChromeIdentifyElementCoordinator {
             }
 
             isValidatingPick = false
+            ActivityLogger.log("identify", "element pick validated", metadata: [
+                "target": currentTarget?.id ?? "",
+                "selectorLength": "\(finalPick.selector.count)",
+                "textLength": "\(finalPick.text.count)"
+            ])
             makePreview(for: finalPick)
         case .failure(let error):
             failAndRearm("The selector could not be validated: \(error.localizedDescription)")
