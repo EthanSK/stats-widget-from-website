@@ -179,18 +179,33 @@ struct PreferencesWindow: View {
         }
 
         selection = .trackers
-        let presentation = MCPIdentifyPresentation(trackerID: trackerID, url: url, renderMode: renderMode)
+        presentMCPIdentifySheet(MCPIdentifyPresentation(trackerID: trackerID, url: url, renderMode: renderMode))
+    }
+
+    private func presentMCPIdentifySheet(_ presentation: MCPIdentifyPresentation) {
         guard mcpIdentifyPresentation != nil else {
             mcpIdentifyPresentation = presentation
+            ActivityLogger.log("identify", "presented MCP identify sheet", metadata: [
+                "trackerID": presentation.trackerID.uuidString
+            ])
             return
         }
 
         // Esc cancels the picker inside Chromium but can leave the SwiftUI
-        // sheet alive. Force a fresh sheet instance so a repeated MCP
-        // identify request re-arms instead of reusing a canceled controller.
+        // sheet/controller alive for a short time. Clear the sheet item and
+        // re-present after a small delay so a repeated MCP identify request
+        // always builds a fresh ChromeElementCaptureView instead of updating
+        // a stale or hidden sheet in place.
         mcpIdentifyPresentation = nil
-        DispatchQueue.main.async {
+        let trackerID = presentation.trackerID.uuidString
+        ActivityLogger.log("identify", "resetting MCP identify sheet before re-present", metadata: [
+            "trackerID": trackerID
+        ])
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
             mcpIdentifyPresentation = presentation
+            ActivityLogger.log("identify", "re-presented MCP identify sheet", metadata: [
+                "trackerID": trackerID
+            ])
         }
     }
 
