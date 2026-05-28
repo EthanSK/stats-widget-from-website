@@ -95,6 +95,7 @@ struct MacosWidgetsStatsFromWebsiteApp: App {
 
         AppDelegate.terminatePriorInstancesIfNeeded()
         AppGroupStore.migrateLegacyAppGroupContainerIfNeeded()
+        ChromeBrowserProfile.shared.terminateAppOwnedBrowsersFromPreviousSessions(reason: "startup")
 
         do {
             _ = try AppGroupStore.backfillDefaultHookScaffoldIfNeeded()

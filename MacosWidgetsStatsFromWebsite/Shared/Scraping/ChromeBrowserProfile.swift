@@ -209,6 +209,12 @@ final class ChromeBrowserProfile {
     /// callbacks for that port are dispatched to the main queue.
     private var identifyLockWaiters: [Int: [() -> Void]] = [:]
 
+    private struct AppOwnedBrowserProcess {
+        let pid: pid_t
+        let command: String
+        let isBrowserParent: Bool
+    }
+
     /// v0.21.48 — set the identify-in-progress flag for the given port.
     /// Idempotent (safe to call multiple times). Called at the start of
     /// the Identify-in-Chrome flow.
@@ -1358,6 +1364,135 @@ final class ChromeBrowserProfile {
                 "applications": "\(tracked.applications.count)",
                 "processes": "\(tracked.processes.count)"
             ])
+        }
+
+        terminateAppOwnedBrowsersFromPreviousSessions(reason: "app-exit")
+    }
+
+    /// Kill app-owned Chromium processes that survived outside this app
+    /// session's in-memory tracking.
+    ///
+    /// This intentionally runs at startup before the background scheduler
+    /// starts. Sparkle and local install flows can replace the `.app` while
+    /// persistent Chromium from the prior build is still alive under
+    /// launchd. That orphan can later crash and show "Chromium quit
+    /// unexpectedly", or keep serving an old CDP instance/profile lock.
+    ///
+    /// Safety boundary: only processes whose argv contains this app's
+    /// dedicated browser profile root OR the app-bundled Chromium path are
+    /// targeted. Personal Chrome/Chromium uses a different user-data-dir and
+    /// does not live under our app bundle, so it is out of scope.
+    func terminateAppOwnedBrowsersFromPreviousSessions(reason: String) {
+        let matches = findAppOwnedBrowserProcesses()
+        guard !matches.isEmpty else {
+            ActivityLogger.log("browser", "no orphaned app-owned Chromium processes found", metadata: [
+                "reason": reason
+            ])
+            return
+        }
+
+        ActivityLogger.log("browser", "terminating orphaned app-owned Chromium processes", metadata: [
+            "reason": reason,
+            "count": "\(matches.count)",
+            "parents": "\(matches.filter(\.isBrowserParent).count)",
+            "pids": matches.map { String($0.pid) }.joined(separator: ",")
+        ])
+
+        let orderedMatches = matches.sorted { lhs, rhs in
+            if lhs.isBrowserParent != rhs.isBrowserParent {
+                return lhs.isBrowserParent
+            }
+            return lhs.pid < rhs.pid
+        }
+
+        for match in orderedMatches {
+            if kill(match.pid, SIGTERM) != 0 && errno != ESRCH {
+                ActivityLogger.log("browser", "SIGTERM to orphaned Chromium failed", metadata: [
+                    "reason": reason,
+                    "pid": "\(match.pid)",
+                    "errno": "\(errno)"
+                ])
+            }
+        }
+
+        waitForProcessExit(pids: orderedMatches.map(\.pid), timeout: 1.5)
+
+        let survivors = orderedMatches.filter { kill($0.pid, 0) == 0 }
+        for survivor in survivors {
+            if kill(survivor.pid, SIGKILL) != 0 && errno != ESRCH {
+                ActivityLogger.log("browser", "SIGKILL to orphaned Chromium failed", metadata: [
+                    "reason": reason,
+                    "pid": "\(survivor.pid)",
+                    "errno": "\(errno)"
+                ])
+            }
+        }
+
+        if !survivors.isEmpty {
+            waitForProcessExit(pids: survivors.map(\.pid), timeout: 1.0)
+        }
+
+        let finalSurvivors = orderedMatches.filter { kill($0.pid, 0) == 0 }
+        ActivityLogger.log("browser", "orphaned app-owned Chromium termination finished", metadata: [
+            "reason": reason,
+            "initialCount": "\(orderedMatches.count)",
+            "sigkillCount": "\(survivors.count)",
+            "remaining": "\(finalSurvivors.count)",
+            "remainingPids": finalSurvivors.map { String($0.pid) }.joined(separator: ",")
+        ])
+    }
+
+    private func waitForProcessExit(pids: [pid_t], timeout: TimeInterval) {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if pids.allSatisfy({ kill($0, 0) != 0 }) {
+                return
+            }
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+    }
+
+    private func findAppOwnedBrowserProcesses() -> [AppOwnedBrowserProcess] {
+        guard let output = Self.runPSAndReadOutput() else {
+            ActivityLogger.log("browser", "orphaned Chromium scan failed: ps unavailable")
+            return []
+        }
+
+        let browserRoot = AppGroupPaths.canonicalApplicationSupportURL()
+            .appendingPathComponent("Browser", isDirectory: true)
+            .path
+        let userDataNeedle = "--user-data-dir=\(browserRoot)"
+        let bundledPathNeedles = [
+            "/Stats Widget from Website.app/Contents/Resources/Browsers/Chromium.app/Contents/",
+            "/MacosWidgetsStatsFromWebsite.app/Contents/Resources/Browsers/Chromium.app/Contents/"
+        ]
+
+        return output.split(separator: "\n", omittingEmptySubsequences: false).compactMap { rawLine in
+            let line = String(rawLine).trimmingCharacters(in: .whitespaces)
+            guard !line.isEmpty,
+                  let separator = line.firstIndex(where: { $0 == " " || $0 == "\t" }) else {
+                return nil
+            }
+
+            let pidString = String(line[..<separator]).trimmingCharacters(in: .whitespaces)
+            let command = String(line[separator...]).trimmingCharacters(in: .whitespaces)
+            guard let pid = pid_t(pidString), pid > 0, pid != getpid() else {
+                return nil
+            }
+
+            let ownsDedicatedProfile = command.contains(userDataNeedle)
+            let ownsBundledPath = bundledPathNeedles.contains { command.contains($0) }
+            guard ownsDedicatedProfile || ownsBundledPath else {
+                return nil
+            }
+
+            let isBrowserParent = command.contains("Chromium.app/Contents/MacOS/Chromium")
+                && !command.contains(" --type=")
+            return AppOwnedBrowserProcess(
+                pid: pid,
+                command: command,
+                isBrowserParent: isBrowserParent
+            )
         }
     }
 
