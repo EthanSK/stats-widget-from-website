@@ -156,7 +156,6 @@ final class ChromeCDPScraper {
             return
         }
 
-        armTimeout()
         backgroundUseConfiguration = ChromeBrowserProfile.shared.beginBackgroundUse(profileName: tracker.browserProfile)
         // v0.21.8 item #1: emit the full scrape-context at start so any later
         // log entry can be cross-referenced via scrapeID + tracker. Replaces
@@ -197,6 +196,7 @@ final class ChromeCDPScraper {
         switch result {
         case .success(let configuration):
             self.configuration = configuration
+            armTimeout()
             ActivityLogger.log("scrape", "ensureLaunched ended", metadata: [
                 "scrapeID": scrapeID.uuidString,
                 "tracker": tracker.id.uuidString,
@@ -863,11 +863,17 @@ final class ChromeCDPScraper {
             self.finish(.failure(ScraperError.navigationFailed("Timed out loading \(self.tracker.url).")))
         }
         timeout = item
-        // v0.21.29 (voice 4019): per-tracker outer timeout. ChatGPT-domain
-        // trackers get 60s (Cloudflare JS-challenge headroom); everything
-        // else stays on the original 30s. Computed from the same helper
-        // (Tracker.scrapeTimeoutSec) the "started scrape" log entry uses
-        // so the activity log + actual fire time can never disagree.
+        // v0.21.67: arm this only after Chromium/CDP is reachable. Cold
+        // Chromium launches after install/restart can take tens of seconds
+        // before the DevTools socket is ready; counting that bootstrap time
+        // against the page/selector budget recorded false tracker failures
+        // even though the browser recovered and later scrapes succeeded.
+        //
+        // v0.21.29 (voice 4019): per-tracker page/selector timeout.
+        // ChatGPT-domain trackers get 60s (Cloudflare JS-challenge headroom);
+        // everything else stays on the original 30s. Computed from the same
+        // helper (Tracker.scrapeTimeoutSec) the "started scrape" log entry
+        // uses so the activity log + actual fire time can never disagree.
         let outerTimeoutSec = TimeInterval(tracker.scrapeTimeoutSec)
         DispatchQueue.main.asyncAfter(deadline: .now() + outerTimeoutSec, execute: item)
     }

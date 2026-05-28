@@ -542,7 +542,11 @@ final class ChromeBrowserProfile {
                 foreground: foreground,
                 initialURL: initialURL
             )
-            waitUntilCDPReachable(configuration: configuration, deadline: Date().addingTimeInterval(12)) { [weak self] result in
+            // Cold release Chromium can take much longer than a warm launch
+            // to publish /json/version after an app update, first notarized
+            // run, or profile recovery. Keep launch bounded, but do not turn
+            // a healthy slow boot into a false stale tracker row.
+            waitUntilCDPReachable(configuration: configuration, deadline: Date().addingTimeInterval(45)) { [weak self] result in
                 self?.finishPendingLaunch(configuration: configuration, foreground: foreground, result: result)
             }
         } catch {

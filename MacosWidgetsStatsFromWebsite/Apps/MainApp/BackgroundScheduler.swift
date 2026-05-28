@@ -26,6 +26,7 @@ final class BackgroundScheduler: ObservableObject {
     private let store: AppGroupStore
     private var schedulers: [UUID: NSBackgroundActivityScheduler] = [:]
     private var activeTrackerIDs: Set<UUID> = []
+    private var hasCompletedInitialSync = false
     private var notifiedBrokenTrackerIDs: Set<UUID> = []
 
     // MARK: - Coalesced widget reload (v0.21.0)
@@ -83,7 +84,15 @@ final class BackgroundScheduler: ObservableObject {
         // pinned shows a placeholder for the whole first interval. We
         // trigger a one-shot scrape immediately so AppGroupStore gets a
         // reading + the widget lights up within seconds.
+        //
+        // On the first sync of a normal app launch, though, every persisted
+        // tracker would otherwise look "new" because `activeTrackerIDs` starts
+        // empty. That creates a cold-start scrape burst immediately after an
+        // update/restart, racing Chromium launch and surfacing transient
+        // stale/error rows even when the next scrape succeeds. Only apply the
+        // immediate kickoff after the initial scheduler population has run.
         let newlyAddedIDs = scrapeReadyTrackerIDs.subtracting(activeTrackerIDs)
+        let shouldTriggerNewTrackers = hasCompletedInitialSync
 
         for tracker in scrapeReadyTrackers {
             schedule(tracker)
@@ -98,9 +107,19 @@ final class BackgroundScheduler: ObservableObject {
         }
 
         activeTrackerIDs = scrapeReadyTrackerIDs
+        if !hasCompletedInitialSync {
+            hasCompletedInitialSync = true
+            if !newlyAddedIDs.isEmpty {
+                ActivityLogger.log("scheduler", "initial sync registered existing trackers without immediate scrape", metadata: [
+                    "trackers": "\(newlyAddedIDs.count)"
+                ])
+            }
+        }
 
-        for newID in newlyAddedIDs {
-            triggerScrapeNow(trackerID: newID)
+        if shouldTriggerNewTrackers {
+            for newID in newlyAddedIDs {
+                triggerScrapeNow(trackerID: newID)
+            }
         }
     }
 
