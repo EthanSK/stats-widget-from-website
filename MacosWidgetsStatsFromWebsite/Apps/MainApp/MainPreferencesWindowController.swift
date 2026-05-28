@@ -32,6 +32,11 @@ import SwiftUI
 final class MainPreferencesWindowController: NSObject, NSWindowDelegate {
     static let shared = MainPreferencesWindowController()
 
+    private static let minimumWindowSize = NSSize(width: 780, height: 520)
+    private static let defaultWindowSize = NSSize(width: 900, height: 620)
+    private static let minimumVisibleSpan: CGFloat = 96
+    private static let screenMargin: CGFloat = 40
+
     private var window: NSWindow?
     private var store: AppGroupStore?
     private var backgroundScheduler: BackgroundScheduler?
@@ -77,6 +82,8 @@ final class MainPreferencesWindowController: NSObject, NSWindowDelegate {
                 object: nil,
                 userInfo: ["section": section.rawValue]
             )
+            configureWindowSizing(existing)
+            repairFrameIfNeeded(for: existing, context: "refocus")
             existing.makeKeyAndOrderFront(nil)
             ActivityLogger.log("prefs-window", "re-focused existing window", metadata: [
                 "section": section.rawValue
@@ -89,16 +96,17 @@ final class MainPreferencesWindowController: NSObject, NSWindowDelegate {
             .environmentObject(backgroundScheduler)
         let hosting = NSHostingController(rootView: rootView)
         let newWindow = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 900, height: 620),
+            contentRect: NSRect(origin: .zero, size: Self.defaultWindowSize),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
             defer: false
         )
         newWindow.contentViewController = hosting
         newWindow.title = "Stats Widget from Website"
-        newWindow.minSize = NSSize(width: 780, height: 520)
+        configureWindowSizing(newWindow)
         newWindow.delegate = self
         newWindow.center()
+        repairFrameIfNeeded(for: newWindow, context: "open")
         newWindow.isReleasedWhenClosed = false
         // We DON'T set NSWindowStyleMaskFullSizeContentView — keep the
         // standard titlebar so the user can drag/move the window
@@ -134,6 +142,100 @@ final class MainPreferencesWindowController: NSObject, NSWindowDelegate {
         // to re-use the same NSWindow instance (cheaper) AND avoid the
         // SwiftUI view's `@State` being thrown away mid-session. The
         // window is hidden but kept alive.
+    }
+
+    private func configureWindowSizing(_ window: NSWindow) {
+        window.minSize = Self.minimumWindowSize
+        window.contentMinSize = Self.minimumWindowSize
+    }
+
+    private func repairFrameIfNeeded(for window: NSWindow, context: String) {
+        let frame = window.frame
+        let visibleSpan = Self.visibleSpan(for: frame)
+        let hasInvalidGeometry = !Self.isFinite(frame)
+        let hasInvalidSize = frame.width < Self.minimumWindowSize.width || frame.height < Self.minimumWindowSize.height
+        let isEffectivelyHidden = visibleSpan.width < Self.minimumVisibleSpan || visibleSpan.height < Self.minimumVisibleSpan
+
+        guard hasInvalidGeometry || hasInvalidSize || isEffectivelyHidden else {
+            return
+        }
+
+        guard let targetScreen = Self.bestScreen(for: frame) ?? window.screen ?? NSScreen.main ?? NSScreen.screens.first else {
+            window.setFrame(NSRect(origin: .zero, size: Self.defaultWindowSize), display: true)
+            ActivityLogger.log("prefs-window", "repaired window frame without screen", metadata: [
+                "context": context,
+                "previous": Self.describe(frame),
+                "next": Self.describe(window.frame)
+            ])
+            return
+        }
+
+        let nextFrame = Self.defaultFrame(on: targetScreen)
+        window.setFrame(nextFrame, display: true)
+        ActivityLogger.log("prefs-window", "repaired window frame", metadata: [
+            "context": context,
+            "previous": Self.describe(frame),
+            "next": Self.describe(nextFrame),
+            "screen": targetScreen.localizedName
+        ])
+    }
+
+    private static func bestScreen(for frame: NSRect) -> NSScreen? {
+        let finiteFrame = isFinite(frame) ? frame : .zero
+        let center = NSPoint(x: finiteFrame.midX, y: finiteFrame.midY)
+
+        if let containing = NSScreen.screens.first(where: { $0.visibleFrame.contains(center) }) {
+            return containing
+        }
+
+        let intersecting = NSScreen.screens
+            .map { screen -> (screen: NSScreen, area: CGFloat) in
+                let intersection = screen.visibleFrame.intersection(finiteFrame)
+                return (screen, max(0, intersection.width) * max(0, intersection.height))
+            }
+            .max { lhs, rhs in lhs.area < rhs.area }
+
+        if let intersecting, intersecting.area > 0 {
+            return intersecting.screen
+        }
+
+        return NSScreen.main ?? NSScreen.screens.first
+    }
+
+    private static func defaultFrame(on screen: NSScreen) -> NSRect {
+        let visible = screen.visibleFrame
+        let maxWidth = max(minimumWindowSize.width, visible.width - screenMargin * 2)
+        let maxHeight = max(minimumWindowSize.height, visible.height - screenMargin * 2)
+        let width = min(defaultWindowSize.width, maxWidth)
+        let height = min(defaultWindowSize.height, maxHeight)
+        let x = visible.midX - width / 2
+        let y = visible.midY - height / 2
+        return NSRect(x: x, y: y, width: width, height: height)
+    }
+
+    private static func visibleSpan(for frame: NSRect) -> NSSize {
+        guard isFinite(frame) else {
+            return .zero
+        }
+
+        return NSScreen.screens.reduce(.zero) { best, screen in
+            let intersection = screen.visibleFrame.intersection(frame)
+            return NSSize(
+                width: max(best.width, max(0, intersection.width)),
+                height: max(best.height, max(0, intersection.height))
+            )
+        }
+    }
+
+    private static func isFinite(_ frame: NSRect) -> Bool {
+        frame.origin.x.isFinite
+            && frame.origin.y.isFinite
+            && frame.size.width.isFinite
+            && frame.size.height.isFinite
+    }
+
+    private static func describe(_ frame: NSRect) -> String {
+        "x=\(Int(frame.origin.x)) y=\(Int(frame.origin.y)) w=\(Int(frame.width)) h=\(Int(frame.height))"
     }
 }
 

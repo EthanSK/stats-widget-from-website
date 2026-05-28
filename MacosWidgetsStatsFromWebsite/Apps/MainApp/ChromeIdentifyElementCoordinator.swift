@@ -841,6 +841,13 @@ final class ChromeIdentifyElementCoordinator {
 
         switch result {
         case .success:
+            // The launch timeout protects the pre-overlay phase: browser
+            // teardown, spawn, target selection, and CDP setup. Slow profile
+            // startup can consume most of that budget, so once the overlay is
+            // actually live, hand timing over to the picker poll deadline
+            // below instead of closing a working picker early.
+            timeout?.cancel()
+            timeout = nil
             didInjectOverlay = true
             ActivityLogger.log("identify", "overlay injected", metadata: [
                 "target": currentTarget?.id ?? "",
