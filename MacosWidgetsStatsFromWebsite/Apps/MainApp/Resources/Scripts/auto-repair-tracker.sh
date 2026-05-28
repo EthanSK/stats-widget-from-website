@@ -172,12 +172,14 @@ log "  launching Terminal.app with auto-repair agent…"
 # Trying Terminal.app first. If the user prefers iTerm or another
 # emulator they can swap out the script after first launch (it's
 # installed to Application Support and is editable).
-osascript <<EOF >>"$LOG_FILE" 2>&1
-tell application "Terminal"
-    activate
-    do script "$TERMINAL_CMD"
-end tell
-EOF
+osascript \
+    -e 'on run argv' \
+    -e 'tell application "Terminal"' \
+    -e 'activate' \
+    -e 'do script (item 1 of argv)' \
+    -e 'end tell' \
+    -e 'end run' \
+    "$TERMINAL_CMD" >>"$LOG_FILE" 2>&1
 
 log "  Terminal launched. Auto-repair script returning."
 exit 0

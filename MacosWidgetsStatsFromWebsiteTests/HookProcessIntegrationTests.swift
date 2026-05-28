@@ -176,6 +176,25 @@ final class HookProcessIntegrationTests: XCTestCase {
         XCTAssertEqual(quoted, "'\(raw)'")
     }
 
+    /// v0.21.71 regression guard — the auto-repair script launches
+    /// Terminal through AppleScript with a command string that itself
+    /// contains quoted paths. Embedding that command directly into
+    /// `do script "$TERMINAL_CMD"` breaks AppleScript parsing with
+    /// "Expected end of line, etc. but found \"\"". Passing the command
+    /// through argv keeps AppleScript from re-parsing shell quotes.
+    func testAutoRepairScriptPassesTerminalCommandViaAppleScriptArgv() throws {
+        let repoRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let scriptURL = repoRoot
+            .appendingPathComponent("MacosWidgetsStatsFromWebsite/Apps/MainApp/Resources/Scripts/auto-repair-tracker.sh")
+        let source = try String(contentsOf: scriptURL, encoding: .utf8)
+
+        XCTAssertTrue(source.contains("-e 'on run argv'"))
+        XCTAssertTrue(source.contains("-e 'do script (item 1 of argv)'"))
+        XCTAssertFalse(source.contains("do script \"$TERMINAL_CMD\""))
+    }
+
     /// v0.21.36 regression guard — the exact-token case bypasses bash
     /// entirely (direct exec). Asserts that an exact-token payload
     /// resolves to a runnable command, not a shell-quoted bash line.
