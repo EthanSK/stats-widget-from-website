@@ -136,4 +136,25 @@ final class HookMCPTests: XCTestCase {
         XCTAssertEqual(stored.trackers.count, 0)
         XCTAssertEqual(stored.widgetConfigurations.count, 0)
     }
+
+    func testTransientBrowserChallengeFailurePreservesValueAndDoesNotIncrementBrokenCount() throws {
+        let tracker = Tracker(name: "Claude", url: "https://claude.ai/settings/usage", selector: ".usage")
+        let success = TrackerReading(
+            currentValue: "2% used",
+            currentNumeric: 2,
+            lastUpdatedAt: Date(timeIntervalSince1970: 1_715_000_000),
+            status: .ok,
+            consecutiveFailureCount: 0
+        )
+        try AppGroupStore.record(reading: success, for: tracker)
+
+        let message = try XCTUnwrap(SelectorExtractionError.browserChallengeInProgress.errorDescription)
+        let recorded = try AppGroupStore.recordFailure(message: message, for: tracker)
+
+        XCTAssertEqual(recorded.status, .stale)
+        XCTAssertEqual(recorded.currentValue, "2% used")
+        XCTAssertEqual(recorded.currentNumeric, 2.0)
+        XCTAssertEqual(recorded.consecutiveFailureCount, 0)
+        XCTAssertEqual(recorded.lastError, message)
+    }
 }

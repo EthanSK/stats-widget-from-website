@@ -34,6 +34,7 @@ enum ScraperError: LocalizedError {
 enum SelectorExtractionError: LocalizedError {
     case selectorDidNotMatch
     case loginRequired
+    case browserChallengeInProgress
     case invalidSelector(String)
     case invalidEvaluationResult
 
@@ -43,6 +44,8 @@ enum SelectorExtractionError: LocalizedError {
             return "Selector did not match any element."
         case .loginRequired:
             return "Login appears to be required in the app's Chrome profile before this selector can be scraped."
+        case .browserChallengeInProgress:
+            return "Cloudflare/browser verification is still in progress. Keeping the last successful value until the page finishes."
         case .invalidSelector(let message):
             return "Selector is invalid: \(message)"
         case .invalidEvaluationResult:
@@ -57,25 +60,8 @@ enum SelectorExtractionJS {
         return """
         (() => {
           const selector = \(selectorLiteral);
-          const loginLikely = (() => {
-            try {
-              const inputs = Array.from(document.querySelectorAll('input'));
-              const passwordInput = inputs.some(input => String(input.type || '').toLowerCase() === 'password');
-              const currentURL = String(window.location && window.location.href || '').toLowerCase();
-              const title = String(document.title || '').toLowerCase();
-              const formText = String(document.body && document.body.innerText || '').toLowerCase();
-              return passwordInput ||
-                /(^|[/.])(login|signin|sign-in|accounts|auth)([/.:-]|$)/.test(currentURL) ||
-                /sign in|log in|login|password/.test(title) ||
-                /sign in|log in|enter your password|continue to/.test(formText.slice(0, 4000));
-            } catch (_) {
-              return false;
-            }
-          })();
-
-          // v0.21.8 instrumentation-only additions: readyState, url, title.
-          // Read once into locals so the diagnostics never affect the
-          // existing payload shape (count, text, bbox, loginLikely).
+          // Read diagnostics once up front so login/challenge detection and
+          // the scrape logs agree on the exact URL/title/body snapshot.
           const readyState = (() => {
             try { return String(document.readyState || ''); } catch (_) { return ''; }
           })();
@@ -84,6 +70,41 @@ enum SelectorExtractionJS {
           })();
           const docTitle = (() => {
             try { return String(document.title || '').slice(0, 200); } catch (_) { return ''; }
+          })();
+          const bodyText = (() => {
+            try { return String(document.body && document.body.innerText || ''); } catch (_) { return ''; }
+          })();
+          const lowerURL = currentURL.toLowerCase();
+          const lowerTitle = docTitle.toLowerCase();
+          const lowerBodyHead = bodyText.toLowerCase().slice(0, 4000);
+
+          const challengeLikely = (() => {
+            try {
+              const hasChallengeDOM = !!(
+                document.querySelector &&
+                document.querySelector(
+                  '[name="cf-turnstile-response"], .cf-turnstile, #challenge-form, form[action*="__cf_chl"], script[src*="challenges.cloudflare.com"]'
+                )
+              );
+              return hasChallengeDOM ||
+                /__cf_chl|cf_chl|cf_clearance|challenges\\.cloudflare\\.com|cf-turnstile/.test(lowerURL) ||
+                /just a moment|attention required|verify you are human|checking your browser/.test(lowerTitle) ||
+                /checking your browser|verify you are human|cloudflare ray id|performance & security by cloudflare|cf-ray|cf-chl|turnstile/.test(lowerBodyHead);
+            } catch (_) {
+              return false;
+            }
+          })();
+          const loginLikely = (() => {
+            try {
+              const inputs = Array.from(document.querySelectorAll('input'));
+              const passwordInput = inputs.some(input => String(input.type || '').toLowerCase() === 'password');
+              return passwordInput ||
+                /(^|[/.])(login|signin|sign-in|accounts|auth)([/.:-]|$)/.test(lowerURL) ||
+                /sign in|log in|login|password/.test(lowerTitle) ||
+                /sign in|log in|enter your password|continue to/.test(lowerBodyHead);
+            } catch (_) {
+              return false;
+            }
           })();
 
           try {
@@ -103,6 +124,7 @@ enum SelectorExtractionJS {
                 devicePixelRatio: window.devicePixelRatio || 1
               } : null,
               loginLikely: loginLikely,
+              challengeLikely: challengeLikely,
               readyState: readyState,
               url: currentURL,
               title: docTitle
@@ -112,6 +134,7 @@ enum SelectorExtractionJS {
               count: -1,
               error: String(error && error.message ? error.message : error),
               loginLikely: loginLikely,
+              challengeLikely: challengeLikely,
               readyState: readyState,
               url: currentURL,
               title: docTitle

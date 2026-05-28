@@ -223,9 +223,9 @@ final class BackgroundScheduler: ObservableObject {
         let scheduler = schedulers[tracker.id] ?? NSBackgroundActivityScheduler(identifier: identifier)
         scheduler.invalidate()
         // v0.21.29 (Ethan voice 4019): use the tracker's EFFECTIVE refresh
-        // interval, which floors ChatGPT-domain trackers at 15 min (900s)
-        // to dodge Cloudflare's per-IP rate-limit. Claude/other trackers
-        // continue to use their stored `refreshIntervalSec` unchanged.
+        // interval, which floors protected-domain trackers at 15 min
+        // (900s) to dodge challenge/rate heuristics. Other trackers use
+        // their stored `refreshIntervalSec` unchanged.
         // The legacy 60s minimum below still applies as a sanity floor in
         // case someone hand-edits trackers.json to an impossible value.
         let effectiveIntervalSec = tracker.effectiveRefreshIntervalSec
@@ -239,17 +239,17 @@ final class BackgroundScheduler: ObservableObject {
         // working without having to instrument from outside the app.
         // Filter with: `log show --predicate 'subsystem == "..."' --info`
         // or grep activity.log.
-        // v0.21.29: include `domainCadenceFloor` so we can tell at a glance
-        // whether the ChatGPT 15-min override actually kicked in for this
-        // tracker, vs the user just happening to have set a 15-min cadence.
-        let cadenceFloored = Tracker.isChatGPTDomain(url: tracker.url)
+        // v0.21.29/v0.21.68: include `domainCadenceFloor` so we can tell
+        // whether the protected-domain 15-min override actually kicked in
+        // for this tracker, vs the user just setting a 15-min cadence.
+        let cadenceFloored = Tracker.isCloudflareSensitiveDomain(url: tracker.url)
             && tracker.refreshIntervalSec < 900
         ActivityLogger.log("scheduler", "rescheduled", metadata: [
             "trackerID": tracker.id.uuidString,
             "trackerName": tracker.name,
             "intervalSec": "\(Int(interval))",
             "configuredIntervalSec": "\(tracker.refreshIntervalSec)",
-            "domainCadenceFloor": cadenceFloored ? "chatgpt-15min" : "none"
+            "domainCadenceFloor": cadenceFloored ? "protected-15min" : "none"
         ])
 
         scheduler.schedule { [weak self] completion in

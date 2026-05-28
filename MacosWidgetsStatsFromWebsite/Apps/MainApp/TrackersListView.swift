@@ -473,6 +473,8 @@ private struct TrackerRowView: View {
     /// users / bug reporters.
     private func detailedHelpText(for kind: TrackerFailureKind) -> String {
         switch kind {
+        case .browserChallenge:
+            return "The page is showing a browser verification challenge. The last good value is kept and the background scheduler will retry without asking you to re-identify."
         case .loginRequired:
             return "The tracker's URL needs sign-in inside the app's Chromium profile. Tap to open Identify in Chrome and re-capture the selector once you're logged in."
         case .selectorNotFound:

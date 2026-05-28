@@ -20,6 +20,7 @@ enum TrackerStatus: String, Codable, Equatable {
 /// the JSON file — `lastError` already contains the LocalizedError
 /// description string from each scrape failure path.
 enum TrackerFailureKind {
+    case browserChallenge
     case loginRequired
     case selectorNotFound
     case pageTimeout
@@ -29,6 +30,8 @@ enum TrackerFailureKind {
     /// Short noun phrase used as the per-row status label.
     var headline: String {
         switch self {
+        case .browserChallenge:
+            return "Verification pending"
         case .loginRequired:
             return "Login required"
         case .selectorNotFound:
@@ -53,7 +56,7 @@ enum TrackerFailureKind {
             return "Tap to re-identify"
         case .selectorNotFound:
             return "Tap to re-identify"
-        case .pageTimeout, .staleSuccess, .other:
+        case .browserChallenge, .pageTimeout, .staleSuccess, .other:
             return nil
         }
     }
@@ -65,9 +68,54 @@ enum TrackerFailureKind {
         switch self {
         case .loginRequired, .selectorNotFound:
             return true
-        case .pageTimeout, .staleSuccess, .other:
+        case .browserChallenge, .pageTimeout, .staleSuccess, .other:
             return false
         }
+    }
+
+    /// Failures that should keep the last good value but should not count
+    /// toward "broken" or trigger repair hooks/notifications.
+    var countsTowardBroken: Bool {
+        switch self {
+        case .browserChallenge:
+            return false
+        case .loginRequired, .selectorNotFound, .pageTimeout, .staleSuccess, .other:
+            return true
+        }
+    }
+
+    static func classify(errorMessage message: String) -> TrackerFailureKind {
+        let lowered = message.lowercased()
+        // SelectorExtractionError.browserChallengeInProgress.errorDescription
+        // and Cloudflare/Turnstile fingerprints from page diagnostics.
+        if lowered.contains("cloudflare")
+            || lowered.contains("browser verification")
+            || lowered.contains("verification challenge")
+            || lowered.contains("verification is still in progress")
+            || lowered.contains("just a moment")
+            || lowered.contains("__cf_chl")
+            || lowered.contains("cf-turnstile")
+            || lowered.contains("turnstile") {
+            return .browserChallenge
+        }
+        // SelectorExtractionError.loginRequired.errorDescription
+        // matches "Login appears to be required …".
+        if lowered.contains("login") || lowered.contains("sign in") || lowered.contains("password") {
+            return .loginRequired
+        }
+        // SelectorExtractionError.selectorDidNotMatch / .invalidSelector
+        if lowered.contains("selector did not match") || lowered.contains("selector is invalid") {
+            return .selectorNotFound
+        }
+        // ScraperError.selectedElementHasNoText / .selectedElementHasNoVisibleRect
+        if lowered.contains("selected element has no") {
+            return .selectorNotFound
+        }
+        // ScraperError.navigationFailed("Timed out loading …")
+        if lowered.contains("timed out") || lowered.contains("timeout") {
+            return .pageTimeout
+        }
+        return .other(message)
     }
 
     /// Best-effort classifier. Looks at `lastError` text for known
@@ -83,25 +131,7 @@ enum TrackerFailureKind {
 
         if let message = reading.lastError?.trimmingCharacters(in: .whitespacesAndNewlines),
            !message.isEmpty {
-            let lowered = message.lowercased()
-            // SelectorExtractionError.loginRequired.errorDescription
-            // matches "Login appears to be required …".
-            if lowered.contains("login") || lowered.contains("sign in") || lowered.contains("password") {
-                return .loginRequired
-            }
-            // SelectorExtractionError.selectorDidNotMatch / .invalidSelector
-            if lowered.contains("selector did not match") || lowered.contains("selector is invalid") {
-                return .selectorNotFound
-            }
-            // ScraperError.selectedElementHasNoText / .selectedElementHasNoVisibleRect
-            if lowered.contains("selected element has no") {
-                return .selectorNotFound
-            }
-            // ScraperError.navigationFailed("Timed out loading …")
-            if lowered.contains("timed out") || lowered.contains("timeout") {
-                return .pageTimeout
-            }
-            return .other(message)
+            return classify(errorMessage: message)
         }
 
         // No lastError but status != ok ⇒ stale because the LaunchAgent

@@ -318,26 +318,23 @@ struct Tracker: Codable, Identifiable {
 
     // MARK: - Per-domain scraping behaviour (v0.21.29, Ethan voice 4019)
     //
-    // ChatGPT (chatgpt.com / openai.com) pages sit behind Cloudflare's
-    // bot-protection layer and consistently take longer to settle than
-    // Claude (claude.ai) pages. Two observed behaviours:
+    // ChatGPT/OpenAI and Claude pages sit behind bot-protection layers
+    // that can take longer to settle than normal pages. Two observed
+    // behaviours:
     //   1. Initial DOMContentLoaded fires fast but Cloudflare's JS
     //      challenge can hold the metric element offscreen for 10-20s
     //      while it computes the bot-score. Our 30s outer scrape timeout
     //      (with 25s inner selector-poll deadline) was clipping that
     //      window on slow days — see activity.log "selectorPoll deadline"
     //      entries that have ~24-25s elapsed.
-    //   2. Repeatedly hammering the same ChatGPT URL every 30 min
-    //      (the default text-tracker cadence) eventually trips
-    //      Cloudflare's per-IP request-rate heuristic, which then
-    //      returns the JS challenge to EVERY scrape until it ages out
-    //      (~1-2h). Spacing requests to 15 min keeps us under the
-    //      threshold Ethan's observed (he never gets rate-limited at
-    //      that cadence in normal browsing).
+    //   2. Repeatedly hammering the same protected URL can trip
+    //      challenge/rate heuristics, which then return verification
+    //      pages to every scrape until the challenge ages out. Spacing
+    //      requests to 15 min keeps us under the threshold observed in
+    //      normal browsing.
     //
-    // Both fixes are gated on URL match so Claude trackers stay on the
-    // existing 30s timeout + 30 min cadence — no behavioural drift for
-    // the trackers that were already working fine.
+    // Both fixes are gated on URL match so ordinary trackers keep the
+    // original 30s timeout and user-configured cadence.
 
     /// Returns true if `url` points at a ChatGPT/OpenAI host that needs
     /// the Cloudflare-friendly scrape behaviour. Case-insensitive host
@@ -364,22 +361,36 @@ struct Tracker: Codable, Identifiable {
         return false
     }
 
-    /// Outer scrape timeout (seconds) for this tracker. ChatGPT-domain
-    /// trackers get 60s (v0.21.29, voice 4019) so Cloudflare's JS
-    /// challenge has room to complete; everything else stays on 30s.
-    var scrapeTimeoutSec: Int {
-        Tracker.isChatGPTDomain(url: url) ? 60 : 30
+    /// Returns true if `url` points at Claude. Kept separate from
+    /// `isChatGPTDomain` so logging and tests can still name the domain
+    /// family while shared scrape behaviour uses `isCloudflareSensitiveDomain`.
+    static func isClaudeDomain(url rawURL: String) -> Bool {
+        guard let host = URLComponents(string: rawURL)?.host?.lowercased() else {
+            return rawURL.lowercased().contains("claude.ai")
+        }
+        return host == "claude.ai" || host.hasSuffix(".claude.ai")
     }
 
-    /// Effective scheduler interval for this tracker. ChatGPT-domain
-    /// trackers are floored at 15 min (900s) to stay under Cloudflare's
-    /// per-IP rate limit (v0.21.29, voice 4019). The tracker's own
-    /// `refreshIntervalSec` still wins if the user explicitly set
-    /// something longer — we only override when their value is faster
-    /// than 15 min. Non-ChatGPT trackers use their stored interval
-    /// unchanged.
+    /// Domains that need longer challenge headroom and slower refreshes.
+    static func isCloudflareSensitiveDomain(url rawURL: String) -> Bool {
+        isChatGPTDomain(url: rawURL) || isClaudeDomain(url: rawURL)
+    }
+
+    /// Outer scrape timeout (seconds) for this tracker. Protected-domain
+    /// trackers get 60s so verification JS has room to complete; everything
+    /// else stays on 30s.
+    var scrapeTimeoutSec: Int {
+        Tracker.isCloudflareSensitiveDomain(url: url) ? 60 : 30
+    }
+
+    /// Effective scheduler interval for this tracker. Protected-domain
+    /// trackers are floored at 15 min (900s) to stay under challenge/rate
+    /// heuristics. The tracker's own `refreshIntervalSec` still wins if
+    /// the user explicitly set something longer — we only override when
+    /// their value is faster than 15 min. Other trackers use their stored
+    /// interval unchanged.
     var effectiveRefreshIntervalSec: Int {
-        if Tracker.isChatGPTDomain(url: url) {
+        if Tracker.isCloudflareSensitiveDomain(url: url) {
             return max(900, refreshIntervalSec)
         }
         return refreshIntervalSec

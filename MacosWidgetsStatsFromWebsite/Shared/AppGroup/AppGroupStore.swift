@@ -469,7 +469,9 @@ final class AppGroupStore: ObservableObject {
         try withReadingsMutationLock {
             var file = loadReadingsUnlocked()
             let existing = file.readings[tracker.id.uuidString]
-            let failureCount = (existing?.consecutiveFailureCount ?? 0) + 1
+            let failureKind = TrackerFailureKind.classify(errorMessage: message)
+            let countsTowardBroken = failureKind.countsTowardBroken
+            let failureCount = countsTowardBroken ? (existing?.consecutiveFailureCount ?? 0) + 1 : 0
             let status: TrackerStatus = failureCount >= 3 ? .broken : .stale
             let reading = TrackerReading(
                 currentValue: existing?.currentValue,
@@ -493,10 +495,11 @@ final class AppGroupStore: ObservableObject {
             file.schemaVersion = currentSchemaVersion
             file.readings[tracker.id.uuidString] = reading
             try write(readingsFile: file)
-            ActivityLogger.log("store", "recorded scrape failure", metadata: [
+            ActivityLogger.log("store", countsTowardBroken ? "recorded scrape failure" : "recorded transient scrape failure", metadata: [
                 "tracker": tracker.id.uuidString,
                 "failures": "\(failureCount)",
                 "status": status.rawValue,
+                "kind": failureKind.headline,
                 "error": message
             ])
             return reading

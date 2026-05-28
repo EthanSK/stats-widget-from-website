@@ -281,14 +281,12 @@ final class ChromeCDPScraper {
                         "elapsedMs": "\(prepElapsedMs)"
                     ])
                     self.beginPhase("selectorPoll")
-                    // v0.21.29 (voice 4019): selector-poll deadline tracks
-                    // the outer scrape timeout. We keep a 5s buffer so the
-                    // inner deadline expires first and we hit the proper
-                    // "selectorPoll deadline" fallback path (which dumps
-                    // lastSelectorStatus into the activity log) instead of
-                    // racing the outer DispatchSource timer. ChatGPT
-                    // trackers get 55s here (60s outer - 5s buffer);
-                    // Claude trackers stay on 25s (30s outer - 5s buffer).
+                    // v0.21.29/v0.21.68: selector-poll deadline tracks the
+                    // outer scrape timeout. Keep a 5s buffer so the inner
+                    // deadline hits the diagnosable "selectorPoll deadline"
+                    // path before the outer DispatchSource timer fires.
+                    // Cloudflare-sensitive trackers get 55s here
+                    // (60s outer - 5s buffer).
                     let selectorPollBudget = TimeInterval(self.tracker.scrapeTimeoutSec - 5)
                     self.waitForSelector(deadline: Date().addingTimeInterval(selectorPollBudget))
                 }
@@ -485,6 +483,9 @@ final class ChromeCDPScraper {
         if let loginLikely = SelectorExtractionJS.boolValue(status["loginLikely"]) {
             meta["loginLikely"] = loginLikely ? "true" : "false"
         }
+        if let challengeLikely = SelectorExtractionJS.boolValue(status["challengeLikely"]) {
+            meta["challengeLikely"] = challengeLikely ? "true" : "false"
+        }
         ActivityLogger.log("scrape", "selector poll", metadata: meta)
     }
 
@@ -548,7 +549,9 @@ final class ChromeCDPScraper {
     }
 
     private func finishSelectorFailure(finalStatus: [String: Any]) {
-        if SelectorExtractionJS.boolValue(finalStatus["loginLikely"]) == true {
+        if SelectorExtractionJS.boolValue(finalStatus["challengeLikely"]) == true {
+            finish(.failure(SelectorExtractionError.browserChallengeInProgress))
+        } else if SelectorExtractionJS.boolValue(finalStatus["loginLikely"]) == true {
             finish(.failure(SelectorExtractionError.loginRequired))
         } else {
             finish(.failure(SelectorExtractionError.selectorDidNotMatch))
@@ -858,6 +861,9 @@ final class ChromeCDPScraper {
                 if let loginLikely = SelectorExtractionJS.boolValue(status["loginLikely"]) {
                     meta["lastLoginLikely"] = loginLikely ? "true" : "false"
                 }
+                if let challengeLikely = SelectorExtractionJS.boolValue(status["challengeLikely"]) {
+                    meta["lastChallengeLikely"] = challengeLikely ? "true" : "false"
+                }
             }
             ActivityLogger.log("scrape", "timeout fired", metadata: meta)
             self.finish(.failure(ScraperError.navigationFailed("Timed out loading \(self.tracker.url).")))
@@ -869,11 +875,11 @@ final class ChromeCDPScraper {
         // against the page/selector budget recorded false tracker failures
         // even though the browser recovered and later scrapes succeeded.
         //
-        // v0.21.29 (voice 4019): per-tracker page/selector timeout.
-        // ChatGPT-domain trackers get 60s (Cloudflare JS-challenge headroom);
-        // everything else stays on the original 30s. Computed from the same
-        // helper (Tracker.scrapeTimeoutSec) the "started scrape" log entry
-        // uses so the activity log + actual fire time can never disagree.
+        // v0.21.29/v0.21.68: per-tracker page/selector timeout.
+        // Cloudflare-sensitive trackers get 60s challenge headroom;
+        // everything else stays on the original 30s. Computed from the
+        // same helper the "started scrape" log uses so the activity log +
+        // actual fire time can never disagree.
         let outerTimeoutSec = TimeInterval(tracker.scrapeTimeoutSec)
         DispatchQueue.main.asyncAfter(deadline: .now() + outerTimeoutSec, execute: item)
     }

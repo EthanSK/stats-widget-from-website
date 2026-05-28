@@ -95,6 +95,84 @@ final class IdentifyElementRegressionTests: XCTestCase {
         XCTAssertFalse(ChromeCDPClient.pagePreparationDomains.contains("Accessibility.enable"))
     }
 
+    func testValidationScriptFlagsCloudflareChallengeAsTransient() throws {
+        let context = try XCTUnwrap(JSContext())
+        context.evaluateScript("""
+        var window = {
+          location: { href: 'https://claude.ai/usage?__cf_chl_rt_tk=abc' },
+          innerWidth: 1200,
+          innerHeight: 800,
+          devicePixelRatio: 2
+        };
+        var document = {
+          readyState: 'complete',
+          title: 'Just a moment...',
+          body: { innerText: 'Checking your browser before accessing claude.ai' },
+          querySelectorAll: function(selector) { return []; },
+          querySelector: function(selector) { return null; }
+        };
+        """)
+
+        let value = try XCTUnwrap(
+            context.evaluateScript(SelectorExtractionJS.validationScript(for: ".usage"))
+        )
+        let status = try XCTUnwrap(value.toDictionary() as? [String: Any])
+
+        XCTAssertEqual(status["count"] as? Int32, 0)
+        XCTAssertEqual(status["challengeLikely"] as? Bool, true)
+        XCTAssertEqual(status["loginLikely"] as? Bool, false)
+    }
+
+    func testCloudflareChallengeClassificationDoesNotSuggestReidentify() throws {
+        let message = try XCTUnwrap(SelectorExtractionError.browserChallengeInProgress.errorDescription)
+        let reading = TrackerReading(status: .stale, lastError: message, consecutiveFailureCount: 0)
+        let kind = try XCTUnwrap(TrackerFailureKind.classify(reading: reading))
+
+        XCTAssertEqual(kind.headline, "Verification pending")
+        XCTAssertNil(kind.actionHint)
+        XCTAssertFalse(kind.benefitsFromReIdentify)
+        XCTAssertFalse(kind.countsTowardBroken)
+    }
+
+    func testClaudeUsesCloudflareFriendlyScrapeBudgetAndCadence() {
+        let tracker = Tracker(
+            name: "Claude",
+            url: "https://claude.ai/settings/usage",
+            selector: ".usage",
+            refreshIntervalSec: 180
+        )
+
+        XCTAssertTrue(Tracker.isClaudeDomain(url: tracker.url))
+        XCTAssertTrue(Tracker.isCloudflareSensitiveDomain(url: tracker.url))
+        XCTAssertEqual(tracker.scrapeTimeoutSec, 60)
+        XCTAssertEqual(tracker.effectiveRefreshIntervalSec, 900)
+    }
+
+    func testDuePolicyUsesEffectiveProtectedDomainCadence() {
+        let tracker = Tracker(
+            name: "Claude",
+            url: "https://claude.ai/settings/usage",
+            selector: ".usage",
+            refreshIntervalSec: 180
+        )
+        let reading = TrackerReading(
+            lastUpdatedAt: Date(timeIntervalSince1970: 1_000),
+            lastAttemptedAt: Date(timeIntervalSince1970: 1_000),
+            status: .ok
+        )
+
+        XCTAssertFalse(ScrapeDuePolicy.isDue(
+            tracker: tracker,
+            reading: reading,
+            now: Date(timeIntervalSince1970: 1_500)
+        ))
+        XCTAssertTrue(ScrapeDuePolicy.isDue(
+            tracker: tracker,
+            reading: reading,
+            now: Date(timeIntervalSince1970: 1_901)
+        ))
+    }
+
     private func pageTarget(id: String, url: String) throws -> ChromeBrowserPageTarget {
         ChromeBrowserPageTarget(
             id: id,

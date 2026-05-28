@@ -35,7 +35,7 @@ enum ScrapeDuePolicy {
             return true
         }
 
-        let interval = max(minimumIntervalSec, TimeInterval(tracker.refreshIntervalSec))
+        let interval = max(minimumIntervalSec, TimeInterval(tracker.effectiveRefreshIntervalSec))
 
         // Prefer lastAttemptedAt — that's the gate we need so failures don't
         // hammer every tick. Fall back to lastUpdatedAt for readings written
