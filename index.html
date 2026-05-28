@@ -70,7 +70,7 @@
         </svg>
         <span class="brand-words">
           <span class="brand-name">Stats Widget from Website</span>
-          <span class="brand-sub" id="brand-version" data-default="release-ready">release-ready</span>
+          <span class="brand-sub" id="brand-version" data-default="v0.21.71">v0.21.71</span>
         </span>
       </a>
       <nav class="topnav" aria-label="Primary">
@@ -108,7 +108,7 @@
               Source on GitHub
             </a>
           </div>
-          <p class="hero-note">MIT-licensed. Direct-download releases are signed, notarized, and Sparkle-updated once the first public release is approved.</p>
+          <p class="hero-note">MIT-licensed. Direct-download releases are signed, notarized, and kept current through Sparkle.</p>
         </div>
 
         <!-- Hero composition: floating widget tiles -->
@@ -622,7 +622,7 @@
         <div class="section-head">
           <p class="kicker">05 · INSTALL</p>
           <h2>Download, build, or follow the release channel.</h2>
-          <p class="section-sub">The renamed repo is wired to GitHub Releases, a stable latest ZIP alias, and a Sparkle appcast. The first public ZIP appears after the signing/notarization secrets are added and a release run is approved.</p>
+          <p class="section-sub">The release channel is live: GitHub Releases hosts the signed ZIP, the latest-download alias follows the newest build, and Sparkle reads from the same appcast.</p>
         </div>
 
         <div class="install-grid">
@@ -632,7 +632,7 @@
             <h3>Latest signed ZIP</h3>
             <p>Stable link that follows whichever GitHub Release is marked latest. Existing installs use Sparkle from the same release pipeline.</p>
             <a class="install-cmd install-link" href="https://github.com/EthanSK/stats-widget-from-website/releases/latest/download/Stats-Widget-from-Website-latest.zip" rel="noopener">Download Stats-Widget-from-Website-latest.zip</a>
-            <span class="install-soon">Requires the first approved public release</span>
+            <span class="install-soon">Signed, notarized, and Sparkle-ready</span>
           </article>
 
           <article class="install-card">
@@ -781,7 +781,7 @@
       (function loadVersion() {
         var el = document.getElementById("brand-version");
         if (!el) return;
-        var fallback = el.dataset.default || "release-ready";
+        var fallback = el.dataset.default || "v0.21.71";
 
         function render(version, channel) {
           if (!version) {
