@@ -1,7 +1,7 @@
 {
-  "version": "0.21.69",
+  "version": "0.21.70",
   "channel": "stable",
-  "updated_at": "2026-05-28T14:33:28Z",
+  "updated_at": "2026-05-28T14:44:50Z",
   "release_url": "https://github.com/EthanSK/stats-widget-from-website/releases/latest",
   "appcast_url": "https://ethansk.github.io/stats-widget-from-website/appcast.xml",
   "download_url": "https://github.com/EthanSK/stats-widget-from-website/releases/latest/download/Stats-Widget-from-Website-latest.zip"
