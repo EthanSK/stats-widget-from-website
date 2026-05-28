@@ -61,12 +61,79 @@ enum ValueTransform: String, Codable, CaseIterable, Equatable {
     }
 }
 
+struct ValueDisplayOptions: Codable, Equatable {
+    var stripLetters: Bool
+    var stripPercentSymbol: Bool
+
+    init(
+        stripLetters: Bool = true,
+        stripPercentSymbol: Bool = false
+    ) {
+        self.stripLetters = stripLetters
+        self.stripPercentSymbol = stripPercentSymbol
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        stripLetters = try container.decodeIfPresent(Bool.self, forKey: .stripLetters) ?? true
+        stripPercentSymbol = try container.decodeIfPresent(Bool.self, forKey: .stripPercentSymbol) ?? false
+    }
+
+    func formatted(_ rawValue: String) -> String {
+        var value = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        if stripLetters {
+            value = Self.removingLetters(from: value)
+        }
+        if stripPercentSymbol {
+            value = value.replacingOccurrences(of: "%", with: "")
+        }
+        return Self.normalizedSpacing(value)
+    }
+
+    private static func removingLetters(from value: String) -> String {
+        let scalarsToStrip = CharacterSet.letters.union(.nonBaseCharacters)
+        let keptScalars = value.unicodeScalars.filter { !scalarsToStrip.contains($0) }
+        let withoutLetters = String(String.UnicodeScalarView(keptScalars))
+        let trimmed = trimValueEdges(normalizedSpacing(withoutLetters))
+
+        guard trimmed.rangeOfCharacter(from: .decimalDigits) != nil else {
+            return value.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        return trimmed
+    }
+
+    private static func normalizedSpacing(_ value: String) -> String {
+        value
+            .components(separatedBy: .whitespacesAndNewlines)
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+            .replacingOccurrences(of: " %", with: "%")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func trimValueEdges(_ value: String) -> String {
+        let allowedEdgeScalars = CharacterSet.decimalDigits
+            .union(CharacterSet(charactersIn: "%$£€¥+-.,"))
+        var scalars = Array(value.unicodeScalars)
+
+        while let first = scalars.first, !allowedEdgeScalars.contains(first) {
+            scalars.removeFirst()
+        }
+        while let last = scalars.last, !allowedEdgeScalars.contains(last) {
+            scalars.removeLast()
+        }
+
+        return String(String.UnicodeScalarView(scalars))
+    }
+}
+
 struct Tracker: Codable, Identifiable {
     static let defaultBrowserProfile = "macos-widgets-stats-from-website"
     static let defaultIcon = "chart.line.uptrend.xyaxis"
     static let defaultAccentColorHex = "#10a37f"
     static let defaultGradientMode: GradientMode = .none
     static let defaultValueTransform: ValueTransform = .none
+    static let defaultValueDisplayOptions = ValueDisplayOptions()
 
     var id: UUID
     var name: String
@@ -88,6 +155,7 @@ struct Tracker: Codable, Identifiable {
     var accentColorHex: String
     var gradientMode: GradientMode
     var valueTransform: ValueTransform
+    var valueDisplayOptions: ValueDisplayOptions
     var valueParser: ValueParser
     var history: TrackerHistory
     var hideElements: [String]
@@ -122,6 +190,7 @@ struct Tracker: Codable, Identifiable {
         accentColorHex: String = Tracker.defaultAccentColorHex,
         gradientMode: GradientMode = Tracker.defaultGradientMode,
         valueTransform: ValueTransform = Tracker.defaultValueTransform,
+        valueDisplayOptions: ValueDisplayOptions = Tracker.defaultValueDisplayOptions,
         valueParser: ValueParser = ValueParser(),
         history: TrackerHistory = TrackerHistory(),
         hideElements: [String] = [],
@@ -142,6 +211,7 @@ struct Tracker: Codable, Identifiable {
         self.accentColorHex = accentColorHex
         self.gradientMode = gradientMode
         self.valueTransform = valueTransform
+        self.valueDisplayOptions = valueDisplayOptions
         self.valueParser = valueParser
         self.history = history
         self.hideElements = hideElements
@@ -178,6 +248,12 @@ struct Tracker: Codable, Identifiable {
         // existing trackers continue to display the raw scraped value.
         valueTransform = try container.decodeIfPresent(ValueTransform.self, forKey: .valueTransform)
             ?? Tracker.defaultValueTransform
+        // valueDisplayOptions was added in 0.21.65. Defaulting
+        // stripLetters to true removes suffixes like "remaining" from the
+        // widget number while preserving percent signs unless the user opts
+        // into stripping them too.
+        valueDisplayOptions = try container.decodeIfPresent(ValueDisplayOptions.self, forKey: .valueDisplayOptions)
+            ?? Tracker.defaultValueDisplayOptions
         valueParser = try container.decodeIfPresent(ValueParser.self, forKey: .valueParser) ?? ValueParser()
         history = try container.decodeIfPresent(TrackerHistory.self, forKey: .history) ?? TrackerHistory()
         hideElements = try container.decodeIfPresent([String].self, forKey: .hideElements) ?? []
@@ -191,6 +267,48 @@ struct Tracker: Codable, Identifiable {
         // critical: an empty array means the tracker behaves exactly as it
         // did before — single-element scrape, single-element widget binding.
         secondaryElements = try container.decodeIfPresent([TrackerElement].self, forKey: .secondaryElements) ?? []
+    }
+
+    func displayValue(for reading: TrackerReading?) -> String? {
+        if valueTransform == .invertFromHundred, let raw = reading?.currentNumeric {
+            let inverted = max(0.0, min(100.0, 100.0 - raw))
+            return valueDisplayOptions.formatted(
+                Self.formattedInvertedValue(inverted, originalValue: reading?.currentValue)
+            )
+        }
+
+        guard let currentValue = reading?.currentValue,
+              !currentValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return nil
+        }
+
+        return valueDisplayOptions.formatted(currentValue)
+    }
+
+    func displayNumeric(for reading: TrackerReading?) -> Double? {
+        guard let raw = reading?.currentNumeric else {
+            return nil
+        }
+        switch valueTransform {
+        case .none:
+            return raw
+        case .invertFromHundred:
+            return max(0.0, min(100.0, 100.0 - raw))
+        }
+    }
+
+    private static func formattedInvertedValue(_ inverted: Double, originalValue: String?) -> String {
+        let formatted: String
+        if inverted == inverted.rounded() {
+            formatted = String(Int(inverted))
+        } else {
+            formatted = String(format: "%.1f", inverted)
+        }
+
+        if originalValue?.contains("%") == true {
+            return "\(formatted)% remaining"
+        }
+        return "\(formatted) remaining"
     }
 
     private static func normalizedContentSelectorHint(_ value: String?) -> String? {

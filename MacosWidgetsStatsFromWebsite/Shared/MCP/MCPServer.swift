@@ -572,10 +572,12 @@ private enum MCPToolCatalog {
             "accentColorHex": stringSchema("Hex accent color, e.g. #10a37f"),
             "gradientMode": gradientModeSchema(),
             "valueTransform": valueTransformSchema(),
+            "valueStripLetters": boolSchema("Remove letters/words from the displayed value. Default true, so values like '99% remaining' render as '99%'."),
+            "valueStripPercentSymbol": boolSchema("Remove the percent sign from the displayed value. Default false."),
             "refreshIntervalSec": intSchema("Refresh interval in seconds"),
             "hideElements": arraySchema(stringSchema("CSS selector to hide before snapshots"))
         ], required: ["name", "url", "selector"]),
-        tool("update_tracker", "Modify tracker fields such as name, URL, label, icon, refresh interval, mode, selector, content fallback hint, element bounds, or hidden snapshot selectors. Includes gradientMode for coloring the big-number value (red↔green sweep based on whether high values are bad or good), and valueTransform for displaying e.g. '99 remaining' instead of '1% used'.", [
+        tool("update_tracker", "Modify tracker fields such as name, URL, label, icon, refresh interval, mode, selector, content fallback hint, element bounds, or hidden snapshot selectors. Includes gradientMode for coloring the big-number value (red↔green sweep based on whether high values are bad or good), valueTransform for displaying e.g. '99% remaining' instead of '1% used', and valueStripLetters/valueStripPercentSymbol for compact widget numbers.", [
             "id": stringSchema("Tracker UUID"),
             "name": stringSchema("Tracker name"),
             "url": stringSchema("HTTPS URL, or http://localhost for testing"),
@@ -588,6 +590,8 @@ private enum MCPToolCatalog {
             "accentColorHex": stringSchema("Hex accent color, e.g. #10a37f"),
             "gradientMode": gradientModeSchema(),
             "valueTransform": valueTransformSchema(),
+            "valueStripLetters": boolSchema("Remove letters/words from the displayed value. Default true, so values like '99% remaining' render as '99%'."),
+            "valueStripPercentSymbol": boolSchema("Remove the percent sign from the displayed value. Default false."),
             "refreshIntervalSec": intSchema("Refresh interval in seconds"),
             "hideElements": arraySchema(stringSchema("CSS selector to hide before snapshots"))
         ], required: ["id"]),
@@ -976,6 +980,10 @@ private enum MCPToolDispatcher {
             accentColorHex: (arguments["accentColorHex"] as? String)?.nilIfEmpty ?? Tracker.defaultAccentColorHex,
             gradientMode: try gradientModeArgument(arguments["gradientMode"]) ?? Tracker.defaultGradientMode,
             valueTransform: try valueTransformArgument(arguments["valueTransform"]) ?? Tracker.defaultValueTransform,
+            valueDisplayOptions: ValueDisplayOptions(
+                stripLetters: boolArgument("valueStripLetters", arguments) ?? Tracker.defaultValueDisplayOptions.stripLetters,
+                stripPercentSymbol: boolArgument("valueStripPercentSymbol", arguments) ?? Tracker.defaultValueDisplayOptions.stripPercentSymbol
+            ),
             hideElements: stringArrayArgument("hideElements", arguments) ?? []
         )
 
@@ -1018,6 +1026,12 @@ private enum MCPToolDispatcher {
             }
             if let transform = try valueTransformArgument(arguments["valueTransform"]) {
                 tracker.valueTransform = transform
+            }
+            if let value = boolArgument("valueStripLetters", arguments) {
+                tracker.valueDisplayOptions.stripLetters = value
+            }
+            if let value = boolArgument("valueStripPercentSymbol", arguments) {
+                tracker.valueDisplayOptions.stripPercentSymbol = value
             }
             if let value = intArgument("refreshIntervalSec", arguments) {
                 tracker.refreshIntervalSec = max(1, value)
@@ -1795,6 +1809,10 @@ private enum MCPToolDispatcher {
             "accentColorHex": tracker.accentColorHex,
             "gradientMode": tracker.gradientMode.rawValue,
             "valueTransform": tracker.valueTransform.rawValue,
+            "valueDisplayOptions": [
+                "stripLetters": tracker.valueDisplayOptions.stripLetters,
+                "stripPercentSymbol": tracker.valueDisplayOptions.stripPercentSymbol
+            ],
             "hideElements": tracker.hideElements,
             "hooks": [
                 "onSuccess": tracker.hooks.onSuccess.map(hookPayload),
@@ -2025,6 +2043,26 @@ private enum MCPToolDispatcher {
         }
         if let value = arguments[key] as? String {
             return Int(value)
+        }
+        return nil
+    }
+
+    private static func boolArgument(_ key: String, _ arguments: [String: Any]) -> Bool? {
+        if let value = arguments[key] as? Bool {
+            return value
+        }
+        if let value = arguments[key] as? NSNumber {
+            return value.boolValue
+        }
+        if let value = arguments[key] as? String {
+            switch value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+            case "true", "yes", "1":
+                return true
+            case "false", "no", "0":
+                return false
+            default:
+                return nil
+            }
         }
         return nil
     }

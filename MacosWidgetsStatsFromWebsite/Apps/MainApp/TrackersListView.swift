@@ -487,7 +487,7 @@ private struct TrackerRowView: View {
     }
 
     private var displayedValue: String {
-        if let value = reading?.currentValue, !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        if let value = tracker.displayValue(for: reading) {
             return value
         }
 

@@ -122,6 +122,10 @@ struct TrackerEditorView: View {
                             Text(transform.displayName).tag(transform)
                         }
                     }
+
+                    Toggle("Remove letters", isOn: $draft.valueDisplayOptions.stripLetters)
+
+                    Toggle("Remove % symbol", isOn: $draft.valueDisplayOptions.stripPercentSymbol)
                 } header: {
                     Text("Display")
                 } footer: {

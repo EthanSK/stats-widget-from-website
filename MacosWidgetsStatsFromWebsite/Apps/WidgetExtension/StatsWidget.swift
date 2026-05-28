@@ -628,17 +628,8 @@ struct WidgetTrackerItem: Identifiable {
     }
 
     var value: String {
-        // valueTransform rewrites the displayed value before falling back to
-        // the raw scraped string. For .invertFromHundred we compute
-        // (100 - numeric) and re-format it as a percentage so trackers like
-        // "claude weekly: 1% used" read as "99% remaining" in the widget.
-        if tracker.valueTransform == .invertFromHundred, let raw = reading?.currentNumeric {
-            let inverted = max(0.0, min(100.0, 100.0 - raw))
-            return formattedInvertedValue(inverted)
-        }
-
-        if let currentValue = reading?.currentValue, !currentValue.isEmpty {
-            return currentValue
+        if let displayValue = tracker.displayValue(for: reading) {
+            return displayValue
         }
 
         switch reading?.status {
@@ -657,34 +648,7 @@ struct WidgetTrackerItem: Identifiable {
     /// what the user is reading). `currentNumeric` stays raw on disk; the
     /// transform is presentation-only.
     var numeric: Double? {
-        guard let raw = reading?.currentNumeric else {
-            return nil
-        }
-        switch tracker.valueTransform {
-        case .none:
-            return raw
-        case .invertFromHundred:
-            return max(0.0, min(100.0, 100.0 - raw))
-        }
-    }
-
-    /// Formats an inverted numeric back into a display string. We try to
-    /// detect whether the original scraped value was percent-style — if it
-    /// contained a "%" character — and format the inverted value the same
-    /// way ("19% remaining"). Otherwise we render the bare inverted number.
-    private func formattedInvertedValue(_ inverted: Double) -> String {
-        let formatted: String
-        if inverted == inverted.rounded() {
-            formatted = String(Int(inverted))
-        } else {
-            formatted = String(format: "%.1f", inverted)
-        }
-
-        let original = reading?.currentValue ?? ""
-        if original.contains("%") {
-            return "\(formatted)% remaining"
-        }
-        return "\(formatted) remaining"
+        tracker.displayNumeric(for: reading)
     }
 
     var sparkline: [Double] {
