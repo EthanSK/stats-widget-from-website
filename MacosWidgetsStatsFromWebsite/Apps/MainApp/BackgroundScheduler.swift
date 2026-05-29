@@ -28,6 +28,13 @@ final class BackgroundScheduler: ObservableObject {
     private var activeTrackerIDs: Set<UUID> = []
     private var hasCompletedInitialSync = false
     private var notifiedBrokenTrackerIDs: Set<UUID> = []
+    private let dueScrapeWatchdogInitialDelaySec = 15
+    private let dueScrapeWatchdogIntervalSec = 60
+    private let dueScrapeWatchdogLeewaySec = 10
+    private let dueScrapeWatchdogQueue = DispatchQueue(
+        label: "com.ethansk.macos-widgets-stats-from-website.due-scrape-watchdog"
+    )
+    private var dueScrapeWatchdogTimer: DispatchSourceTimer?
 
     // MARK: - Coalesced widget reload (v0.21.0)
     //
@@ -61,9 +68,11 @@ final class BackgroundScheduler: ObservableObject {
         // Drain anything written while the app was off (the watcher only
         // fires for changes that happen *after* it's installed).
         drainPendingScrapeRequests()
+        startDueScrapeWatchdog()
     }
 
     deinit {
+        stopDueScrapeWatchdog()
         stopPendingRequestWatcher()
     }
 
@@ -128,31 +137,60 @@ final class BackgroundScheduler: ObservableObject {
     /// and scrape every configured tracker; when false we only scrape
     /// trackers that are actually due.
     func scrapeAllDueTrackers(force: Bool) {
+        scrapeAllDueTrackers(force: force, source: "manual")
+    }
+
+    private func scrapeAllDueTrackers(force: Bool, source: String) {
         let configuration = AppGroupStore.loadSharedConfiguration()
         let readings = AppGroupStore.loadReadings().readings
-        let now = Date()
-        let candidates: [Tracker]
-        if force {
-            candidates = configuration.trackers.filter(\.isScrapeReady)
-        } else {
-            candidates = configuration.trackers.filter { tracker in
-                guard tracker.isScrapeReady else {
-                    return false
-                }
-                let reading = readings[tracker.id.uuidString]
-                return ScrapeDuePolicy.isDue(tracker: tracker, reading: reading, now: now)
-            }
+        let plan = DueScrapePlanner.plan(
+            configuration: configuration,
+            readings: readings,
+            force: force
+        )
+        if source != "watchdog" || !plan.candidates.isEmpty {
+            ActivityLogger.log("scheduler", "scrapeAllDueTrackers", metadata: [
+                "source": source,
+                "force": "\(force)",
+                "candidates": "\(plan.candidates.count)",
+                "configured": "\(plan.configuredCount)",
+                "skippedIncomplete": "\(plan.skippedIncompleteCount)"
+            ])
         }
-        let skippedIncompleteCount = configuration.trackers.count - configuration.trackers.filter(\.isScrapeReady).count
-        ActivityLogger.log("scheduler", "scrapeAllDueTrackers", metadata: [
-            "force": "\(force)",
-            "candidates": "\(candidates.count)",
-            "configured": "\(configuration.trackers.count)",
-            "skippedIncomplete": "\(skippedIncompleteCount)"
-        ])
-        for tracker in candidates {
+        for tracker in plan.candidates {
             triggerScrapeNow(trackerID: tracker.id)
         }
+    }
+
+    private func startDueScrapeWatchdog() {
+        guard dueScrapeWatchdogTimer == nil else {
+            return
+        }
+
+        let timer = DispatchSource.makeTimerSource(queue: dueScrapeWatchdogQueue)
+        timer.schedule(
+            deadline: .now() + .seconds(dueScrapeWatchdogInitialDelaySec),
+            repeating: .seconds(dueScrapeWatchdogIntervalSec),
+            leeway: .seconds(dueScrapeWatchdogLeewaySec)
+        )
+        timer.setEventHandler { [weak self] in
+            DispatchQueue.main.async {
+                self?.scrapeAllDueTrackers(force: false, source: "watchdog")
+            }
+        }
+        dueScrapeWatchdogTimer = timer
+        timer.resume()
+
+        ActivityLogger.log("scheduler", "due scrape watchdog started", metadata: [
+            "initialDelaySec": "\(dueScrapeWatchdogInitialDelaySec)",
+            "intervalSec": "\(dueScrapeWatchdogIntervalSec)",
+            "leewaySec": "\(dueScrapeWatchdogLeewaySec)"
+        ])
+    }
+
+    private func stopDueScrapeWatchdog() {
+        dueScrapeWatchdogTimer?.cancel()
+        dueScrapeWatchdogTimer = nil
     }
 
     /// Coalesces widget-timeline reload requests inside a short window

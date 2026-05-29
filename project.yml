@@ -77,7 +77,7 @@ settings:
     # from Bundle.main.infoDictionary at runtime, so nothing else needs touching.
     # Enforced by .githooks/pre-commit (see core.hooksPath in repo config) and
     # by scripts/validate_release_metadata.py.
-    MARKETING_VERSION: "0.21.71"
+    MARKETING_VERSION: "0.21.72"
     # v0.21.43 (Ethan voice 4212, 2026-05-26) — jump-leap past historical
     # mega-numbers. Pre-v0.21.43 build-suffix releases (e.g. v0.21.41-build.90)
     # encoded CFBundleVersion as `base_build * 100000 + run_number`,
@@ -97,7 +97,7 @@ settings:
     # tag-channel only) so the mega-number space never grows again.
     # See LEARNINGS.md "sparkle:version mega-number drift" entry for
     # the full incident.
-    CURRENT_PROJECT_VERSION: "129700120"
+    CURRENT_PROJECT_VERSION: "129700121"
 
 packages:
   Sparkle:

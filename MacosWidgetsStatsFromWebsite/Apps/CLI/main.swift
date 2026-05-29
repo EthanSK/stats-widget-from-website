@@ -68,37 +68,28 @@ private enum ScrapeAllCommand {
     static func run(dueOnly: Bool) {
         let configuration = AppGroupStore.loadSharedConfiguration()
         let readings = AppGroupStore.loadReadings().readings
-        let now = Date()
-
-        let candidates: [Tracker]
-        if dueOnly {
-            candidates = configuration.trackers.filter { tracker in
-                guard tracker.isScrapeReady else {
-                    return false
-                }
-                let reading = readings[tracker.id.uuidString]
-                return ScrapeDuePolicy.isDue(tracker: tracker, reading: reading, now: now)
-            }
-        } else {
-            candidates = configuration.trackers.filter(\.isScrapeReady)
-        }
-        let skippedIncompleteCount = configuration.trackers.count - configuration.trackers.filter(\.isScrapeReady).count
+        let plan = DueScrapePlanner.plan(
+            configuration: configuration,
+            readings: readings,
+            force: !dueOnly
+        )
+        let candidates = plan.candidates
 
         guard !candidates.isEmpty else {
-            print("scrape-all: nothing due (\(configuration.trackers.count) trackers configured)")
+            print("scrape-all: nothing due (\(plan.configuredCount) trackers configured)")
             ActivityLogger.log("cli", "scrape-all skipped: no due trackers", metadata: [
-                "configured": "\(configuration.trackers.count)",
+                "configured": "\(plan.configuredCount)",
                 "due_only": "\(dueOnly)",
-                "skippedIncomplete": "\(skippedIncompleteCount)"
+                "skippedIncomplete": "\(plan.skippedIncompleteCount)"
             ])
             exit(0)
         }
 
         ActivityLogger.log("cli", "scrape-all starting", metadata: [
             "candidates": "\(candidates.count)",
-            "configured": "\(configuration.trackers.count)",
+            "configured": "\(plan.configuredCount)",
             "due_only": "\(dueOnly)",
-            "skippedIncomplete": "\(skippedIncompleteCount)"
+            "skippedIncomplete": "\(plan.skippedIncompleteCount)"
         ])
 
         var pending = candidates.count
