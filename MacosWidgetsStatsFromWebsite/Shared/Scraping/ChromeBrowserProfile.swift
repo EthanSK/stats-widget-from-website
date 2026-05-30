@@ -66,6 +66,31 @@ final class ChromeBrowserProfile {
     private let baseCDPPort = 18880
     private let fileManager = FileManager.default
     private let queue = DispatchQueue(label: "ChromeBrowserProfile")
+    // v0.21.74 — MAIN-THREAD BLOCK FIX (Ethan's #1 symptom: "Chromium takes
+    // forever / won't open"). `ensureLaunched(...)`'s entry-point reachability
+    // probe (`isCDPReachable` → `cdpVersionInfo` → `synchronousProbe`) blocks
+    // its caller for up to ~11s (semaphore.wait(timeoutForResource + 1)) when
+    // the CDP socket is alive-but-wedged. The scraper kickoff was posted onto
+    // `DispatchQueue.main` (ChromeCDPScraper.scrape → whenIdentifyClear →
+    // main.async → start → ensureLaunched), so that ~11s wait ran ON THE MAIN
+    // THREAD every wedged scrape, freezing the UI / app and making Chromium
+    // appear to "not open".
+    //
+    // We CANNOT hop the probe onto `self.queue` (the serial coordination
+    // queue) because helpers it calls — notably `isExistingInstanceHeadless`
+    // — themselves do `queue.sync { ... }`, which would DEADLOCK a serial
+    // queue via re-entrancy. So we use a SEPARATE concurrent utility queue
+    // purely for the off-main reachability probe + launch-path dispatch.
+    // `spawnNewBrowser`, `terminateHeadlessInstance`, etc. all internally
+    // re-hop onto `self.queue`, so calling them from this probe queue is
+    // safe. The scraper's completion handler re-marshals back to main on its
+    // own (ChromeCDPScraper.swift handleBrowserLaunch wraps in main.async),
+    // so callers never observe a thread change.
+    private let probeQueue = DispatchQueue(
+        label: "ChromeBrowserProfile.probe",
+        qos: .userInitiated,
+        attributes: .concurrent
+    )
     private var backgroundLaunchedApplications: [Int: NSRunningApplication] = [:]
     private var backgroundLaunchedProcesses: [Int: Process] = [:]
     private var foregroundLaunchedApplications: [Int: NSRunningApplication] = [:]
@@ -344,6 +369,48 @@ final class ChromeBrowserProfile {
         completion: @escaping (Result<ChromeBrowserLaunchConfiguration, Error>) -> Void
     ) {
         let configuration = configuration(profileName: profileName)
+        // v0.21.74 — MAIN-THREAD BLOCK FIX. The reachability probe below
+        // (`isCDPReachable`) blocks for up to ~11s when the CDP socket is
+        // wedged. This method was historically entered on the MAIN thread
+        // (scraper kickoff path), freezing the UI. Hop the ENTIRE decision
+        // body onto `probeQueue` (a concurrent utility queue, NOT `self.queue`
+        // — see the probeQueue declaration for why re-entrancy on the serial
+        // queue would deadlock). Every downstream call (`spawnNewBrowser`,
+        // `terminateHeadlessInstance`) re-hops onto `self.queue` internally,
+        // and the `completion` closure is re-marshaled to main by the caller
+        // (ChromeCDPScraper.handleBrowserLaunch), so behaviour is identical —
+        // only the thread the probe runs on changes.
+        probeQueue.async { [weak self] in
+            guard let self else {
+                // Profile singleton deallocated mid-flight (should never happen
+                // for a `static let shared`, but keep the contract: always call
+                // completion). Spawn fallback can't run without `self`, so fail
+                // closed with the same error shape spawnNewBrowser would use.
+                DispatchQueue.main.async {
+                    completion(.failure(ChromeBrowserProfileError.targetCreationFailed("ChromeBrowserProfile deallocated")))
+                }
+                return
+            }
+            self.ensureLaunchedOnProbeQueue(
+                configuration: configuration,
+                foreground: foreground,
+                initialURL: initialURL,
+                completion: completion
+            )
+        }
+    }
+
+    // v0.21.74 — extracted from `ensureLaunched` so the (potentially ~11s
+    // blocking) reachability probe + launch-decision logic runs OFF the main
+    // thread, on `probeQueue`. See `ensureLaunched` and the `probeQueue`
+    // declaration for the full rationale. Behaviour is byte-for-byte identical
+    // to the previous inline body; only the executing thread changed.
+    private func ensureLaunchedOnProbeQueue(
+        configuration: ChromeBrowserLaunchConfiguration,
+        foreground: Bool,
+        initialURL: URL?,
+        completion: @escaping (Result<ChromeBrowserLaunchConfiguration, Error>) -> Void
+    ) {
         if isCDPReachable(configuration: configuration) {
             if foreground {
                 // v0.21.48 — REWRITTEN for voice 4277. Previous behavior (v0.21.47
@@ -2515,11 +2582,24 @@ final class ChromeBrowserProfile {
         // for "previous Chrome still alive" in `startPendingLaunchWhenReady`
         // gave the impression of a timeout, but a stuck `Data(contentsOf:)`
         // call held the `queue.sync` lock past that deadline.
+        //
+        // v0.21.74 — tightened the probe budget from 5s/10s to 3s/5s. This is
+        // a localhost loopback CDP probe (127.0.0.1:<cdpPort>/json/version):
+        // a healthy Chromium answers in single-digit milliseconds, so a
+        // multi-second wait only ever happens when the socket is wedged. The
+        // old 10s resource ceiling meant a wedged socket cost ~11s
+        // (semaphore.wait(timeoutForResource + 1)) per probe; for a background
+        // scrape cadence that's pure dead time. 5s still leaves generous slack
+        // over the realistic loopback latency while halving the worst-case
+        // stall. Paired with the v0.21.74 main-thread-hop fix, this stall is
+        // now also OFF the main thread — but a snappier budget still tightens
+        // the scrape cadence and shortens the window before we fall through to
+        // a fresh spawn.
         guard let url = URL(string: "/json/version", relativeTo: configuration.cdpURL)?.absoluteURL else {
             return nil
         }
 
-        guard let data = synchronousProbe(url: url, timeoutForRequest: 5, timeoutForResource: 10),
+        guard let data = synchronousProbe(url: url, timeoutForRequest: 3, timeoutForResource: 5),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             return nil
         }

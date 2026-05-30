@@ -324,9 +324,69 @@ final class SystemHookProcessLauncher: HookProcessLauncher {
         process.standardError = stderrPipe
         process.standardOutput = stdoutPipe
 
+        // v0.21.74 — PIPE-BUFFER DEADLOCK FIX (voice-reported: auto-repair
+        // agent + other verbose hooks silently SIGKILLed at the 60s timeout).
+        //
+        // Bug: the previous code attached both pipes, ran the process, polled
+        // `process.isRunning` in a sleep loop, and only called
+        // `readDataToEndOfFile()` AFTER the process exited. A pipe has a fixed
+        // OS kernel buffer (~16–64 KB on macOS). A child that writes more than
+        // that to stdout/stderr fills the buffer and BLOCKS on `write(2)`
+        // waiting for someone to drain the read end. But nobody was reading
+        // until after exit — and the child could not exit because it was
+        // blocked mid-write. Classic producer/consumer deadlock: the child
+        // hangs forever, our poll loop hits the 60s deadline, and we
+        // terminate/SIGKILL a hook that was perfectly healthy — it just had a
+        // lot to say. The auto-repair agent (which streams verbose Claude
+        // output) is exactly such a hook, so it kept getting killed.
+        //
+        // Fix: install `readabilityHandler` on BOTH pipe read-ends BEFORE
+        // `process.run()`. The handlers fire on a background queue as data
+        // becomes available, continuously draining the kernel buffers so the
+        // child never blocks on write. We accumulate into `stdoutData` /
+        // `stderrData`, guarded by `outputLock` because the two handlers run
+        // concurrently and the timeout/exit path on this thread also reads
+        // them. After this change the 60s timeout only ever fires for a
+        // genuinely-stuck hook, not for a chatty one.
+        let outputLock = NSLock()
+        var stdoutData = Data()
+        var stderrData = Data()
+
+        let stdoutHandle = stdoutPipe.fileHandleForReading
+        let stderrHandle = stderrPipe.fileHandleForReading
+
+        // Drain stdout as it arrives. An empty `availableData` signals EOF
+        // (the write end closed when the child exited / we closed it on
+        // teardown) — clear the handler then so the reader thread can wind
+        // down and we don't spin on repeated zero-length reads.
+        stdoutHandle.readabilityHandler = { handle in
+            let chunk = handle.availableData
+            if chunk.isEmpty {
+                handle.readabilityHandler = nil
+                return
+            }
+            outputLock.lock()
+            stdoutData.append(chunk)
+            outputLock.unlock()
+        }
+        stderrHandle.readabilityHandler = { handle in
+            let chunk = handle.availableData
+            if chunk.isEmpty {
+                handle.readabilityHandler = nil
+                return
+            }
+            outputLock.lock()
+            stderrData.append(chunk)
+            outputLock.unlock()
+        }
+
         do {
             try process.run()
         } catch {
+            // Launch failed before any reader work mattered — tear the
+            // handlers down so the background dispatch sources don't linger.
+            stdoutHandle.readabilityHandler = nil
+            stderrHandle.readabilityHandler = nil
             return HookOutcome(
                 status: .error,
                 exitCode: nil,
@@ -357,14 +417,25 @@ final class SystemHookProcessLauncher: HookProcessLauncher {
             process.waitUntilExit()
         }
 
-        let stderr = String(
-            data: stderrPipe.fileHandleForReading.readDataToEndOfFile(),
-            encoding: .utf8
-        ) ?? ""
-        let stdout = String(
-            data: stdoutPipe.fileHandleForReading.readDataToEndOfFile(),
-            encoding: .utf8
-        ) ?? ""
+        // v0.21.74 — the readabilityHandlers (installed before run) have been
+        // draining the pipes the whole time, so we DON'T call
+        // `readDataToEndOfFile()` here (that would block / race with the
+        // handlers). Instead: tear the handlers down, then synchronously read
+        // whatever bytes are still buffered in the kernel after exit (a final
+        // burst can land between the last handler fire and process exit), and
+        // append it under the same lock. `readToEnd()` here is safe because
+        // the write end is closed (process exited / killed), so it returns
+        // promptly at EOF rather than blocking.
+        stdoutHandle.readabilityHandler = nil
+        stderrHandle.readabilityHandler = nil
+        let trailingStdout = (try? stdoutHandle.readToEnd()) ?? nil
+        let trailingStderr = (try? stderrHandle.readToEnd()) ?? nil
+        outputLock.lock()
+        if let trailingStdout { stdoutData.append(trailingStdout) }
+        if let trailingStderr { stderrData.append(trailingStderr) }
+        let stdout = String(data: stdoutData, encoding: .utf8) ?? ""
+        let stderr = String(data: stderrData, encoding: .utf8) ?? ""
+        outputLock.unlock()
         let combinedDetail = combine(stderr: stderr, stdout: stdout)
 
         if timedOut {

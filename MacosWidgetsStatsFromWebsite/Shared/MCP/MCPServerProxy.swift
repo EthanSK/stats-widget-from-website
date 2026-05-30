@@ -55,10 +55,24 @@
 //
 //  All paths in this file are SYNCHRONOUS so they can be called from
 //  `MCPToolDispatcher.perform` which has a synchronous return contract.
-//  The socket round-trip is bounded by MCPClient's read-loop +
-//  caller-side semaphore timeout; we don't add a separate timeout
-//  here because the only caller (upgrade_to_latest with its 60s
-//  budget on the server side) already has that bound.
+//
+//  Timeout / bounding (corrected v0.21.74)
+//  --------------------------------------
+//  Earlier revisions of this comment claimed the socket round-trip was
+//  "bounded by MCPClient's read-loop + a caller-side semaphore timeout".
+//  That was WRONG and dangerous: before v0.21.74 `MCPClient.readLine`
+//  looped on `readData(ofLength: 1)` with NO deadline whatsoever, so a
+//  host that accepted the connection but never replied would pin this
+//  synchronous call (and the MCPToolDispatcher thread behind it) FOREVER.
+//  There is no caller-side semaphore on this path.
+//
+//  As of v0.21.74 the bound is real and lives in MCPClient: the connect
+//  socket has SO_RCVTIMEO set (currently 30s, see
+//  `MCPClient.socketReadTimeoutSeconds`), so a wedged/silent host makes
+//  the read time out and surface as `ClientError.invalidResponse`, which
+//  `forward(...)` catches and maps to nil (caller's standard error path).
+//  We still don't add a SEPARATE timeout here — the client-side socket
+//  timeout is the single source of truth for the read bound.
 //
 
 import Foundation

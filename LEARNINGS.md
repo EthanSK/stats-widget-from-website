@@ -24,6 +24,46 @@ Each entry looks like:
 (newest first)
 
 ---
+**Date:** 2026-05-30T18:00:49Z
+**Trigger:** verified audit
+**Symptom:** Persistent scrape write faults (disk full / container perms / read-only volume) silently no-op'd every scrape with NO log and frozen-stale widgets
+**Root cause:** BackgroundScheduler.record()'s catch block was empty (comment-only) — AppGroupStore.record/recordFailure throws were swallowed with zero diagnostics.
+**Fix:** v0.21.74: log every caught write error via ActivityLogger; track consecutiveRecordWriteFailures; after >=3 consecutive failures fire ONE latched user notification via new TrackerAttentionNotifier.notifyStorageWriteFailure (native + webhook, honouring channel prefs). Counter + latch reset on first successful write (with a 'recovered' log line).
+**Commit:** 0578400
+**Guard:** Comment block at the new counter properties + both record() branches; latch prevents per-scrape notification spam.
+---
+
+---
+**Date:** 2026-05-30T18:00:49Z
+**Trigger:** verified audit
+**Symptom:** MCP stdio client could hang forever against a host that accepts the connection but never replies
+**Root cause:** MCPClient.readLine looped readData(ofLength:1) with NO deadline; the connect socket had no read timeout. MCPServerProxy's header comment falsely claimed the round-trip was bounded by a read-loop + caller-side semaphore (there is no semaphore on that path).
+**Fix:** v0.21.74: setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, 30s) before IO; rewrote readLine to read(2) directly off the fd so it sees EAGAIN/EWOULDBLOCK on timeout and returns nil -> ClientError.invalidResponse (EINTR retried). Corrected the misleading MCPServerProxy comment to document the real client-side socket-timeout bound. NOTE: server-side timeout (MCPServer.swift) NOT touched - in-flight file - flagged for Ethan.
+**Commit:** 0578400
+**Guard:** Comment at MCPClient.socketReadTimeoutSeconds + the readLine(fromFD:) EAGAIN handling; corrected MCPServerProxy header timeout section explicitly debunks the old false claim.
+---
+
+---
+**Date:** 2026-05-30T18:00:49Z
+**Trigger:** verified audit
+**Symptom:** Verbose hooks (esp. the auto-repair Claude agent) silently SIGKILLed at the 60s timeout despite being healthy
+**Root cause:** HookExecutor.runSynchronously attached Pipe() to stdout+stderr but only called readDataToEndOfFile AFTER the child exited (polling isRunning meanwhile). A child writing > ~16-64KB filled the OS pipe buffer, blocked on write(2), could never exit -> 60s timeout -> SIGKILL. Classic producer/consumer deadlock.
+**Fix:** v0.21.74: install fileHandleForReading.readabilityHandler on BOTH pipes BEFORE process.run(), accumulating into Data buffers guarded by an NSLock (handlers run concurrently). Empty availableData clears the handler (EOF). After exit, tear handlers down + readToEnd() the trailing burst under the lock. Timeout now only fires for genuinely-stuck hooks.
+**Commit:** 0578400
+**Guard:** New test HookProcessIntegrationTests.testRealLauncherDoesNotDeadlockOnLargeOutput emits ~512KB to stdout under a 5s timeout and asserts .ok + END_MARKER survives. Pre-fix this deadlocked to .timeout.
+---
+
+---
+**Date:** 2026-05-30T18:00:32Z
+**Trigger:** verified audit; Ethan #1 symptom 'Chromium takes forever / won't open'
+**Symptom:** Chromium 'takes forever / won't open' on scrape; UI freezes ~11s per wedged scrape
+**Root cause:** ChromeBrowserProfile.ensureLaunched ran the synchronous CDP reachability probe (isCDPReachable -> synchronousProbe semaphore.wait(timeoutForResource+1) ~11s) on the MAIN thread, because ChromeCDPScraper.scrape posts kickoff via DispatchQueue.main.async -> start -> ensureLaunched. A wedged-but-alive CDP socket blocked main for the full timeout.
+**Fix:** v0.21.74: added a dedicated concurrent probeQueue; ensureLaunched now hops its entire decision body onto probeQueue (extracted to ensureLaunchedOnProbeQueue) so the probe never runs on main. CANNOT use self.queue (serial) because isExistingInstanceHeadless does queue.sync -> deadlock. Also tightened the loopback probe budget 5s/10s -> 3s/5s. Completion is re-marshaled to main by ChromeCDPScraper.handleBrowserLaunch so behaviour is identical.
+**Commit:** 0578400
+**Guard:** Thorough comment block at probeQueue declaration + ensureLaunched + ensureLaunchedOnProbeQueue explaining the main-thread-block root cause and why probeQueue (not self.queue) is mandatory to avoid serial-queue re-entrancy deadlock.
+---
+
+---
 **Date:** 2026-05-30T17:37:01Z
 **Trigger:** voice 4417 (2026-05-30)
 **Symptom:** Auto-repair-via-Claude onFailure hook (re-identifies the scraped element via a Claude Code session) fired 'all the time' for the wrong reasons — on lag, Cloudflare/Turnstile challenges, blank/not-loaded pages, login walls, timeouts — even though the element never changed. The biggest false-positive: a challenge/blank page whose raw scrape error was the literal string 'Selector did not match any element.' got classified as .selectorNotFound and triggered a pointless re-identify.

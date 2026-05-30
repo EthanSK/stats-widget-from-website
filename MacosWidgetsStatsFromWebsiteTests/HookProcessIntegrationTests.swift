@@ -87,6 +87,64 @@ final class HookProcessIntegrationTests: XCTestCase {
         XCTAssertTrue(outcome?.detail?.contains("nope") ?? false)
     }
 
+    /// v0.21.74 regression guard — PIPE-BUFFER DEADLOCK.
+    ///
+    /// Before v0.21.74, `HookExecutor.runSynchronously` only drained the
+    /// stdout/stderr pipes AFTER the child exited (it polled `isRunning` in a
+    /// sleep loop, then called `readDataToEndOfFile`). A child that wrote more
+    /// than the OS pipe-buffer capacity (~16–64 KB on macOS) blocked on
+    /// `write(2)` because nobody was reading — so it could never exit, the 60s
+    /// timeout fired, and the executor SIGKILLed a perfectly healthy (but
+    /// verbose) hook. The auto-repair Claude-agent hook, which streams a lot of
+    /// output, was the real-world victim.
+    ///
+    /// The fix installs `readabilityHandler`s on both pipes BEFORE
+    /// `process.run()` so the buffers drain continuously. This test emits ~512
+    /// KB to stdout (well past every plausible pipe-buffer size) under a SHORT
+    /// 5s timeout. Pre-fix this deadlocks and returns `.timeout`; post-fix it
+    /// completes with `.ok` and the full payload is captured. We assert both
+    /// the success status AND that a representative chunk of the large output
+    /// survived into `detail`, proving we actually read past one buffer-fill.
+    func testRealLauncherDoesNotDeadlockOnLargeOutput() {
+        let launcher = SystemHookProcessLauncher()
+        // `yes | head` produces deterministic, large stdout fast. 65536 lines
+        // of "AAAA...\n" (64 chars + newline) ≈ 4.2 MB — far beyond any pipe
+        // buffer. Keep it shell-portable: print a fixed 64-char line 8192 times
+        // via a bash loop is slow; instead use `head -c` from /dev/zero piped
+        // through `tr` for speed and determinism.
+        let hook = TrackerHook(
+            name: "large-output-test",
+            trigger: .onFailure,
+            actionKind: .runShellCommand,
+            // ~512 KB of 'A' to stdout, then a marker, then exit 0. If the
+            // executor deadlocked on the buffer fill, the marker would never
+            // be emitted and the process would be killed at the timeout.
+            actionPayload: "head -c 524288 /dev/zero | tr '\\0' 'A'; echo END_MARKER; exit 0"
+        )
+
+        let exp = expectation(description: "hook completes without deadlock")
+        var outcome: HookOutcome?
+        launcher.launch(
+            hook: hook,
+            tracker: makeTracker(),
+            scrapeContext: makeContext(),
+            timeout: 5.0
+        ) { result in
+            outcome = result
+            exp.fulfill()
+        }
+        wait(for: [exp], timeout: 10.0)
+
+        XCTAssertEqual(outcome?.status, .ok,
+                       "Large-output hook should complete cleanly, not deadlock + timeout. Status: \(String(describing: outcome?.status))")
+        XCTAssertEqual(outcome?.exitCode, 0)
+        // The trailing marker proves we read PAST the buffer-fill — the child
+        // emitted it only after writing all 512 KB, which it could not have
+        // done if the pipe buffer had blocked it.
+        XCTAssertTrue(outcome?.detail?.contains("END_MARKER") ?? false,
+                      "Trailing marker after the large payload must survive — proves the pipe drained past the buffer-fill.")
+    }
+
     func testRealLauncherEnforcesTimeout() {
         let launcher = SystemHookProcessLauncher()
         // 30s sleep > 2s timeout. Production limit is 60s; we use 2s

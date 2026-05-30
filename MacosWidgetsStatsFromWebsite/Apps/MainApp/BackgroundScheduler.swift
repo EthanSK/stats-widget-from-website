@@ -28,6 +28,25 @@ final class BackgroundScheduler: ObservableObject {
     private var activeTrackerIDs: Set<UUID> = []
     private var hasCompletedInitialSync = false
     private var notifiedBrokenTrackerIDs: Set<UUID> = []
+
+    // v0.21.74 — SILENT-WRITE-FAILURE FIX. `record(...)`'s catch block used to
+    // be empty (comment-only), so a PERSISTENT write fault (disk full,
+    // Group-Container TCC/permission denial, read-only volume) made every
+    // scrape silently no-op: no reading written, no log line, no user signal.
+    // The widget just froze on stale data with zero diagnostics. We now (a)
+    // ALWAYS log the caught error via ActivityLogger, and (b) count CONSECUTIVE
+    // write failures so we can surface a one-shot user notification once the
+    // fault clearly isn't transient — without spamming a notification on every
+    // single scrape. The counter resets to 0 on the first successful write.
+    private var consecutiveRecordWriteFailures = 0
+    // Surface the persistent-write-failure notification once we cross this many
+    // consecutive failures. 3 is enough to rule out a one-off transient blip
+    // (e.g. a momentary lock contention) while still alerting the user before
+    // the data goes badly stale.
+    private let recordWriteFailureNotifyThreshold = 3
+    // Latch so we only fire ONE user-facing notification per fault episode (not
+    // one per scrape after the threshold). Cleared on the next success.
+    private var hasNotifiedRecordWriteFailure = false
     private let dueScrapeWatchdogInitialDelaySec = 15
     private let dueScrapeWatchdogIntervalSec = 60
     private let dueScrapeWatchdogLeewaySec = 10
@@ -342,6 +361,19 @@ final class BackgroundScheduler: ObservableObject {
                 recordedReading = try AppGroupStore.recordFailure(message: error.localizedDescription, for: tracker)
                 scrapeError = error
             }
+            // v0.21.74 — a write just succeeded, so the persistent-fault state
+            // (if any) has cleared. Reset the consecutive-failure counter and
+            // the notification latch so a FUTURE fault episode notifies again.
+            if consecutiveRecordWriteFailures > 0 || hasNotifiedRecordWriteFailure {
+                ActivityLogger.log("scrape", "record write recovered after failures", metadata: [
+                    "tracker": tracker.id.uuidString,
+                    "trackerName": tracker.name,
+                    "priorConsecutiveFailures": "\(consecutiveRecordWriteFailures)"
+                ])
+            }
+            consecutiveRecordWriteFailures = 0
+            hasNotifiedRecordWriteFailure = false
+
             handlePostRecord(reading: recordedReading, tracker: tracker)
             DockBadgeUpdater.update()
             requestCoalescedWidgetReload()
@@ -352,8 +384,38 @@ final class BackgroundScheduler: ObservableObject {
                 scrapeError: scrapeError
             )
         } catch {
-            // The Preferences UI surfaces configuration persistence errors;
-            // scrape write failures are transient and retried by the scheduler.
+            // v0.21.74 — SILENT-WRITE-FAILURE FIX (was an empty comment-only
+            // catch). This is reached when AppGroupStore.record /
+            // recordFailure THROWS — i.e. we couldn't persist the reading at
+            // all (disk full, Group-Container permission denial, read-only
+            // volume). Previously this no-op'd silently and the widget froze on
+            // stale data with zero diagnostics.
+            //
+            // (a) ALWAYS log it so post-hoc forensics in activity.log can see
+            //     the write fault (with errno-bearing localizedDescription).
+            consecutiveRecordWriteFailures += 1
+            ActivityLogger.log("scrape", "record write FAILED — reading not persisted", metadata: [
+                "tracker": tracker.id.uuidString,
+                "trackerName": tracker.name,
+                "error": error.localizedDescription,
+                "consecutiveFailures": "\(consecutiveRecordWriteFailures)"
+            ])
+
+            // (b) On a clearly-persistent fault (>= threshold consecutive
+            //     failures), surface ONE user notification via the existing
+            //     notifier — latched so we don't notify on every subsequent
+            //     scrape. This is distinct from the per-tracker "selector
+            //     broken" notification: a write fault is app-wide
+            //     (storage/permissions), so we send a generic alert rather
+            //     than tying it to one tracker.
+            if consecutiveRecordWriteFailures >= recordWriteFailureNotifyThreshold,
+               !hasNotifiedRecordWriteFailure {
+                hasNotifiedRecordWriteFailure = true
+                TrackerAttentionNotifier.shared.notifyStorageWriteFailure(
+                    failureCount: consecutiveRecordWriteFailures,
+                    detail: error.localizedDescription
+                )
+            }
         }
     }
 
