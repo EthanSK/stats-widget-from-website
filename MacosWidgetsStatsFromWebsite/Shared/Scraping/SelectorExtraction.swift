@@ -77,6 +77,13 @@ enum SelectorExtractionJS {
           const lowerURL = currentURL.toLowerCase();
           const lowerTitle = docTitle.toLowerCase();
           const lowerBodyHead = bodyText.toLowerCase().slice(0, 4000);
+          // v0.21.73 (Ethan voice 4417): trimmed visible-body length, used
+          // Swift-side to distinguish a GENUINE "element gone" from a page
+          // that simply hasn't rendered real content yet (blank / SPA shell /
+          // interstitial). A near-empty body means the selector didn't match
+          // because there's nothing TO match — that's a transient lag, NOT a
+          // reason to spawn the auto-repair agent. See finishSelectorFailure.
+          const bodyTextLength = bodyText.trim().length;
 
           const challengeLikely = (() => {
             try {
@@ -127,7 +134,8 @@ enum SelectorExtractionJS {
               challengeLikely: challengeLikely,
               readyState: readyState,
               url: currentURL,
-              title: docTitle
+              title: docTitle,
+              bodyTextLength: bodyTextLength
             };
           } catch (error) {
             return {
@@ -137,7 +145,8 @@ enum SelectorExtractionJS {
               challengeLikely: challengeLikely,
               readyState: readyState,
               url: currentURL,
-              title: docTitle
+              title: docTitle,
+              bodyTextLength: bodyTextLength
             };
           }
         })()

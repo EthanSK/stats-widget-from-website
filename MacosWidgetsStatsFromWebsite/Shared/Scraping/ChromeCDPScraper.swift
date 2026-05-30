@@ -516,6 +516,11 @@ final class ChromeCDPScraper {
         if let challengeLikely = SelectorExtractionJS.boolValue(status["challengeLikely"]) {
             meta["challengeLikely"] = challengeLikely ? "true" : "false"
         }
+        // v0.21.73: surface body length so the activity log shows WHY a
+        // selector miss was downgraded to transient (blank / not-real page).
+        if let bodyTextLength = SelectorExtractionJS.intValue(status["bodyTextLength"]) {
+            meta["bodyTextLength"] = "\(bodyTextLength)"
+        }
         ActivityLogger.log("scrape", "selector poll", metadata: meta)
     }
 
@@ -578,14 +583,79 @@ final class ChromeCDPScraper {
         }
     }
 
+    /// Decide which failure to report when the selector never matched within
+    /// the poll deadline. ORDER MATTERS — we want the LEAST-alarming accurate
+    /// classification so we don't fire the auto-repair agent on a page that
+    /// just hadn't loaded real content yet.
+    ///
+    /// v0.21.73 (Ethan voice 4417): the auto-repair agent (which re-IDENTIFIES
+    /// the scraped element via a Claude Code session) was firing "all the
+    /// time" for the WRONG reasons. The element itself doesn't change — the
+    /// page was simply lagging / mid-challenge / blank / not-yet-rendered, yet
+    /// that raw outcome surfaced as "Selector did not match any element."
+    /// which `TrackerFailureKind.classify` maps to `.selectorNotFound`
+    /// (countsTowardBroken = true → increments the consecutive-failure counter
+    /// → eventually trips the auto-repair hook). The element was never gone;
+    /// re-identifying it is pointless churn.
+    ///
+    /// The fix is to refuse to call a non-rendered page `selectorDidNotMatch`.
+    /// We only emit a GENUINE `.selectorDidNotMatch` when the page actually
+    /// finished loading AND has real, non-trivial body content — i.e. the
+    /// element really is absent from a fully-rendered real page. Otherwise we
+    /// emit `.browserChallengeInProgress`, which is treated as a TRANSIENT
+    /// failure (`TrackerFailureKind.browserChallenge`,
+    /// `countsTowardBroken == false`): it keeps the last good value, does NOT
+    /// increment the consecutive-failure counter, and therefore never trips
+    /// the auto-repair agent. The next scrape — once the page is real — either
+    /// matches cleanly or, if the element is genuinely gone, accumulates real
+    /// `.selectorDidNotMatch` failures that DO eventually trigger repair.
     private func finishSelectorFailure(finalStatus: [String: Any]) {
         if SelectorExtractionJS.boolValue(finalStatus["challengeLikely"]) == true {
             finish(.failure(SelectorExtractionError.browserChallengeInProgress))
-        } else if SelectorExtractionJS.boolValue(finalStatus["loginLikely"]) == true {
-            finish(.failure(SelectorExtractionError.loginRequired))
-        } else {
-            finish(.failure(SelectorExtractionError.selectorDidNotMatch))
+            return
         }
+        if SelectorExtractionJS.boolValue(finalStatus["loginLikely"]) == true {
+            finish(.failure(SelectorExtractionError.loginRequired))
+            return
+        }
+
+        // Anti-false-positive guard: was the page actually a real, fully
+        // rendered page when the selector failed? Two transient signals:
+        //   1. readyState != "complete" — the document never finished
+        //      loading within our poll window (slow network / SPA still
+        //      hydrating / interstitial redirect). The element may well be
+        //      there once it finishes; this is lag, not a missing element.
+        //   2. body text is essentially empty (< 24 trimmed chars) — a blank
+        //      page / SPA shell / silent challenge with no visible cloudflare
+        //      marker. Nothing to match yet; not a real "element gone".
+        // In either case we DOWNGRADE to the transient browserChallenge kind
+        // so the failure does NOT count toward broken and does NOT spawn the
+        // re-identify agent. We log the downgrade so the activity log makes
+        // the reason explicit (and so a genuinely-broken selector on a real
+        // page is still distinguishable in the logs).
+        let readyState = (finalStatus["readyState"] as? String) ?? ""
+        let bodyTextLength = SelectorExtractionJS.intValue(finalStatus["bodyTextLength"]) ?? 0
+        let pageNotReady = !readyState.isEmpty && readyState.lowercased() != "complete"
+        let bodyEffectivelyBlank = bodyTextLength < 24
+
+        if pageNotReady || bodyEffectivelyBlank {
+            ActivityLogger.log("scrape", "selector miss downgraded to transient (page not real content yet)", metadata: [
+                "scrapeID": scrapeID.uuidString,
+                "tracker": tracker.id.uuidString,
+                "trackerName": tracker.name,
+                "readyState": readyState,
+                "bodyTextLength": "\(bodyTextLength)",
+                "reason": pageNotReady ? "readyState!=complete" : "bodyEffectivelyBlank"
+            ])
+            finish(.failure(SelectorExtractionError.browserChallengeInProgress))
+            return
+        }
+
+        // Page was real + fully loaded + non-blank, and the element still
+        // wasn't there ⇒ this is a GENUINE element-not-found. Only this path
+        // is eligible (after the 3-consecutive gate in BackgroundScheduler) to
+        // trigger the auto-repair re-identify agent.
+        finish(.failure(SelectorExtractionError.selectorDidNotMatch))
     }
 
     private func scrapeText(from status: [String: Any]) {

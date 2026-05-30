@@ -373,7 +373,7 @@ final class BackgroundScheduler: ObservableObject {
         let trigger: HookTrigger = (scrapeError == nil && reading.status == .ok) ? .onSuccess : .onFailure
         // Re-read the tracker so we pick up any hook config updates that
         // landed between scrape-start and now (e.g. MCP add_tracker_hook).
-        let latestTracker = AppGroupStore.loadSharedConfiguration().trackers.first { $0.id == tracker.id } ?? tracker
+        var latestTracker = AppGroupStore.loadSharedConfiguration().trackers.first { $0.id == tracker.id } ?? tracker
 
         // v0.21.29 (Ethan voice 4020): suppress failure hooks (incl. the
         // built-in Auto-repair Claude spawner) until the tracker has
@@ -397,6 +397,63 @@ final class BackgroundScheduler: ObservableObject {
                 "consecutiveFailureCount": "\(failureCount)"
             ])
             return
+        }
+
+        // v0.21.73 (Ethan voice 4417): the built-in "Auto-repair via Claude"
+        // hook re-IDENTIFIES the scraped element via a Claude Code session.
+        // Ethan: "it doesn't need to re-identify, it's just lagging for some
+        // other reason — the element itself doesn't really change. It should
+        // only re-identify with the agent if the element couldn't be found
+        // specifically." So the agent must ONLY run on a GENUINE, SUSTAINED
+        // element-not-found — never on login / timeout / challenge / blank /
+        // misc-error failures (those don't mean the selector changed).
+        //
+        // Gate ONLY the built-in auto-repair hook here (identified by
+        // builtInIdentifier == BuiltInHookIdentifier.autoRepair). User-authored
+        // onFailure hooks keep their existing semantics: they fire on ANY
+        // sustained failure (>=3) regardless of kind — we don't second-guess
+        // what a user wrote their hook to do.
+        //
+        // Genuine-selectorNotFound check: TrackerFailureKind.classify maps the
+        // persisted `lastError`. By v0.21.73, ChromeCDPScraper.finishSelectorFailure
+        // already DOWNGRADES a non-rendered / blank / challenge page to the
+        // transient browserChallenge kind, so a "selector did not match" string
+        // here means the page was real + loaded + non-blank and the element
+        // truly wasn't present. That double-layer (scraper downgrade + this
+        // kind gate) is the anti-false-positive defence: a lag/blip can't reach
+        // this branch as `.selectorNotFound`.
+        if trigger == .onFailure {
+            // Single source of truth for the fire/suppress decision — see
+            // AutoRepairGate for the full anti-false-positive rationale.
+            let failureKind = TrackerFailureKind.classify(reading: reading)
+            let isGenuineSelectorMiss = AutoRepairGate.shouldFireAutoRepair(reading: reading)
+
+            if !isGenuineSelectorMiss {
+                // Strip the built-in auto-repair hook from this firing so it
+                // does NOT spawn the re-identify agent. We keep every other
+                // (user-authored) onFailure hook intact. If, after stripping,
+                // there are no onFailure hooks left to run, we just don't fire.
+                let removedAutoRepair = latestTracker.hooks.onFailure.contains {
+                    $0.builtInIdentifier == BuiltInHookIdentifier.autoRepair
+                }
+                latestTracker.hooks.onFailure.removeAll {
+                    $0.builtInIdentifier == BuiltInHookIdentifier.autoRepair
+                }
+                if removedAutoRepair {
+                    ActivityLogger.log("hook", "auto-repair suppressed (failure kind is not a genuine selectorNotFound)", metadata: [
+                        "trackerID": latestTracker.id.uuidString,
+                        "trackerName": latestTracker.name,
+                        "failureKind": failureKind?.headline ?? "unknown",
+                        "consecutiveFailureCount": "\(failureCount)"
+                    ])
+                }
+            } else {
+                ActivityLogger.log("hook", "auto-repair eligible (genuine sustained selectorNotFound)", metadata: [
+                    "trackerID": latestTracker.id.uuidString,
+                    "trackerName": latestTracker.name,
+                    "consecutiveFailureCount": "\(failureCount)"
+                ])
+            }
         }
 
         let context = HookScrapeContext(

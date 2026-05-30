@@ -55,6 +55,50 @@ if (( FAILURE_COUNT < 3 )); then
     exit 0
 fi
 
+# v0.21.73 defensive kind gate (Ethan voice 4417): the auto-repair agent
+# RE-IDENTIFIES the scraped element. That only makes sense when the
+# element genuinely couldn't be found — NOT when the page was lagging,
+# mid-Cloudflare-challenge, blank/not-loaded, behind a login wall, or
+# timed out. The primary gate lives in
+# BackgroundScheduler.fireScrapeLifecycleHooks(), which strips the
+# built-in auto-repair hook unless the failure classifies as a genuine
+# selectorNotFound. This script duplicates the check defensively because
+# (a) a user-authored hook could invoke this script directly, bypassing
+# the Swift gate, and (b) belt-and-braces is cheap.
+#
+# We classify off ERROR_MESSAGE using the SAME fingerprints as
+# TrackerFailureKind.classify(errorMessage:) in TrackerResult.swift.
+# Anything that smells like a challenge / login / timeout is treated as a
+# transient/non-selector failure → suppress. Only a real "selector did
+# not match" / "selector is invalid" / "selected element has no…" string
+# is eligible to re-identify. If ERROR_MESSAGE is empty (older host that
+# doesn't inject it), we proceed (fail-open) so we don't silently break
+# repair on upgrade paths — the Swift-side gate is the real default.
+ERR_LOWER="$(printf '%s' "${ERROR_MESSAGE:-}" | tr '[:upper:]' '[:lower:]')"
+if [[ -n "$ERR_LOWER" ]]; then
+    # Transient / non-selector kinds that must NOT trigger re-identify.
+    if [[ "$ERR_LOWER" == *"cloudflare"* \
+        || "$ERR_LOWER" == *"verification"* \
+        || "$ERR_LOWER" == *"just a moment"* \
+        || "$ERR_LOWER" == *"turnstile"* \
+        || "$ERR_LOWER" == *"__cf_chl"* \
+        || "$ERR_LOWER" == *"login"* \
+        || "$ERR_LOWER" == *"sign in"* \
+        || "$ERR_LOWER" == *"password"* \
+        || "$ERR_LOWER" == *"timed out"* \
+        || "$ERR_LOWER" == *"timeout"* ]]; then
+        log "  suppressing auto-repair (failure kind is transient/non-selector, voice 4417): ${ERROR_MESSAGE:-?}"
+        exit 0
+    fi
+    # Genuine selectorNotFound fingerprints — proceed only if one matches.
+    if ! [[ "$ERR_LOWER" == *"selector did not match"* \
+        || "$ERR_LOWER" == *"selector is invalid"* \
+        || "$ERR_LOWER" == *"selected element has no"* ]]; then
+        log "  suppressing auto-repair (failure not a genuine selectorNotFound, voice 4417): ${ERROR_MESSAGE:-?}"
+        exit 0
+    fi
+fi
+
 # Locate Claude Code on PATH or in well-known install spots. We don't
 # hard-fail when it's missing; the agent might be installed in a
 # location the user wants us to discover.
