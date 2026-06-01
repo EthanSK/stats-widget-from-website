@@ -208,16 +208,21 @@ struct TrackerEditorView: View {
                         // a "+ Add secondary element" button that opens
                         // Identify-in-Chrome for the new element.
                         //
-                        // v0.21.48 (voice 4277, 2026-05-27): hidden behind
-                        // the `enableSecondaryElements` static flag. Ethan
-                        // is removing the UX from the app for now — the
-                        // code path stays (Tracker.secondaryElements still
-                        // decodes/encodes the same way) so we can re-enable
-                        // by flipping ONE flag if/when we want it back.
-                        // The flag lives on ChromeBrowserProfile because
-                        // that's the cross-target spot already imported
-                        // everywhere; semantically it's a generic UX flag,
-                        // not a Chrome-specific one.
+                        // Flag history (see ChromeBrowserProfile.enableSecondaryElements):
+                        //   • v0.21.48 (voice 4277, 2026-05-27) — flag flipped to
+                        //     `false`; UX removed from the editor while the model +
+                        //     widget render path stayed intact, so re-enable would
+                        //     be a one-line flip.
+                        //   • v0.21.76 (2026-06-01, voice via MBP-CC bridge) —
+                        //     RE-ENABLED. Ethan wants the secondary-line UX back
+                        //     so trackers can show a small caption (e.g. "Resets
+                        //     9:27 PM") under the hero number on the small widget.
+                        //
+                        // The flag lives on ChromeBrowserProfile because that's
+                        // the cross-target spot already imported everywhere;
+                        // semantically it's a generic UX flag, not a Chrome-
+                        // specific one. To hide the UI again, flip the flag back
+                        // to `false` — every consumer already respects the gate.
                         if ChromeBrowserProfile.enableSecondaryElements && !trimmedSelector.isEmpty {
                             secondaryElementsSection
                         }

@@ -24,6 +24,16 @@ Each entry looks like:
 (newest first)
 
 ---
+**Date:** 2026-06-01T15:58:44Z
+**Trigger:** Voice request via MBP-CC bridge msg-495915d5 (2026-06-01)
+**Symptom:** Secondary-element editor UX hidden in tracker editor (Capture section missing the '+ Add secondary element' button)
+**Root cause:** ChromeBrowserProfile.enableSecondaryElements feature flag set to false in v0.21.48 (voice 4277, 2026-05-27) — the on-disk model + widget render path + Identify routing all stayed intact behind the gate, but TrackerEditorView short-circuits when flag=false so the user has no way to add secondary elements via UI.
+**Fix:** v0.21.76: flipped ChromeBrowserProfile.enableSecondaryElements back to true. ONE-LINE change re-enables the entire feature because every consumer (TrackerEditorView, WidgetConfigsView SecondaryElementPicker, SingleBigNumber rendering, Identify-in-Chrome .secondary routing) already respects this gate. Updated WHY comment on the flag declaration and the TrackerEditorView gate to record both the v0.21.48 disable AND the v0.21.76 re-enable so future agents see the history. Screenshot-verified: editor sheet now shows the 'Secondary elements' section + '+ Add secondary element' button. Layout/clip risk in SingleBigNumber is zero — the secondary-text rendering code is unchanged since v0.21.9 and shipped working through v0.21.47.
+**Commit:** pending-this-commit
+**Guard:** Comment block on ChromeBrowserProfile.enableSecondaryElements documents both directions of the flag flip + every consumer that respects the gate, so the next agent asked to hide/unhide knows it's a one-flag change and where to look.
+---
+
+---
 **Date:** 2026-05-30T18:00:49Z
 **Trigger:** verified audit
 **Symptom:** Persistent scrape write faults (disk full / container perms / read-only volume) silently no-op'd every scrape with NO log and frozen-stale widgets

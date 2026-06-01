@@ -176,14 +176,26 @@ final class ChromeBrowserProfile {
 
     // MARK: - v0.21.48 feature flags
     //
-    // Established 2026-05-27 (voice 4277): "get rid of the whole secondary
-    // elements thing. Just put it behind the feature flag and comment it out
-    // or whatever." We keep the code path intact so the on-disk model
-    // (`Tracker.secondaryElements`) decodes the way it always has — and we
-    // can flip this back to `true` later without re-implementing the UI.
+    // History:
+    //   • v0.21.48 (2026-05-27, voice 4277): flag introduced + set to `false`
+    //     to hide the secondary-element UX from the tracker editor. The code
+    //     path (model decode/encode, Identify-in-Chrome `.secondary` routing,
+    //     `secondaryElementsSection` view, `SecondaryElementPicker` in the
+    //     widget config UI, and `SingleBigNumber.secondaryTextJoined`
+    //     rendering) was deliberately kept intact so re-enabling later would
+    //     be a one-flag flip rather than a feature re-implementation.
+    //   • v0.21.76 (2026-06-01, voice request via MBP-CC bridge): RE-ENABLED.
+    //     Ethan wants the secondary element back so he can show a small
+    //     contextual line under the hero number on the small widget — e.g.
+    //     a "Resets 9:27 PM" caption beneath a usage % bar, or a unit
+    //     suffix that would otherwise crowd the big number. The "removed
+    //     for now" experiment is over.
+    //
     // The flag is read by TrackerEditorView when deciding whether to render
     // the secondary-elements section + the "+ Add secondary element" button.
-    static let enableSecondaryElements: Bool = false
+    // Set to `false` if we ever need to hide the UI again — every consumer
+    // already respects this gate.
+    static let enableSecondaryElements: Bool = true
 
     // MARK: - v0.21.48 Identify-in-Chrome serialization
     //
