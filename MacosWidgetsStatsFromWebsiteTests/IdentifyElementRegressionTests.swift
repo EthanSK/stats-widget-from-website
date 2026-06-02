@@ -97,6 +97,45 @@ final class IdentifyElementRegressionTests: XCTestCase {
         XCTAssertEqual(value.toString(), original)
     }
 
+    // v0.21.77 — pre-Start banner copy guards. The Start-button gate
+    // requires a distinct prepare-state banner text; we pin it so a
+    // future agent rewriting the prose can't silently drop the "press
+    // Start" call-to-action that closes the loop with the button.
+    func testPrepareBannerTextIncludesTrackerLabel() {
+        XCTAssertEqual(
+            IdentifyOverlayBanner.prepareBannerText(contextLabel: "chatgpt"),
+            "Log in or navigate, then press Start to identify \"chatgpt\"."
+        )
+    }
+
+    func testPrepareBannerTextFallsBackWhenLabelMissing() {
+        XCTAssertEqual(
+            IdentifyOverlayBanner.prepareBannerText(contextLabel: nil),
+            "Log in or navigate to the right page, then press Start to pick the element."
+        )
+        XCTAssertEqual(
+            IdentifyOverlayBanner.prepareBannerText(contextLabel: " \n\t "),
+            "Log in or navigate to the right page, then press Start to pick the element."
+        )
+    }
+
+    // v0.21.77 — the inject-JS must contain a Start button + the
+    // inspectionActive state flag. If a refactor accidentally drops
+    // either, the user-facing behavior regresses (overlay would auto-
+    // arm again like pre-v0.21.77, eating the user's first click). Pin
+    // the structural markers here so any such regression breaks CI.
+    func testInspectOverlayJSContainsStartButtonGating() {
+        let script = InspectOverlayJS.inspectOverlayJS(contextLabel: nil)
+        XCTAssertTrue(
+            script.contains("data-stats-widget-inspect-start"),
+            "Inject-JS lost the Start button marker — overlay would auto-arm and eat the user's first click."
+        )
+        XCTAssertTrue(
+            script.contains("inspectionActive"),
+            "Inject-JS lost the inspectionActive gating flag — click handler would fire pre-Start."
+        )
+    }
+
     func testScrapePreparationDoesNotEnableAccessibilityDomain() {
         XCTAssertEqual(ChromeCDPClient.pagePreparationDomains, ["Page.enable", "Network.enable", "DOM.enable"])
         XCTAssertFalse(ChromeCDPClient.pagePreparationDomains.contains("Accessibility.enable"))
