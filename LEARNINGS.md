@@ -24,6 +24,16 @@ Each entry looks like:
 (newest first)
 
 ---
+**Date:** 2026-06-02T18:14:51Z
+**Trigger:** bridge msg-cbbd11bc from MBP-CC (Ethan voice — 'you might need to log in first')
+**Symptom:** Identify-Element overlay ate the user's first click as the element pick, breaking flows that needed login / navigation / scrolling first
+**Root cause:** Inject-JS installed the document-level click handler immediately on overlay load with no user-gated activation step
+**Fix:** Added a Start button to the overlay banner that gates inspection. Pre-Start the overlay is passive (clicks pass through to the page; banner is pointer-events:none, only Start button is pointer-events:auto). Post-Start hover-highlight + click-to-pick activate and Start button is hidden. Esc dismisses in BOTH states. Single inject-JS covers primary + secondary identify.
+**Commit:** 1eb5f00
+**Guard:** testInspectOverlayJSContainsStartButtonGating pins data-stats-widget-inspect-start + inspectionActive markers in inject-JS source. testPrepareBannerTextIncludesTrackerLabel + testPrepareBannerTextFallsBackWhenLabelMissing pin pre-Start copy. Banner pointer-events:none / Start button pointer-events:auto split documented in long comment block.
+---
+
+---
 **Date:** 2026-06-01T15:58:44Z
 **Trigger:** Voice request via MBP-CC bridge msg-495915d5 (2026-06-01)
 **Symptom:** Secondary-element editor UX hidden in tracker editor (Capture section missing the '+ Add secondary element' button)
