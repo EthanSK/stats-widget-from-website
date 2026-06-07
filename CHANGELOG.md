@@ -5,6 +5,42 @@ Release-by-release notes for the Stats Widget from Website project.
 Format: each entry is dated, lists the user-visible changes first, then the
 under-the-hood / signing / packaging changes. Newest first.
 
+## v0.21.78 — 2026-06-08
+
+### Under-the-hood — MCP can finally WRITE secondary elements + slot bindings (voice 4501)
+
+- **`update_tracker` now accepts a `secondaryElements` array.** Previously
+  the MCP read payloads emitted `secondaryElements` (on trackers) and
+  `secondaryElementIDsBySlot` (on widget configs) so they *looked*
+  settable, but the update handlers parsed neither — they were output-only.
+  An agent could read a secondary element but had no way to add one, edit
+  one, or change its parser via MCP; the only write path was the SwiftUI
+  editor. Now:
+  - Omit `id` → **add** a new secondary element (a UUID is generated).
+  - Include a known `id` → **edit** it (field-level merge — only the keys
+    you send change; everything else is left alone).
+  - Include `id` + `_delete: true` → **remove** it.
+  - Send `[]` → clear all secondary elements.
+  - `valueParser.type` accepts `raw` | `currencyOrNumber` | `percent`.
+    Use `raw` for verbatim text passthrough (e.g. a "Resets Friday" line
+    that should NOT be coerced to a number).
+  The input mirrors the read-payload shape exactly, so a read → tweak →
+  write round-trip works.
+- **`update_widget_configuration` now accepts `secondaryElementIDsBySlot`.**
+  A map of slot-index string → array of the bound tracker's
+  secondary-element UUID strings. Replace semantics (send the full map;
+  `{}` clears all bindings). This is what binds a secondary element into a
+  widget slot as secondary text under the main number.
+- Both tool input schemas + descriptions were updated to document the new
+  fields. Changes go through the same `notifyConfigurationChanged()` path
+  as every other update_* handler, so placed widgets reload their timelines.
+- New pure parser `Shared/Models/SecondaryElementMCPParser` holds the JSON→
+  model logic. It lives in `Shared/Models/` (not `Shared/MCP/`, which the
+  unit-test target excludes) so the parsing is unit-testable; new tests in
+  `SecondaryElementsCodableTests` cover edit-parser-in-place, add, remove,
+  clear, unknown-id error, bad-parser-type error, all three parser types,
+  and slot-binding decode/normalisation/validation.
+
 ## v0.21.54 — 2026-05-27
 
 ### User-facing — Identify-in-Chrome flow actually works now (voice 4277)

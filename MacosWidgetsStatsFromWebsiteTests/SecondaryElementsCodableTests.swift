@@ -148,4 +148,161 @@ final class SecondaryElementsCodableTests: XCTestCase {
         XCTAssertEqual(config.secondaryElementIDsBySlot, [:], "Pre-0.21.9 widget configurations must decode with no secondary bindings so existing widgets render exactly as before.")
         XCTAssertEqual(config.secondaryElementIDs(forSlot: 0), [])
     }
+
+    // MARK: - v0.21.78 MCP write parsing (SecondaryElementMCPParser)
+    //
+    // These cover the new WRITE path (Ethan voice 4501): turning the
+    // loosely-typed JSON the MCP server receives into model mutations.
+    // The dispatcher functions in MCPServer.swift are excluded from this
+    // test target (project.yml drops Shared/MCP), so we test the pure
+    // `SecondaryElementMCPParser` directly — that's exactly the logic the
+    // update_tracker / update_widget_configuration handlers delegate to.
+
+    /// Editing an existing secondary element's parser type via the
+    /// update_tracker `secondaryElements` input — the core task case:
+    /// flip a percent-parsed element to `raw` so verbatim text passes
+    /// through. Field-merge must preserve the other fields (id, selector,
+    /// name) that weren't part of the edit.
+    func testApplySecondaryElementsEditsParserTypeInPlace() throws {
+        let existingID = UUID()
+        let existing = [
+            TrackerElement(
+                id: existingID,
+                name: "Resets",
+                selector: ".reset",
+                valueParser: ValueParser(type: .percent)
+            )
+        ]
+
+        // Mirror the read-payload shape: only send id + the valueParser
+        // change (PATCH semantics — everything else should stay put).
+        let input: [Any] = [
+            [
+                "id": existingID.uuidString,
+                "valueParser": ["type": "raw"]
+            ]
+        ]
+
+        let result = try SecondaryElementMCPParser.applySecondaryElements(input, to: existing)
+
+        XCTAssertEqual(result.count, 1, "Editing must not add or drop elements.")
+        XCTAssertEqual(result[0].id, existingID, "The element id must be preserved across an edit.")
+        XCTAssertEqual(result[0].valueParser.type, .raw, "valueParser.type must flip to raw.")
+        XCTAssertEqual(result[0].name, "Resets", "Omitted fields must be left untouched (PATCH semantics).")
+        XCTAssertEqual(result[0].selector, ".reset", "Omitted selector must be left untouched.")
+    }
+
+    /// Adding a brand-new secondary element (no id supplied) generates a
+    /// fresh UUID and applies the sent fields, defaulting the parser to the
+    /// model default when not specified.
+    func testApplySecondaryElementsAddsNewElementWithGeneratedID() throws {
+        let input: [Any] = [
+            [
+                "name": "Resets",
+                "selector": ".reset-line",
+                "valueParser": ["type": "raw"]
+            ]
+        ]
+
+        let result = try SecondaryElementMCPParser.applySecondaryElements(input, to: [])
+
+        XCTAssertEqual(result.count, 1)
+        XCTAssertEqual(result[0].name, "Resets")
+        XCTAssertEqual(result[0].selector, ".reset-line")
+        XCTAssertEqual(result[0].valueParser.type, .raw)
+        // A non-nil UUID was generated (UUID() never produces the all-zero
+        // UUID in practice, but assert it's distinct from a fresh sentinel).
+        XCTAssertNotEqual(result[0].id, UUID(uuidString: "00000000-0000-0000-0000-000000000000"))
+    }
+
+    /// Removing a secondary element via `id` + `_delete: true`.
+    func testApplySecondaryElementsRemovesByDeleteFlag() throws {
+        let keepID = UUID()
+        let dropID = UUID()
+        let existing = [
+            TrackerElement(id: keepID, name: "Keep", selector: ".keep"),
+            TrackerElement(id: dropID, name: "Drop", selector: ".drop")
+        ]
+
+        let input: [Any] = [
+            ["id": dropID.uuidString, "_delete": true]
+        ]
+
+        let result = try SecondaryElementMCPParser.applySecondaryElements(input, to: existing)
+        XCTAssertEqual(result.map(\.id), [keepID], "Only the _delete-flagged element should be removed.")
+    }
+
+    /// An empty array clears all secondary elements (explicit, documented
+    /// behaviour — distinct from omitting the key, which leaves them alone).
+    func testApplySecondaryElementsEmptyArrayClearsAll() throws {
+        let existing = [TrackerElement(name: "A", selector: ".a")]
+        let result = try SecondaryElementMCPParser.applySecondaryElements([Any](), to: existing)
+        XCTAssertEqual(result, [], "Sending [] must clear all secondary elements.")
+    }
+
+    /// Editing a non-existent id must fail loudly (elementNotFound) rather
+    /// than silently creating a stray element.
+    func testApplySecondaryElementsUnknownIDThrows() {
+        let existing = [TrackerElement(name: "A", selector: ".a")]
+        let input: [Any] = [["id": UUID().uuidString, "selector": ".b"]]
+        XCTAssertThrowsError(try SecondaryElementMCPParser.applySecondaryElements(input, to: existing)) { error in
+            guard case SecondaryElementParseError.elementNotFound = error else {
+                return XCTFail("Expected elementNotFound, got \(error).")
+            }
+        }
+    }
+
+    /// An invalid valueParser.type must throw invalidParserType so typos
+    /// surface instead of silently being ignored.
+    func testApplySecondaryElementsInvalidParserTypeThrows() {
+        let input: [Any] = [["selector": ".x", "valueParser": ["type": "verbatim"]]]
+        XCTAssertThrowsError(try SecondaryElementMCPParser.applySecondaryElements(input, to: [])) { error in
+            guard case SecondaryElementParseError.invalidParserType = error else {
+                return XCTFail("Expected invalidParserType, got \(error).")
+            }
+        }
+    }
+
+    /// All three canonical parser types decode successfully.
+    func testApplySecondaryElementsAcceptsAllParserTypes() throws {
+        for raw in ["raw", "currencyOrNumber", "percent"] {
+            let input: [Any] = [["selector": ".x", "valueParser": ["type": raw]]]
+            let result = try SecondaryElementMCPParser.applySecondaryElements(input, to: [])
+            XCTAssertEqual(result[0].valueParser.type.rawValue, raw)
+        }
+    }
+
+    /// Decoding `secondaryElementIDsBySlot` from the update_widget_configuration
+    /// input — maps slot-index strings to arrays of element UUIDs.
+    func testParseSecondaryElementIDsBySlotDecodesMap() throws {
+        let elementA = UUID()
+        let elementB = UUID()
+        let input: [String: Any] = [
+            "0": [elementA.uuidString, elementB.uuidString],
+            "1": [elementA.uuidString]
+        ]
+
+        let result = try SecondaryElementMCPParser.parseSecondaryElementIDsBySlot(input)
+        XCTAssertEqual(result["0"], [elementA, elementB])
+        XCTAssertEqual(result["1"], [elementA])
+    }
+
+    /// An empty object clears all slot bindings; empty slot arrays are
+    /// normalised away so the stored map stays tidy.
+    func testParseSecondaryElementIDsBySlotEmptyAndNormalisation() throws {
+        XCTAssertEqual(try SecondaryElementMCPParser.parseSecondaryElementIDsBySlot([String: Any]()), [:])
+
+        let withEmptySlot: [String: Any] = ["0": [UUID().uuidString], "5": [String]()]
+        let result = try SecondaryElementMCPParser.parseSecondaryElementIDsBySlot(withEmptySlot)
+        XCTAssertEqual(result.count, 1, "Empty slot arrays should be dropped (identical to a missing key).")
+        XCTAssertNotNil(result["0"])
+        XCTAssertNil(result["5"])
+    }
+
+    /// Bad slot keys + bad UUIDs must throw malformedInput.
+    func testParseSecondaryElementIDsBySlotRejectsBadInput() {
+        XCTAssertThrowsError(try SecondaryElementMCPParser.parseSecondaryElementIDsBySlot(["zero": [UUID().uuidString]]))
+        XCTAssertThrowsError(try SecondaryElementMCPParser.parseSecondaryElementIDsBySlot(["0": ["not-a-uuid"]]))
+        XCTAssertThrowsError(try SecondaryElementMCPParser.parseSecondaryElementIDsBySlot("not-an-object"))
+    }
 }

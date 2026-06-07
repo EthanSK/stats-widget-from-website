@@ -577,7 +577,7 @@ private enum MCPToolCatalog {
             "refreshIntervalSec": intSchema("Refresh interval in seconds"),
             "hideElements": arraySchema(stringSchema("CSS selector to hide before snapshots"))
         ], required: ["name", "url", "selector"]),
-        tool("update_tracker", "Modify tracker fields such as name, URL, label, icon, refresh interval, mode, selector, content fallback hint, element bounds, or hidden snapshot selectors. Includes gradientMode for coloring the big-number value (red↔green sweep based on whether high values are bad or good), valueTransform for displaying e.g. '99% remaining' instead of '1% used', and valueStripLetters/valueStripPercentSymbol for compact widget numbers.", [
+        tool("update_tracker", "Modify tracker fields such as name, URL, label, icon, refresh interval, mode, selector, content fallback hint, element bounds, or hidden snapshot selectors. Includes gradientMode for coloring the big-number value (red↔green sweep based on whether high values are bad or good), valueTransform for displaying e.g. '99% remaining' instead of '1% used', and valueStripLetters/valueStripPercentSymbol for compact widget numbers. Also supports secondaryElements — additional elements scraped from the SAME page that can be bound into a widget slot as secondary text (e.g. a 'Resets …' line under the main number).", [
             "id": stringSchema("Tracker UUID"),
             "name": stringSchema("Tracker name"),
             "url": stringSchema("HTTPS URL, or http://localhost for testing"),
@@ -593,7 +593,8 @@ private enum MCPToolCatalog {
             "valueStripLetters": boolSchema("Remove letters/words from the displayed value. Default true, so values like '99% remaining' render as '99%'."),
             "valueStripPercentSymbol": boolSchema("Remove the percent sign from the displayed value. Default false."),
             "refreshIntervalSec": intSchema("Refresh interval in seconds"),
-            "hideElements": arraySchema(stringSchema("CSS selector to hide before snapshots"))
+            "hideElements": arraySchema(stringSchema("CSS selector to hide before snapshots")),
+            "secondaryElements": secondaryElementsSchema()
         ], required: ["id"]),
         tool("delete_tracker", "Delete a tracker and unlink it from widget configurations.", [
             "id": stringSchema("Tracker UUID")
@@ -614,7 +615,7 @@ private enum MCPToolCatalog {
         tool("get_widget_configuration", "Return one widget composition.", [
             "id": stringSchema("Widget configuration UUID")
         ], required: ["id"]),
-        tool("update_widget_configuration", "Create or update a widget composition.", [
+        tool("update_widget_configuration", "Create or update a widget composition. secondaryElementIDsBySlot binds a tracker's secondary elements into widget slots as secondary text (e.g. show a 'Resets …' line under slot 0's main number).", [
             "id": stringSchema("Widget configuration UUID; optional for create"),
             "name": stringSchema("Configuration name"),
             "templateID": enumSchema(WidgetTemplate.allCases.map(\.rawValue)),
@@ -622,7 +623,8 @@ private enum MCPToolCatalog {
             "layout": enumSchema(WidgetConfigurationLayout.allCases.map(\.rawValue)),
             "trackerIDs": arraySchema(stringSchema("Tracker UUID")),
             "showSparklines": boolSchema("Whether to show sparkline charts where the template supports them"),
-            "showLabels": boolSchema("Whether to show tracker labels")
+            "showLabels": boolSchema("Whether to show tracker labels"),
+            "secondaryElementIDsBySlot": secondaryElementIDsBySlotSchema()
         ]),
         tool("delete_widget_configuration", "Delete a widget composition.", [
             "id": stringSchema("Widget configuration UUID")
@@ -829,6 +831,57 @@ private enum MCPToolCatalog {
                 "devicePixelRatio": numberSchema("Device pixel ratio")
             ],
             "additionalProperties": false
+        ]
+    }
+
+    /// v0.21.78 — input schema for `update_tracker`'s `secondaryElements`
+    /// array. Mirrors the shape `secondaryElementPayload` EMITS in the read
+    /// path so an agent can round-trip (read → tweak one element → send back).
+    /// Each entry: omit `id` to ADD a new element (a UUID is generated);
+    /// include a known `id` to EDIT that element (field-level merge — only the
+    /// keys you send change); include `id` + `_delete: true` to REMOVE one.
+    /// The valueParser.type accepts raw | currencyOrNumber | percent — use
+    /// `raw` for verbatim text passthrough (e.g. a "Resets Friday" line that
+    /// should NOT be coerced to a number).
+    private static func secondaryElementsSchema() -> [String: Any] {
+        [
+            "type": "array",
+            "description": "Secondary elements scraped from the same page. Omit id to add; pass a known id to edit (field-merge); pass id + _delete:true to remove. Send [] to clear all. Mirrors the read payload shape.",
+            "items": [
+                "type": "object",
+                "properties": [
+                    "id": stringSchema("Existing secondary element UUID. Omit to add a NEW element."),
+                    "name": stringSchema("Human-readable label shown in widget-config pickers, e.g. 'Resets'."),
+                    "selector": stringSchema("CSS selector for this element on the same page."),
+                    "contentSelectorHint": stringSchema("Optional content hint used when the CSS selector no longer matches. Empty string or null clears it."),
+                    "elementBoundingBox": boundingBoxSchema(),
+                    "hideElements": arraySchema(stringSchema("CSS selector to hide before snapshots")),
+                    "valueParser": [
+                        "type": "object",
+                        "description": "How to parse the scraped text. type 'raw' passes verbatim text through; 'currencyOrNumber' parses a number; 'percent' parses a percentage.",
+                        "properties": [
+                            "type": enumSchema(["raw", "currencyOrNumber", "percent"]),
+                            "stripChars": arraySchema(stringSchema("Characters to strip before parsing"))
+                        ],
+                        "additionalProperties": false
+                    ],
+                    "_delete": boolSchema("When true (with a matching id), removes this secondary element.")
+                ],
+                "additionalProperties": true
+            ]
+        ]
+    }
+
+    /// v0.21.78 — input schema for `update_widget_configuration`'s
+    /// `secondaryElementIDsBySlot`. Map of slot-index string → array of the
+    /// bound tracker's secondary-element UUID strings. "Replace" semantics:
+    /// send the COMPLETE desired map; send {} to clear all bindings. Mirrors
+    /// the read payload shape so it round-trips.
+    private static func secondaryElementIDsBySlotSchema() -> [String: Any] {
+        [
+            "type": "object",
+            "description": "Per-slot secondary-element bindings: keys are slot-index strings ('0','1',…), values are arrays of secondary-element UUID strings from the tracker bound to that slot. Replace semantics — send the full map; {} clears all.",
+            "additionalProperties": arraySchema(stringSchema("Secondary element UUID"))
         ]
     }
 }
@@ -1057,6 +1110,40 @@ private enum MCPToolDispatcher {
                 shouldResetFailureState = true
             }
 
+            // v0.21.78 (Ethan voice 4501) — MCP write support for secondary
+            // elements. Previously update_tracker emitted secondaryElements in
+            // the READ payload but had NO parse here, so the field looked
+            // settable but was output-only. We now accept a `secondaryElements`
+            // array mirroring the read shape and apply edits/adds/removes via
+            // the pure `SecondaryElementMCPParser` (which lives in
+            // Shared/Models/ so it's unit-testable — the MCP dir is excluded
+            // from the test target). Local parse errors are mapped onto the
+            // MCP -32602 codes so JSON-RPC clients see a clean error.
+            //
+            // Any change to secondary elements resets the failure state +
+            // forces a fresh scrape, same as primary-selector edits, because a
+            // new/changed secondary selector hasn't been proven against the
+            // live DOM yet.
+            if arguments.keys.contains("secondaryElements") {
+                do {
+                    tracker.secondaryElements = try SecondaryElementMCPParser.applySecondaryElements(
+                        arguments["secondaryElements"],
+                        to: tracker.secondaryElements
+                    )
+                } catch let error as SecondaryElementParseError {
+                    // .elementNotFound is semantically a validation/not-found
+                    // problem (a real id that doesn't exist); the rest are
+                    // malformed-input (-32602). Both surface a clear message.
+                    switch error {
+                    case .elementNotFound(let message):
+                        throw MCPError.validation(message)
+                    case .malformedInput(let message), .invalidParserType(let message):
+                        throw MCPError.invalidParams(message)
+                    }
+                }
+                shouldResetFailureState = true
+            }
+
             configuration.trackers[index] = tracker
             updatedTracker = tracker
         }
@@ -1272,6 +1359,30 @@ private enum MCPToolDispatcher {
             }
             if let showLabels = arguments["showLabels"] as? Bool {
                 widgetConfiguration.showLabels = showLabels
+            }
+
+            // v0.21.78 (Ethan voice 4501) — MCP write support for per-slot
+            // secondary-element bindings. Previously update_widget_configuration
+            // emitted secondaryElementIDsBySlot in the READ payload but never
+            // parsed it, so binding a secondary element into a widget slot was
+            // impossible via MCP. We now accept the full map (slot-index-string
+            // → [element UUID string]) and replace the binding. "Replace"
+            // semantics (send the COMPLETE desired map) match how the read
+            // payload hands the agent the whole current map to edit; send {}
+            // to clear all slot bindings. Element-id existence is NOT validated
+            // here against the bound tracker's secondaryElements — an id that
+            // doesn't resolve simply renders no secondary text (same lenient
+            // behaviour the SwiftUI editor + render path already tolerate), so
+            // we don't reject a binding just because the tracker's element set
+            // is being edited in a separate call.
+            if arguments.keys.contains("secondaryElementIDsBySlot") {
+                do {
+                    widgetConfiguration.secondaryElementIDsBySlot = try SecondaryElementMCPParser.parseSecondaryElementIDsBySlot(
+                        arguments["secondaryElementIDsBySlot"]
+                    )
+                } catch let error as SecondaryElementParseError {
+                    throw MCPError.invalidParams(error.message)
+                }
             }
 
             if let existingIndex {
