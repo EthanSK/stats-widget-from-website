@@ -24,6 +24,16 @@ Each entry looks like:
 (newest first)
 
 ---
+**Date:** 2026-06-07T23:42:52Z
+**Trigger:** voice 4501
+**Symptom:** MCP could READ secondary elements (tracker.secondaryElements) + widget slot bindings (secondaryElementIDsBySlot) but could not WRITE them — update_tracker/update_widget_configuration parsed neither, so the fields looked settable but were output-only. Configuring 'Resets …' secondary text on a widget via MCP was impossible.
+**Root cause:** MCPServer.swift updateTracker (~L1006) parsed name/url/label/icon/.../hideElements but had NO secondaryElements parse; updateWidgetConfiguration (~L1206) parsed templateID/size/.../showLabels but NO secondaryElementIDsBySlot. Both emitted in READ payloads (secondaryElementPayload L1862, widgetConfigurationPayload L1890), misleading callers. The 2026-06-08 gap LEARNINGS entry documented this as 'NOT FIXABLE via config/MCP, requires Swift'.
+**Fix:** v0.21.78: added secondaryElements parse to updateTracker (add when id omitted / edit-field-merge when id present / remove via id+_delete:true / [] clears; valueParser.type accepts raw|currencyOrNumber|percent) and secondaryElementIDsBySlot parse to updateWidgetConfiguration (slot-index-string -> [UUID]; replace semantics, {} clears). Pure parser lives in Shared/Models/SecondaryElementMCPParsing.swift (NOT Shared/MCP/, which the unit-test target excludes) so it's unit-testable. Tool input schemas + descriptions updated. Persists via existing notifyConfigurationChanged() so widgets reload.
+**Commit:** 331e634
+**Guard:** 8 new tests in SecondaryElementsCodableTests (edit-parser-in-place, add, remove, clear, unknown-id error, bad-parser-type error, all 3 parser types, slot-binding decode/normalise/validate). The previous report-only gap entry (2026-06-08) is now CLOSED — the two parsers it said were missing exist. CHANGELOG v0.21.78 documents the MCP contract.
+---
+
+---
 **Date:** 2026-06-02T18:14:51Z
 **Trigger:** bridge msg-cbbd11bc from MBP-CC (Ethan voice — 'you might need to log in first')
 **Symptom:** Identify-Element overlay ate the user's first click as the element pick, breaking flows that needed login / navigation / scrolling first
