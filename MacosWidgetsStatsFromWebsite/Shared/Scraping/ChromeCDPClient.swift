@@ -57,6 +57,76 @@ final class ChromeCDPClient {
         enableDomains(Self.pagePreparationDomains, completion: completion)
     }
 
+    /// v0.21.79 — periodic-forced-reload support (SPA stale-data fix).
+    ///
+    /// Sends `Page.navigate` to `url` to force a GENUINE fresh navigation of
+    /// the already-open scrape tab. This exists because of the SPA stale-data
+    /// bug (Ethan, 2026-06-21): single-page apps like
+    /// chatgpt.com/codex/cloud/settings/analytics cache their usage numbers in
+    /// in-memory JS state and do NOT re-fetch them when the scraper merely
+    /// re-reads the DOM of the already-loaded tab. For Cloudflare-sensitive
+    /// domains (ChatGPT / Claude) we deliberately KEEP one reusable tab open
+    /// between scrapes (see `Tracker.preservesScrapeTabBetweenRuns`) so
+    /// challenges settle — but the flip side is the page's JS state goes stale,
+    /// so the widget kept showing a pre-reset value (e.g. 43%/44%) long after
+    /// the real numbers had jumped (98%/100%).
+    ///
+    /// A real `Page.navigate` tears down and rebuilds the page's JS context, so
+    /// the SPA re-fetches its data on hydration. We do NOT do this every scrape
+    /// (that would defeat the keep-the-tab-warm Cloudflare strategy and add
+    /// latency) — the caller gates it to roughly every 90 minutes per page (see
+    /// `ChromeCDPScraper.forcedReloadInterval`).
+    ///
+    /// Best-effort with a timeout: `Page.navigate` returns as soon as the
+    /// navigation is COMMITTED (not when the page finishes loading), which is
+    /// fine — the scraper's existing `waitForSelector` poll loop already waits
+    /// for the target element to appear after this returns, so hydration time
+    /// is absorbed by the normal selector-poll deadline. If the navigate fails
+    /// or times out, the completion still fires (with the error) so the caller
+    /// can fall back to reading the current DOM instead of erroring the scrape.
+    func navigate(
+        to url: URL,
+        timeout: TimeInterval = 10,
+        completion: @escaping (Result<Void, Error>) -> Void
+    ) {
+        let lock = NSLock()
+        var didFinish = false
+
+        func finishOnce(_ result: Result<Void, Error>) {
+            lock.lock()
+            let shouldFinish = !didFinish
+            if shouldFinish { didFinish = true }
+            lock.unlock()
+            guard shouldFinish else { return }
+            completion(result)
+        }
+
+        if timeout > 0 {
+            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + timeout) {
+                finishOnce(.failure(ChromeCDPClientError.protocolError("Page.navigate timed out after \(Int(timeout))s")))
+            }
+        }
+
+        send(method: "Page.navigate", params: ["url": url.absoluteString]) { result in
+            switch result {
+            case .success(let response):
+                // Page.navigate returns an errorText field on failed loads
+                // (e.g. net::ERR_*). Surface it so the caller's log/fallback
+                // path can see why a forced reload didn't take; the scrape
+                // then continues against whatever DOM is present.
+                if let outer = response["result"] as? [String: Any],
+                   let errorText = outer["errorText"] as? String,
+                   !errorText.isEmpty {
+                    finishOnce(.failure(ChromeCDPClientError.protocolError("Page.navigate: \(errorText)")))
+                    return
+                }
+                finishOnce(.success(()))
+            case .failure(let error):
+                finishOnce(.failure(error))
+            }
+        }
+    }
+
     func close() {
         queue.async { [weak self] in
             guard let self, !self.isClosed else { return }

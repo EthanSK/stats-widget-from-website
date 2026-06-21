@@ -24,6 +24,16 @@ Each entry looks like:
 (newest first)
 
 ---
+**Date:** 2026-06-21T15:53:57Z
+**Trigger:** Ethan task 2026-06-21: chatgpt codex widget stale 43/44 vs real 98/100; 'just make it reload... every hour or two'
+**Symptom:** ChatGPT codex widget showed stale 43%/44% for hours while real usage had reset to 98%/100% (chatgpt.com/codex/cloud/settings/analytics)
+**Root cause:** SPA caches usage numbers in in-memory JS state; for Cloudflare-sensitive domains (ChatGPT/Claude) the scraper KEEPS a reusable warm tab between runs (Tracker.preservesScrapeTabBetweenRuns) and only re-reads the DOM, so the cached values never refreshed and the widget read a stale pre-reset value
+**Fix:** Added periodic FORCED fresh navigation: in ChromeCDPScraper, when reusing a warm tab AND it has been >=forcedReloadInterval (90 min) since that page was last freshly navigated, issue a real Page.navigate (new ChromeCDPClient.navigate) BEFORE selector-polling so the SPA re-fetches on hydration; otherwise read the warm DOM as before. Per-PAGE last-nav watermark (static lastForcedNavigationByURL keyed by URL) independent of refreshIntervalSec. Best-effort: nav failure logs + falls back to reading current DOM, never errors the scrape.
+**Commit:** 5f7b838
+**Guard:** Single named constant ChromeCDPScraper.forcedReloadInterval = 90*60 with a big doc-comment block naming the SPA-cache bug, the keep-warm-tab tradeoff, and the per-page watermark rationale. Activity log lines 'periodic forced reload (SPA stale-data guard)' / 'forced reload navigated' / 'forced reload failed; reading current DOM' make the cadence visible.
+---
+
+---
 **Date:** 2026-06-07T23:42:52Z
 **Trigger:** voice 4501
 **Symptom:** MCP could READ secondary elements (tracker.secondaryElements) + widget slot bindings (secondaryElementIDsBySlot) but could not WRITE them — update_tracker/update_widget_configuration parsed neither, so the fields looked settable but were output-only. Configuring 'Resets …' secondary text on a widget via MCP was impossible.
