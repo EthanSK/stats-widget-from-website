@@ -47,6 +47,59 @@ final class ChromeCDPScraper {
     /// placeholder + whatever's being scraped right now).
     static let tabCountOrphanSweepThreshold = 10
 
+    // MARK: - v0.21.79 periodic forced reload (SPA stale-data fix)
+    //
+    // THE BUG (Ethan, 2026-06-21): for Cloudflare-sensitive domains
+    // (ChatGPT / Claude) we KEEP one reusable scrape tab open between runs
+    // (see `Tracker.preservesScrapeTabBetweenRuns`) so Cloudflare challenges
+    // settle and sibling trackers can share the same loaded DOM. The downside:
+    // single-page apps such as chatgpt.com/codex/cloud/settings/analytics cache
+    // their usage numbers in in-memory JS state and DON'T re-fetch on a plain
+    // DOM re-read. So the scraper kept reading a STALE pre-reset value — the
+    // ChatGPT codex widget showed 43%/44% for hours after the real values had
+    // reset to 98%/100%. A genuine fresh navigation (which destroys + rebuilds
+    // the page's JS context, forcing the SPA to re-fetch on hydration) fixes it.
+    //
+    // THE FIX (Ethan's exact ask: "just make it reload… the reload doesn't have
+    // to happen always maybe just every hour or two"): we do NOT force a fresh
+    // navigation on every scrape — normal scrapes stay cheap DOM reads against
+    // the warm tab. Instead, the FIRST time we reuse a given page's tab AND it's
+    // been longer than `forcedReloadInterval` since that page was last freshly
+    // navigated, we issue a real `Page.navigate` BEFORE polling the selector.
+    // Otherwise we read the current DOM exactly as before.
+    //
+    // "Every hour or two" → 90 minutes is the chosen default. Make it a single
+    // named constant so it's trivial to retune.
+    static let forcedReloadInterval: TimeInterval = 90 * 60  // 90 minutes
+
+    // Per-page "last forced navigation" watermark, keyed by the tracker's URL.
+    //
+    // Keyed by URL (not tracker id) on purpose: multiple trackers can point at
+    // the SAME page (primary + sibling trackers sharing one warm tab), and a
+    // forced reload by any one of them refreshes the shared DOM for all — so the
+    // 90-min cadence should be per-PAGE, independent of each tracker's own
+    // refreshIntervalSec. This lives as a `static` so it survives across the
+    // short-lived per-scrape `ChromeCDPScraper` instances; the host app process
+    // is long-running, so the in-memory watermark persists for the lifetime that
+    // matters (a process restart simply forces one reload on first reuse, which
+    // is harmless / desirable). Mutated only on the main queue (same discipline
+    // as `activeScrapers`), so no extra locking is needed.
+    private static var lastForcedNavigationByURL: [String: Date] = [:]
+
+    /// Whether the page at `url` is due for a periodic forced reload — i.e. it
+    /// has never been force-navigated this process, or it was last navigated
+    /// more than `forcedReloadInterval` ago. Read/written on the main queue.
+    private static func isForcedReloadDue(forURL url: String) -> Bool {
+        guard let last = lastForcedNavigationByURL[url] else { return true }
+        return Date().timeIntervalSince(last) >= forcedReloadInterval
+    }
+
+    /// Stamp `url` as freshly navigated "now" so the next reuse within
+    /// `forcedReloadInterval` skips the forced reload. Main queue only.
+    private static func markForcedNavigation(forURL url: String) {
+        lastForcedNavigationByURL[url] = Date()
+    }
+
     private let scrapeID = UUID()
     private let tracker: Tracker
     private let completion: Completion
@@ -309,15 +362,11 @@ final class ChromeCDPScraper {
                         "tracker": self.tracker.id.uuidString,
                         "elapsedMs": "\(prepElapsedMs)"
                     ])
-                    self.beginPhase("selectorPoll")
-                    // v0.21.29/v0.21.68: selector-poll deadline tracks the
-                    // outer scrape timeout. Keep a 5s buffer so the inner
-                    // deadline hits the diagnosable "selectorPoll deadline"
-                    // path before the outer DispatchSource timer fires.
-                    // Cloudflare-sensitive trackers get 55s here
-                    // (60s outer - 5s buffer).
-                    let selectorPollBudget = TimeInterval(self.tracker.scrapeTimeoutSec - 5)
-                    self.waitForSelector(deadline: Date().addingTimeInterval(selectorPollBudget))
+                    // v0.21.79 SPA stale-data fix: decide whether this scrape
+                    // needs a periodic FORCED fresh navigation before reading
+                    // the selector. See the `forcedReloadInterval` doc block at
+                    // the top of this file for the full rationale.
+                    self.maybeForceReloadThenPollSelector(shouldCloseOnFinish: shouldCloseOnFinish)
                 }
             }
         case .failure(let error):
@@ -338,6 +387,102 @@ final class ChromeCDPScraper {
             ])
             finish(.failure(error))
         }
+    }
+
+    /// v0.21.79 SPA stale-data fix — gate the periodic forced reload, then
+    /// start the normal selector-poll loop.
+    ///
+    /// Two cases:
+    ///   1. A BRAND-NEW tab was just opened for this scrape
+    ///      (`shouldCloseOnFinish == true`). That open already navigated the
+    ///      page fresh, so there's nothing stale to fix — we just stamp the
+    ///      per-page watermark "now" (so a reuse within the next 90 min won't
+    ///      needlessly re-navigate) and go straight to polling.
+    ///   2. We REUSED an already-open warm tab (`shouldCloseOnFinish == false`,
+    ///      the Cloudflare-sensitive ChatGPT/Claude path). This is the only
+    ///      place SPA staleness can bite. If this page hasn't been freshly
+    ///      navigated in `forcedReloadInterval` (~90 min), force a real
+    ///      `Page.navigate` BEFORE polling so the SPA re-fetches its numbers.
+    ///      Otherwise read the warm DOM exactly as before (cheap, no reload).
+    ///
+    /// Robustness: a forced navigation is best-effort. If `Page.navigate`
+    /// fails or times out we LOG it and fall through to polling the current
+    /// DOM anyway — a flaky reload must never turn into a failed scrape. The
+    /// watermark is stamped optimistically once we DECIDE to navigate (success
+    /// or not) so a persistently-failing navigate can't hot-loop a reload on
+    /// every single scrape.
+    private func maybeForceReloadThenPollSelector(shouldCloseOnFinish: Bool) {
+        let urlString = tracker.url
+
+        // Case 1: fresh tab — already navigated, just stamp + poll.
+        guard !shouldCloseOnFinish else {
+            Self.markForcedNavigation(forURL: urlString)
+            startSelectorPoll()
+            return
+        }
+
+        // Case 2: reused warm tab — only reload if the page is due.
+        guard Self.isForcedReloadDue(forURL: urlString),
+              let url = validatedURL(from: tracker.url),
+              let client else {
+            // Not due (or no client/url) → read the warm DOM as today.
+            startSelectorPoll()
+            return
+        }
+
+        let lastNav = Self.lastForcedNavigationByURL[urlString]
+        let minutesSince = lastNav.map { Int(Date().timeIntervalSince($0) / 60) }
+        ActivityLogger.log("scrape", "periodic forced reload (SPA stale-data guard)", metadata: [
+            "scrapeID": scrapeID.uuidString,
+            "tracker": tracker.id.uuidString,
+            "trackerName": tracker.name,
+            "url": urlString,
+            "minutesSinceLastNav": minutesSince.map { "\($0)" } ?? "never",
+            "intervalMin": "\(Int(Self.forcedReloadInterval / 60))"
+        ])
+        // Stamp BEFORE navigating so a failing navigate can't reload-loop.
+        Self.markForcedNavigation(forURL: urlString)
+        beginPhase("forcedReload")
+
+        client.navigate(to: url) { [weak self] result in
+            DispatchQueue.main.async {
+                guard let self, !self.didComplete else { return }
+                switch result {
+                case .success:
+                    ActivityLogger.log("scrape", "forced reload navigated", metadata: [
+                        "scrapeID": self.scrapeID.uuidString,
+                        "tracker": self.tracker.id.uuidString,
+                        "elapsedMs": "\(self.elapsedMsInPhase())"
+                    ])
+                case .failure(let error):
+                    // Best-effort: log and proceed to poll the current DOM.
+                    // The existing selector-poll deadline absorbs any partial
+                    // load; if the element genuinely never appears the normal
+                    // transient/selector-miss classification handles it.
+                    ActivityLogger.log("scrape", "forced reload failed; reading current DOM", metadata: [
+                        "scrapeID": self.scrapeID.uuidString,
+                        "tracker": self.tracker.id.uuidString,
+                        "error": error.localizedDescription
+                    ])
+                }
+                self.startSelectorPoll()
+            }
+        }
+    }
+
+    /// Begin the selector-poll phase + loop. Extracted so both the
+    /// reload-then-poll and read-warm-DOM paths share one entry point.
+    private func startSelectorPoll() {
+        beginPhase("selectorPoll")
+        // v0.21.29/v0.21.68: selector-poll deadline tracks the outer scrape
+        // timeout. Keep a 5s buffer so the inner deadline hits the diagnosable
+        // "selectorPoll deadline" path before the outer DispatchSource timer
+        // fires. Cloudflare-sensitive trackers get 55s here (60s outer - 5s).
+        // Note: the budget is computed from `scrapeStartedAt`-relative wall
+        // clock via the outer timeout, so any time spent in a forced reload
+        // above is already counted against the same overall scrape timeout.
+        let selectorPollBudget = TimeInterval(tracker.scrapeTimeoutSec - 5)
+        waitForSelector(deadline: Date().addingTimeInterval(selectorPollBudget))
     }
 
     private func waitForSelector(deadline: Date, lastStatus: [String: Any]? = nil) {
