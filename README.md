@@ -9,6 +9,10 @@
 [![Website](https://img.shields.io/badge/website-ethansk.github.io-7eecaf.svg)](https://ethansk.github.io/stats-widget-from-website/)
 [![Latest release](https://img.shields.io/github/v/release/EthanSK/stats-widget-from-website?include_prereleases&sort=semver&label=release&color=ffe27a)](https://github.com/EthanSK/stats-widget-from-website/releases)
 
+<p align="center">
+  <img src="docs/assets/stats-widget-screenshot.jpg" alt="Stats Widget from Website showing ChatGPT and Claude session capacity widgets on a macOS desktop" width="420">
+</p>
+
 A native macOS WidgetKit app that surfaces scraped values from any web page you
 log into — analytics dashboards, billing pages, storefront stats, your AWS bill,
 your bank balance, anything that has a number or visual region on a page.
