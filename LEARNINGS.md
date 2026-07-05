@@ -24,6 +24,16 @@ Each entry looks like:
 (newest first)
 
 ---
+**Date:** 2026-07-05T23:45:09Z
+**Trigger:** Ethan task 2026-07-06: reload button 'last updated' time updates instantly before refresh succeeded; must only advance on successful completion
+**Symptom:** Clicking a tracker row's reload button made the 'last updated' time appear to update INSTANTLY, before the refresh had actually finished/succeeded — sometimes yes, sometimes no — so the timestamp wasn't a trustworthy signal that the scrape really worked
+**Root cause:** No optimistic write existed: the row (TrackersListView displayedTimestamp) and widget (StatsWidget updatedText) already bind to reading.lastUpdatedAt, which the scrape layer only stamps on a genuine .success and AppGroupStore.recordFailure preserves on failure. The perceived 'instant jump' was a GENUINE fast success — Cloudflare-sensitive trackers keep a warm scrape tab (see the 2026-06-21 SPA-stale learning) so a re-scrape can complete sub-second. The only in-flight cue was the tiny button spinner, so the freshly-advanced time looked premature and there was nothing marking the shown time as 'last COMPLETED success' vs 'current attempt'.
+**Fix:** TrackersListView.swift TrackerRowView (~L402): while isRefreshing (backgroundScheduler.inFlightTrackerIDs.contains(tracker.id)) show an explicit 'Refreshing…' caption in the timestamp slot instead of the relative time; the lastUpdatedAt-based time only (re)appears once the scrape completes — new time on success, unchanged previous-success time on failure. Pure UI/affordance change; the success-only data binding was already correct.
+**Commit:** pending
+**Guard:** Large WHY comment block at the timestamp slot in TrackerRowView.body naming both guarantees (value=lastUpdatedAt success-only + recordFailure preserves; in-flight='Refreshing…' so the time is never shown mid-attempt)
+---
+
+---
 **Date:** 2026-06-21T15:53:57Z
 **Trigger:** Ethan task 2026-06-21: chatgpt codex widget stale 43/44 vs real 98/100; 'just make it reload... every hour or two'
 **Symptom:** ChatGPT codex widget showed stale 43%/44% for hours while real usage had reset to 98%/100% (chatgpt.com/codex/cloud/settings/analytics)
