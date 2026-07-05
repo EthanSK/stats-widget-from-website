@@ -5,6 +5,24 @@ Release-by-release notes for the Stats Widget from Website project.
 Format: each entry is dated, lists the user-visible changes first, then the
 under-the-hood / signing / packaging changes. Newest first.
 
+## v0.21.80 — 2026-07-06
+
+### The "last updated" time is now a trustworthy "last successful refresh" signal
+
+- **Tapping the reload button on a tracker row no longer makes the "last
+  updated" time look like it jumped instantly.** While a scrape is in
+  flight the row now shows an explicit **"Refreshing…"** label in place of
+  the relative timestamp; the real time only (re)appears once the scrape
+  has actually finished. On success it shows the new time; on failure it
+  returns to the previous successful time — so the timestamp only ever
+  advances when a scrape genuinely worked.
+- Previously the only in-flight cue was the tiny button spinner, so a fast
+  (warm-tab) success made the freshly-advanced time look like it updated
+  "before the refresh finished". The displayed value was already bound to
+  `lastUpdatedAt` (which the scrape layer only stamps on a real success,
+  and which failures leave untouched), so this is purely a
+  clarity/affordance fix — the timestamp's meaning is now unambiguous.
+
 ## v0.21.78 — 2026-06-08
 
 ### Under-the-hood — MCP can finally WRITE secondary elements + slot bindings (voice 4501)

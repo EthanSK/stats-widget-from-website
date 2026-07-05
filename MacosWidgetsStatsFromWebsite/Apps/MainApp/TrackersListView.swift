@@ -405,7 +405,33 @@ private struct TrackerRowView: View {
                     .monospacedDigit()
                     .lineLimit(1)
                     .foregroundStyle(valueColor)
-                if let timestamp = displayedTimestamp {
+                // v0.21.80 (Ethan bug report): the "last updated" caption must be
+                // a TRUSTWORTHY signal that a scrape actually completed
+                // successfully — it must never appear to advance mid-refresh, and
+                // it must never advance on a failed refresh. Two guarantees back
+                // this up:
+                //   1. VALUE: `displayedTimestamp` reads `reading.lastUpdatedAt`,
+                //      which the scrape layer only stamps on a genuine `.success`
+                //      (ChromeCDPScraper). A FAILED scrape goes through
+                //      AppGroupStore.recordFailure, which carries the PREVIOUS
+                //      success's `lastUpdatedAt` forward unchanged — so after a
+                //      failure the row keeps showing the last-good time, never
+                //      "now". See TrackerReading.lastUpdatedAt + recordFailure.
+                //   2. IN-FLIGHT: while THIS tracker's scrape is running we swap
+                //      the timestamp for an explicit "Refreshing…" label instead
+                //      of leaving the old relative time on screen. Previously the
+                //      only in-flight cue was the tiny button spinner, so a fast
+                //      (warm-tab) success made the time look like it jumped
+                //      "instantly, before the refresh finished". Now the completed
+                //      time is hidden during the attempt and only (re)appears once
+                //      the scrape returns — showing the NEW success time on
+                //      success, or the unchanged previous success time on failure.
+                if isRefreshing {
+                    Text("Refreshing…")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                } else if let timestamp = displayedTimestamp {
                     Text(timestamp)
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
