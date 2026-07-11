@@ -390,7 +390,7 @@ final class ChromeCDPScraper {
                                     "target": blank.id
                                 ])
                                 self.handleTarget(
-                                    .success(blank.asTarget),
+                                    .success(blank),
                                     shouldCloseOnFinish: false,
                                     needsInitialNavigation: true
                                 )
