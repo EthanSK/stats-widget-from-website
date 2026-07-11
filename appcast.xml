@@ -7,6 +7,15 @@
     <language>en</language>
     <atom:link href="https://ethansk.github.io/stats-widget-from-website/appcast.xml" rel="self" type="application/rss+xml" />
     <item>
+      <title>Stats Widget from Website v0.21.82</title>
+      <pubDate>Sat, 11 Jul 2026 13:22:00 +0000</pubDate>
+      <sparkle:version>129700129</sparkle:version>
+      <sparkle:shortVersionString>0.21.82</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+      <sparkle:releaseNotesLink>https://github.com/EthanSK/stats-widget-from-website/releases/tag/v0.21.82</sparkle:releaseNotesLink>
+      <enclosure url="https://github.com/EthanSK/stats-widget-from-website/releases/download/v0.21.82/Stats-Widget-from-Website-v0.21.82.zip" length="157344396" type="application/octet-stream" sparkle:version="129700129" sparkle:shortVersionString="0.21.82" sparkle:edSignature="JfQaepXLnX2+kzNU7cdG1S//lhO3elAyO1DmVNuBtK/OEbXHLWFm+q45gay+b2lSUkrZMzB7YFfdikAZM8TjDA==" />
+    </item>
+    <item>
       <title>Stats Widget from Website v0.21.80</title>
       <pubDate>Sun, 05 Jul 2026 23:49:48 +0000</pubDate>
       <sparkle:version>129700127</sparkle:version>
