@@ -2834,9 +2834,12 @@ final class ChromeBrowserProfile {
     /// user/login tab) is never returned, so we can't steal an in-flight scrape's
     /// page. Best-effort: a `/json/list` failure yields nil so the caller falls
     /// back to opening a fresh tab.
+    // Returns a `ChromeBrowserTarget` (not the internal `ChromeBrowserPageTarget`)
+    // so the conversion via `asTarget` — which is fileprivate to this file —
+    // happens here; the scraper only ever needs the id + websocket URL.
     func firstReusableBlankPageTarget(
         configuration: ChromeBrowserLaunchConfiguration,
-        completion: @escaping (ChromeBrowserPageTarget?) -> Void
+        completion: @escaping (ChromeBrowserTarget?) -> Void
     ) {
         listPageTargets(configuration: configuration) { result in
             switch result {
@@ -2844,7 +2847,7 @@ final class ChromeBrowserProfile {
                 let blank = targets.first { target in
                     ChromeBrowserProfile.isReusableBlankTabURL(target.url?.absoluteString ?? "")
                 }
-                completion(blank)
+                completion(blank?.asTarget)
             case .failure:
                 completion(nil)
             }
