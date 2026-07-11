@@ -2823,6 +2823,46 @@ final class ChromeBrowserProfile {
         }
     }
 
+    /// v0.21.81 battery-drain fix. Returns the first idle, reusable about:blank
+    /// page target (or nil if none). Preserved-tab (Cloudflare-sensitive)
+    /// scrapes park their tab at about:blank after each run so the heavy SPA
+    /// stops running (see `ChromeCDPScraper` battery doc block). The NEXT scrape
+    /// calls this to reuse that parked tab — navigating it back to the URL —
+    /// instead of opening a brand-new tab every run, which keeps the tab count
+    /// bounded (≤ ~1-2). Only genuine blank/new-tab pages qualify; a tab already
+    /// sitting on a real http(s) URL (a concurrent scrape's live tab, or a
+    /// user/login tab) is never returned, so we can't steal an in-flight scrape's
+    /// page. Best-effort: a `/json/list` failure yields nil so the caller falls
+    /// back to opening a fresh tab.
+    func firstReusableBlankPageTarget(
+        configuration: ChromeBrowserLaunchConfiguration,
+        completion: @escaping (ChromeBrowserPageTarget?) -> Void
+    ) {
+        listPageTargets(configuration: configuration) { result in
+            switch result {
+            case .success(let targets):
+                let blank = targets.first { target in
+                    ChromeBrowserProfile.isReusableBlankTabURL(target.url?.absoluteString ?? "")
+                }
+                completion(blank)
+            case .failure:
+                completion(nil)
+            }
+        }
+    }
+
+    /// True for tabs that are safe to REUSE as a scrape tab by navigating them
+    /// to a URL — genuinely blank pages only (empty, about:blank, the Chromium
+    /// new-tab placeholder). Deliberately narrower than `isOrphanCandidate`,
+    /// which also treats chrome-extension:// and devtools:// as disposable — we
+    /// must not hijack those as scrape tabs.
+    private static func isReusableBlankTabURL(_ urlString: String) -> Bool {
+        let lowered = urlString.lowercased()
+        return lowered.isEmpty
+            || lowered == "about:blank"
+            || lowered.hasPrefix("chrome://newtab")
+    }
+
     /// Closes any "orphan" page targets — about:blank / DevTools / new-tab
     /// pages that aren't currently being used by a scrape OR by an
     /// in-flight Identify flow. The `keepURLs` set is supplied by the

@@ -100,6 +100,38 @@ final class ChromeCDPScraper {
         lastForcedNavigationByURL[url] = Date()
     }
 
+    // MARK: - v0.21.81 battery-drain fix (park scrape tabs at about:blank)
+    //
+    // THE BUG (Ethan, 2026-07-11 — live logs + `ps`): Cloudflare-sensitive
+    // trackers (claude.ai/usage, chatgpt.com analytics) KEEP their scrape tab
+    // open between runs (`Tracker.preservesScrapeTabBetweenRuns`) so challenges
+    // settle and sibling trackers share the loaded DOM. The old teardown then
+    // "left reused scrape target open" with the FULL heavy React SPA still
+    // loaded. Those SPAs never go quiet in the background — they keep polling,
+    // animating, and firing timers — so a Chromium renderer sat pegged at
+    // 55-78% CPU 24/7. Worse, the reuse-by-URL match plus the "leave open" path
+    // let stale/duplicate scrape tabs ACCUMULATE (~10 tabs observed), each a
+    // heavy page, compounding the drain. Net effect: constant battery burn even
+    // though scraping only happens every ~30 min.
+    //
+    // THE FIX: scraping every 30 min is fine — the problem is heavy pages left
+    // RUNNING in between. So after each preserved-tab scrape completes we
+    // navigate that tab to `about:blank` (see `parkTabAtBlank` in `finish()`),
+    // which tears down the SPA's JS context (timers / polling / rAF all stop) so
+    // the idle tab costs ~0 CPU. We still keep ONE reusable tab alive per page
+    // (preserving cookies / profile / the persistent-browser optimisation): the
+    // NEXT scrape reuses the parked blank tab (`firstReusableBlankPageTarget`)
+    // and navigates it back to the tracker URL at scrape start
+    // (`needsInitialNavigation`). Blank tab in → URL → scrape → blank tab out.
+    // This also bounds the tab count (≤ ~1-2 idle blank tabs) instead of leaking
+    // a fresh heavy tab every run. Tradeoff vs. the old keep-warm strategy: each
+    // scrape now re-navigates rather than re-reading a warm DOM, so Cloudflare is
+    // hit slightly more often — but cookies persist (fast clearance), the 60s
+    // per-domain timeout gives challenge headroom, and any mid-challenge miss is
+    // already downgraded to a transient failure (`finishSelectorFailure`) that
+    // keeps the last good value. As a bonus, re-navigating every run also makes
+    // the SPA re-fetch fresh numbers, so the v0.21.79 staleness bug can't recur.
+
     private let scrapeID = UUID()
     private let tracker: Tracker
     private let completion: Completion
@@ -107,6 +139,13 @@ final class ChromeCDPScraper {
     private var backgroundUseConfiguration: ChromeBrowserLaunchConfiguration?
     private var target: ChromeBrowserTarget?
     private var shouldCloseTargetOnFinish = false
+    // v0.21.81 battery-drain fix: true when this scrape REUSED a parked
+    // about:blank tab (see the battery doc block below + `finish()`'s
+    // park-at-blank teardown). A blank tab has no page loaded, so before we
+    // can poll the selector we MUST navigate it to the tracker URL —
+    // unconditionally, independent of the 90-min periodic-forced-reload
+    // cadence. Consumed in `maybeForceReloadThenPollSelector`.
+    private var needsInitialNavigation = false
     private var client: ChromeCDPClient?
     private var timeout: DispatchWorkItem?
     private var didComplete = false
@@ -307,19 +346,57 @@ final class ChromeCDPScraper {
 
                 switch result {
                 case .success(let target):
+                    // A tab currently sits on this exact URL (e.g. a sibling
+                    // tracker scraped it moments ago and it hasn't been parked
+                    // yet). Reuse it as-is — no navigation needed.
                     self.handleTarget(.success(target), shouldCloseOnFinish: false)
                 case .failure(let reuseError):
+                    // No tab is on this URL. `openNewTab` opens a brand-new tab;
+                    // for preserved trackers we first try to REUSE a parked
+                    // about:blank tab (v0.21.81 battery fix — see doc block) so
+                    // we don't leak a fresh heavy tab on every scrape.
                     let shouldCloseNewTarget = !self.tracker.preservesScrapeTabBetweenRuns
-                    ActivityLogger.log("scrape", "no reusable scrape target, opening new tab", metadata: [
-                        "scrapeID": self.scrapeID.uuidString,
-                        "tracker": self.tracker.id.uuidString,
-                        "url": url.absoluteString,
-                        "willPreserveNewTarget": shouldCloseNewTarget ? "false" : "true",
-                        "reason": reuseError.localizedDescription
-                    ])
-                    ChromeBrowserProfile.shared.openTab(url: url, configuration: configuration) { [weak self] openResult in
+                    let openNewTab = {
+                        ActivityLogger.log("scrape", "no reusable scrape target, opening new tab", metadata: [
+                            "scrapeID": self.scrapeID.uuidString,
+                            "tracker": self.tracker.id.uuidString,
+                            "url": url.absoluteString,
+                            "willPreserveNewTarget": shouldCloseNewTarget ? "false" : "true",
+                            "reason": reuseError.localizedDescription
+                        ])
+                        ChromeBrowserProfile.shared.openTab(url: url, configuration: configuration) { [weak self] openResult in
+                            DispatchQueue.main.async {
+                                self?.handleTarget(openResult, shouldCloseOnFinish: shouldCloseNewTarget)
+                            }
+                        }
+                    }
+
+                    guard self.tracker.preservesScrapeTabBetweenRuns else {
+                        // Non-preserved trackers never reuse — open + close each run.
+                        openNewTab()
+                        return
+                    }
+
+                    // Preserved tracker: look for an idle parked about:blank tab
+                    // to reuse. Found → navigate it to the URL (needsInitialNavigation)
+                    // and keep it after finish. None → fall back to a fresh tab.
+                    ChromeBrowserProfile.shared.firstReusableBlankPageTarget(configuration: configuration) { [weak self] blank in
                         DispatchQueue.main.async {
-                            self?.handleTarget(openResult, shouldCloseOnFinish: shouldCloseNewTarget)
+                            guard let self, !self.didComplete else { return }
+                            if let blank {
+                                ActivityLogger.log("scrape", "reusing parked blank scrape tab", metadata: [
+                                    "scrapeID": self.scrapeID.uuidString,
+                                    "tracker": self.tracker.id.uuidString,
+                                    "target": blank.id
+                                ])
+                                self.handleTarget(
+                                    .success(blank.asTarget),
+                                    shouldCloseOnFinish: false,
+                                    needsInitialNavigation: true
+                                )
+                            } else {
+                                openNewTab()
+                            }
                         }
                     }
                 }
@@ -329,13 +406,18 @@ final class ChromeCDPScraper {
 
     private func handleTarget(
         _ result: Result<ChromeBrowserTarget, Error>,
-        shouldCloseOnFinish: Bool
+        shouldCloseOnFinish: Bool,
+        // v0.21.81 battery fix: set true only when we reused a parked
+        // about:blank tab, so `maybeForceReloadThenPollSelector` navigates it
+        // to the URL before polling (a blank tab has nothing to read yet).
+        needsInitialNavigation: Bool = false
     ) {
         let targetSelectionElapsedMs = elapsedMsInPhase()
         switch result {
         case .success(let target):
             self.target = target
             self.shouldCloseTargetOnFinish = shouldCloseOnFinish
+            self.needsInitialNavigation = needsInitialNavigation
             ActivityLogger.log("scrape", "target selection ended", metadata: [
                 "scrapeID": scrapeID.uuidString,
                 "tracker": tracker.id.uuidString,
@@ -414,6 +496,17 @@ final class ChromeCDPScraper {
     private func maybeForceReloadThenPollSelector(shouldCloseOnFinish: Bool) {
         let urlString = tracker.url
 
+        // Case 0 (v0.21.81 battery fix): we reused a PARKED about:blank tab.
+        // The tab has nothing loaded, so we ALWAYS navigate it to the URL before
+        // polling, regardless of the periodic-forced-reload cadence. Stamp the
+        // per-page watermark so a subsequent within-90-min reuse (if any) skips
+        // the periodic reload — this navigation already made the DOM fresh.
+        if needsInitialNavigation, let url = validatedURL(from: tracker.url), let client {
+            Self.markForcedNavigation(forURL: urlString)
+            navigateThenPoll(to: url, client: client, logReason: "reused parked blank tab")
+            return
+        }
+
         // Case 1: fresh tab — already navigated, just stamp + poll.
         guard !shouldCloseOnFinish else {
             Self.markForcedNavigation(forURL: urlString)
@@ -421,7 +514,10 @@ final class ChromeCDPScraper {
             return
         }
 
-        // Case 2: reused warm tab — only reload if the page is due.
+        // Case 2: reused warm tab still on the URL — only reload if the page is
+        // due. (In practice, since the battery fix parks preserved tabs at
+        // about:blank after each run, this warm-DOM path now mostly fires for
+        // back-to-back sibling trackers whose shared tab hasn't been parked yet.)
         guard Self.isForcedReloadDue(forURL: urlString),
               let url = validatedURL(from: tracker.url),
               let client else {
@@ -442,8 +538,16 @@ final class ChromeCDPScraper {
         ])
         // Stamp BEFORE navigating so a failing navigate can't reload-loop.
         Self.markForcedNavigation(forURL: urlString)
-        beginPhase("forcedReload")
+        navigateThenPoll(to: url, client: client, logReason: "periodic forced reload")
+    }
 
+    /// Force a genuine `Page.navigate` to `url`, then start the selector poll.
+    /// Shared by both the reused-parked-blank-tab path (v0.21.81) and the
+    /// periodic-forced-reload path (v0.21.79). Best-effort: a navigate
+    /// failure/timeout is logged and we still poll the current DOM — a flaky
+    /// navigation must never turn into a failed scrape.
+    private func navigateThenPoll(to url: URL, client: ChromeCDPClient, logReason: String) {
+        beginPhase("forcedReload")
         client.navigate(to: url) { [weak self] result in
             DispatchQueue.main.async {
                 guard let self, !self.didComplete else { return }
@@ -452,16 +556,17 @@ final class ChromeCDPScraper {
                     ActivityLogger.log("scrape", "forced reload navigated", metadata: [
                         "scrapeID": self.scrapeID.uuidString,
                         "tracker": self.tracker.id.uuidString,
+                        "reason": logReason,
                         "elapsedMs": "\(self.elapsedMsInPhase())"
                     ])
                 case .failure(let error):
-                    // Best-effort: log and proceed to poll the current DOM.
                     // The existing selector-poll deadline absorbs any partial
                     // load; if the element genuinely never appears the normal
                     // transient/selector-miss classification handles it.
                     ActivityLogger.log("scrape", "forced reload failed; reading current DOM", metadata: [
                         "scrapeID": self.scrapeID.uuidString,
                         "tracker": self.tracker.id.uuidString,
+                        "reason": logReason,
                         "error": error.localizedDescription
                     ])
                 }
@@ -602,6 +707,7 @@ final class ChromeCDPScraper {
         client = nil
         target = nil
         shouldCloseTargetOnFinish = false
+        needsInitialNavigation = false
         configuration = nil
         backgroundUseConfiguration = nil
         timeout?.cancel()
@@ -1193,7 +1299,11 @@ final class ChromeCDPScraper {
                    let target = captured.target {
                     ChromeBrowserProfile.shared.closeTarget(id: target.id, configuration: configuration)
                 } else if let target = captured.target {
-                    ActivityLogger.log("scrape", "left reused scrape target open", metadata: [
+                    // v0.21.81 battery fix: preserved tab — it has just been
+                    // navigated to about:blank (see park-at-blank branch below)
+                    // so the heavy SPA is no longer running. The tab stays alive
+                    // for the next scrape to reuse (idle CPU ~0 in between).
+                    ActivityLogger.log("scrape", "parked reused scrape tab at about:blank (idle CPU ~0)", metadata: [
                         "tracker": captured.tracker.id.uuidString,
                         "target": target.id
                     ])
@@ -1273,8 +1383,42 @@ final class ChromeCDPScraper {
                 }
                 teardown()
             }
+        } else if let client = client, target != nil {
+            // v0.21.81 battery-drain fix: preserved-tab tracker. Instead of
+            // leaving the heavy claude.ai / chatgpt.com SPA loaded and burning
+            // CPU 24/7, navigate the tab to about:blank so its JS context is
+            // torn down (timers / polling / animation all stop) → ~0 CPU while
+            // idle. The tab object stays alive for the next scrape to reuse.
+            // Must run BEFORE `teardown()` closes the websocket.
+            parkTabAtBlank(client: client) {
+                teardown()
+            }
         } else {
             teardown()
+        }
+    }
+
+    /// v0.21.81 battery-drain fix. Navigate the (preserved) scrape tab to
+    /// about:blank so the heavy SPA stops executing between scrapes. Best-effort
+    /// with a short timeout: on failure we log and still tear down — worst case
+    /// the tab idles on the old page for one more cycle, no correctness impact.
+    /// `about:blank` is a valid `Page.navigate` target and commits instantly, so
+    /// closing the websocket right after (in `teardown`) is safe.
+    private func parkTabAtBlank(client: ChromeCDPClient, completion: @escaping () -> Void) {
+        guard let blank = URL(string: "about:blank") else {
+            completion()
+            return
+        }
+        client.navigate(to: blank, timeout: 3) { [weak self] result in
+            DispatchQueue.main.async {
+                if case .failure(let error) = result {
+                    ActivityLogger.log("scrape", "park-at-about:blank failed (tab idles on heavy page one cycle)", metadata: [
+                        "tracker": self?.tracker.id.uuidString ?? "",
+                        "error": error.localizedDescription
+                    ])
+                }
+                completion()
+            }
         }
     }
 
