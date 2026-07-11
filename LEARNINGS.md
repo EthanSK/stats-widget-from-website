@@ -24,6 +24,16 @@ Each entry looks like:
 (newest first)
 
 ---
+**Date:** 2026-07-11T13:14:46Z
+**Trigger:** Ethan task 2026-07-11: battery-drain bug from live logs + ps
+**Symptom:** Battery drain: a Chromium renderer pegged at 55-78% CPU continuously (24/7) even though trackers scrape only every ~30 min. ps + activity.log showed ~10 open tabs of claude.ai / chatgpt.com and log lines 'persistent-mode: keeping Chrome alive between scrapes' + 'left reused scrape target open' + tabCount=10.
+**Root cause:** Cloudflare-sensitive trackers (Tracker.preservesScrapeTabBetweenRuns = claude.ai/chatgpt.com) keep their scrape tab open between runs. The finish() teardown's 'left reused scrape target open' path left the FULL heavy React SPA loaded; those SPAs never idle in the background (polling/animation/timers) so each pegged a renderer. The reuse-by-URL match + leave-open path also let stale scrape tabs accumulate (~10), each a heavy page, compounding the drain. Scraping cadence was fine; the heavy pages left RUNNING between scrapes were the problem.
+**Fix:** v0.21.81. ChromeCDPScraper.finish(): added parkTabAtBlank() — for preserved tabs, Page.navigate to about:blank BEFORE teardown so the SPA JS context is destroyed (~0 CPU idle); tab stays alive for reuse. selectTarget(): preserved trackers now reuse a parked about:blank tab via ChromeBrowserProfile.firstReusableBlankPageTarget() and navigate it to the URL (needsInitialNavigation flag) instead of opening a fresh heavy tab each run -> tab count bounded ~1-2. maybeForceReloadThenPollSelector() new Case 0 forces the blank->URL nav before polling; nav logic extracted to shared navigateThenPoll(). New predicate isReusableBlankTabURL (about:blank/newtab/empty only, narrower than isOrphanCandidate).
+**Commit:** 5a0daa8 (PR #5), release 1832bd6 / tag v0.21.81
+**Guard:** Thorough WHY comments (battery doc block at top of ChromeCDPScraper + inline). Activity.log lines make it diagnosable: 'reusing parked blank scrape tab', 'parked reused scrape tab at about:blank (idle CPU ~0)', existing 'tab count at scrape start/end' (tabCount should stay <=2). Tradeoff (re-navigate every run vs warm-DOM re-read) documented; also incidentally fixes the v0.21.79 SPA staleness bug since every run re-fetches.
+---
+
+---
 **Date:** 2026-07-05T23:45:09Z
 **Trigger:** Ethan task 2026-07-06: reload button 'last updated' time updates instantly before refresh succeeded; must only advance on successful completion
 **Symptom:** Clicking a tracker row's reload button made the 'last updated' time appear to update INSTANTLY, before the refresh had actually finished/succeeded — sometimes yes, sometimes no — so the timestamp wasn't a trustworthy signal that the scrape really worked
