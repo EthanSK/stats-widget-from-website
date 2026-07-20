@@ -112,6 +112,13 @@ enum SecondaryElementMCPParser {
             )
         }
 
+        // The documented replace contract treats an explicit empty array as
+        // "clear all". Without this fast path the merge loop performed zero
+        // mutations and accidentally returned the existing elements.
+        if entries.isEmpty {
+            return []
+        }
+
         // Work on a mutable copy so partial application never corrupts the
         // caller's input on a thrown error (the MCP dispatcher discards the
         // whole mutation transaction on throw anyway, but keeping this pure

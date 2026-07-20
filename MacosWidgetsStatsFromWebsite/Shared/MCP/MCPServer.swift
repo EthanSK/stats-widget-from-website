@@ -538,6 +538,8 @@ private enum MCPError: Error {
 
 private enum MCPToolCatalog {
     static let destructiveToolNames: Set<String> = [
+        "add_browser_account",
+        "update_browser_account",
         "add_tracker",
         "update_tracker",
         "delete_tracker",
@@ -555,7 +557,17 @@ private enum MCPToolCatalog {
     static let toolNames = Set(tools.compactMap { $0["name"] as? String })
 
     static let tools: [[String: Any]] = [
-        tool("get_status", "Return MCP server status, browser-profile details, data counts, and the available tool names.", [:]),
+        tool("get_status", "Return MCP server status, browser-account details, data counts, and the available tool names.", [:]),
+        tool("list_browser_accounts", "List isolated browser accounts available for tracker sign-in and scraping.", [:]),
+        tool("add_browser_account", "Create an isolated browser account. Open it in the app's Browser Accounts screen to sign in before scraping authenticated pages.", [
+            "name": stringSchema("Unique user-facing browser account name"),
+            "colorHex": stringSchema("Optional six-digit badge colour, e.g. #4C8DFF")
+        ], required: ["name"]),
+        tool("update_browser_account", "Rename or recolour a browser account without changing its stable profile ID or sign-in data.", [
+            "id": stringSchema("Browser account profile ID"),
+            "name": stringSchema("Unique user-facing browser account name"),
+            "colorHex": stringSchema("Optional six-digit badge colour, e.g. #4C8DFF")
+        ], required: ["id"]),
         tool("list_trackers", "Return all trackers with current values, status, and last-updated metadata.", [:]),
         tool("get_tracker", "Return one tracker with current value, sparkline, and full configuration.", [
             "id": stringSchema("Tracker UUID")
@@ -563,6 +575,7 @@ private enum MCPToolCatalog {
         tool("add_tracker", "Add a tracker. Selector is required unless the caller uses identify_element first.", [
             "name": stringSchema("Tracker name"),
             "url": stringSchema("HTTPS URL, or http://localhost for testing"),
+            "browserProfile": stringSchema("Browser account profile ID from list_browser_accounts. Defaults to the original Default account."),
             "renderMode": enumSchema(["text", "snapshot"]),
             "selector": stringSchema("CSS selector"),
             "contentSelectorHint": stringSchema("Optional content hint used when the saved CSS selector no longer matches, e.g. session, weekly, or 5h"),
@@ -581,6 +594,7 @@ private enum MCPToolCatalog {
             "id": stringSchema("Tracker UUID"),
             "name": stringSchema("Tracker name"),
             "url": stringSchema("HTTPS URL, or http://localhost for testing"),
+            "browserProfile": stringSchema("Browser account profile ID from list_browser_accounts"),
             "renderMode": enumSchema(["text", "snapshot"]),
             "selector": stringSchema("CSS selector"),
             "contentSelectorHint": stringSchema("Optional content hint used when the saved CSS selector no longer matches, e.g. session, weekly, or 5h"),
@@ -609,6 +623,7 @@ private enum MCPToolCatalog {
         tool("identify_element", "Open the running app's visible browser and wait for the user to confirm an element. Requires the app socket transport; stdio-only clients cannot show UI.", [
             "trackerId": stringSchema("Existing tracker UUID to update after the user picks an element. Omit to create a pending tracker."),
             "url": stringSchema("HTTPS URL, or http://localhost for testing. Required when trackerId is omitted."),
+            "browserProfile": stringSchema("Browser account profile ID. Defaults to the existing tracker's account, or Default for a new tracker."),
             "renderMode": enumSchema(["text", "snapshot"])
         ]),
         tool("list_widget_configurations", "Return all widget compositions.", [:]),
@@ -893,6 +908,12 @@ private enum MCPToolDispatcher {
         switch name {
         case "get_status":
             return getStatus(context: context)
+        case "list_browser_accounts":
+            return listBrowserAccounts()
+        case "add_browser_account":
+            return try addBrowserAccount(arguments)
+        case "update_browser_account":
+            return try updateBrowserAccount(arguments)
         case "list_trackers":
             return listTrackers()
         case "get_tracker":
@@ -967,6 +988,9 @@ private enum MCPToolDispatcher {
             "engine": "chrome_cdp",
             "name": Tracker.defaultBrowserProfile
         ]
+        let browserAccountPayloads = configuration.browserAccounts.map {
+            browserAccountPayload($0, trackers: configuration.trackers, includeTechnicalDetails: false)
+        }
         #else
         let browserConfiguration = ChromeBrowserProfile.shared.configuration()
         let browserProfilePayload: [String: Any] = [
@@ -975,6 +999,9 @@ private enum MCPToolDispatcher {
             "cdpURL": browserConfiguration.cdpURL.absoluteString,
             "userDataDirectory": browserConfiguration.userDataDirectory.path
         ]
+        let browserAccountPayloads = configuration.browserAccounts.map {
+            browserAccountPayload($0, trackers: configuration.trackers, includeTechnicalDetails: true)
+        }
         #endif
         return [
             "serverInfo": [
@@ -985,13 +1012,83 @@ private enum MCPToolDispatcher {
             "interactiveElementIdentification": context.supportsInteractiveBrowser ? "available" : "requires_app_socket",
             "socketPath": AppGroupPaths.mcpSocketURL().path,
             "browserProfile": browserProfilePayload,
+            "browserAccounts": browserAccountPayloads,
             "counts": [
                 "trackers": configuration.trackers.count,
+                "browserAccounts": configuration.browserAccounts.count,
                 "widgetConfigurations": configuration.widgetConfigurations.count
             ],
             "health": health,
             "tools": Array(MCPToolCatalog.toolNames).sorted()
         ]
+    }
+
+    private static func listBrowserAccounts() -> Any {
+        let configuration = AppGroupStore.loadSharedConfiguration()
+        return configuration.browserAccounts.map {
+            browserAccountPayload($0, trackers: configuration.trackers, includeTechnicalDetails: true)
+        }
+    }
+
+    private static func addBrowserAccount(_ arguments: [String: Any]) throws -> Any {
+        let name = try stringArgument("name", arguments)
+        let requestedColor = (arguments["colorHex"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let requestedColor, !requestedColor.isEmpty,
+           BrowserAccountCatalog.normalizedColorHex(requestedColor) == nil {
+            throw MCPError.validation("colorHex must be a six-digit hex colour such as #4C8DFF.")
+        }
+
+        var created: BrowserAccount?
+        let saved = try AppGroupStore.mutateSharedConfiguration { configuration in
+            do {
+                var account = try BrowserAccountCatalog.makeAccount(
+                    named: name,
+                    existing: configuration.browserAccounts
+                )
+                if let requestedColor, !requestedColor.isEmpty {
+                    account.colorHex = BrowserAccountCatalog.normalizedColorHex(requestedColor)!
+                }
+                configuration.browserAccounts.append(account)
+                created = account
+            } catch let error as BrowserAccountCatalogError {
+                throw MCPError.validation(error.localizedDescription)
+            }
+        }
+        let account = try require(created, "Created browser account was not produced.")
+        notifyConfigurationChanged()
+        return browserAccountPayload(account, trackers: saved.trackers, includeTechnicalDetails: true)
+    }
+
+    private static func updateBrowserAccount(_ arguments: [String: Any]) throws -> Any {
+        let id = BrowserAccountCatalog.normalizedProfileID(try stringArgument("id", arguments))
+        var updated: BrowserAccount?
+        let saved = try AppGroupStore.mutateSharedConfiguration { configuration in
+            guard let index = configuration.browserAccounts.firstIndex(where: { $0.id == id }) else {
+                throw MCPError.notFound("Browser account \(id) was not found.")
+            }
+
+            if let rawName = arguments["name"] as? String {
+                do {
+                    configuration.browserAccounts[index].name = try BrowserAccountCatalog.validatedName(
+                        rawName,
+                        excludingID: id,
+                        existing: configuration.browserAccounts
+                    )
+                } catch let error as BrowserAccountCatalogError {
+                    throw MCPError.validation(error.localizedDescription)
+                }
+            }
+            if let rawColor = arguments["colorHex"] as? String {
+                guard let normalizedColor = BrowserAccountCatalog.normalizedColorHex(rawColor) else {
+                    throw MCPError.validation("colorHex must be a six-digit hex colour such as #4C8DFF.")
+                }
+                configuration.browserAccounts[index].colorHex = normalizedColor
+            }
+            updated = configuration.browserAccounts[index]
+        }
+        let account = try require(updated, "Updated browser account was not produced.")
+        notifyConfigurationChanged()
+        return browserAccountPayload(account, trackers: saved.trackers, includeTechnicalDetails: true)
     }
 
     private static func listTrackers() -> Any {
@@ -1019,10 +1116,17 @@ private enum MCPToolDispatcher {
             throw MCPError.validation("Selector is required. Use identify_element when the user needs to pick it.")
         }
 
+        let configuration = AppGroupStore.loadSharedConfiguration()
+        let browserProfile = try resolvedBrowserProfile(
+            arguments["browserProfile"],
+            fallback: Tracker.defaultBrowserProfile,
+            configuration: configuration
+        )
         let renderMode = renderModeArgument(arguments["renderMode"]) ?? .text
         let tracker = Tracker(
             name: name,
             url: url.absoluteString,
+            browserProfile: browserProfile,
             renderMode: renderMode,
             selector: selector,
             contentSelectorHint: (arguments["contentSelectorHint"] as? String)?.nilIfEmpty,
@@ -1063,6 +1167,14 @@ private enum MCPToolDispatcher {
             }
             if arguments.keys.contains("url") {
                 tracker.url = try urlArgument("url", arguments).absoluteString
+                shouldResetFailureState = true
+            }
+            if arguments.keys.contains("browserProfile") {
+                tracker.browserProfile = try resolvedBrowserProfile(
+                    arguments["browserProfile"],
+                    fallback: tracker.browserProfile,
+                    configuration: configuration
+                )
                 shouldResetFailureState = true
             }
             if let value = arguments["label"] as? String {
@@ -1240,6 +1352,11 @@ private enum MCPToolDispatcher {
         }
 
         let renderMode = renderModeArgument(arguments["renderMode"]) ?? existingTracker?.renderMode ?? .text
+        let browserProfile = try resolvedBrowserProfile(
+            arguments["browserProfile"],
+            fallback: existingTracker?.browserProfile ?? Tracker.defaultBrowserProfile,
+            configuration: configuration
+        )
         let trackerID: UUID
         if let existingTracker {
             trackerID = existingTracker.id
@@ -1247,6 +1364,7 @@ private enum MCPToolDispatcher {
             let tracker = Tracker(
                 name: "Pending \(url.host ?? "Tracker")",
                 url: url.absoluteString,
+                browserProfile: browserProfile,
                 renderMode: renderMode,
                 selector: ""
             )
@@ -1264,6 +1382,7 @@ private enum MCPToolDispatcher {
                 userInfo: [
                     "trackerID": trackerID.uuidString,
                     "url": url.absoluteString,
+                    "browserProfile": browserProfile,
                     "renderMode": renderMode.rawValue
                 ]
             )
@@ -1273,6 +1392,7 @@ private enum MCPToolDispatcher {
             "trackerId": trackerID.uuidString,
             "status": "awaiting_user",
             "url": url.absoluteString,
+            "browserProfile": browserProfile,
             "renderMode": renderMode.rawValue
         ]
     }
@@ -1905,6 +2025,26 @@ private enum MCPToolDispatcher {
         ]
     }
 
+    private static func browserAccountPayload(
+        _ account: BrowserAccount,
+        trackers: [Tracker],
+        includeTechnicalDetails: Bool
+    ) -> [String: Any] {
+        var payload: [String: Any] = [
+            "id": account.id,
+            "name": account.name,
+            "colorHex": account.colorHex,
+            "isDefault": account.isDefault,
+            "trackerCount": trackers.lazy.filter { $0.browserProfile == account.id }.count
+        ]
+        if includeTechnicalDetails {
+            let browserConfiguration = ChromeBrowserProfile.shared.configuration(profileName: account.id)
+            payload["cdpURL"] = browserConfiguration.cdpURL.absoluteString
+            payload["userDataDirectory"] = browserConfiguration.userDataDirectory.path
+        }
+        return payload
+    }
+
     private static func trackerPayload(_ tracker: Tracker, includeHistory: Bool) -> [String: Any] {
         var payload: [String: Any] = [
             "id": tracker.id.uuidString,
@@ -2070,6 +2210,26 @@ private enum MCPToolDispatcher {
             throw MCPError.invalidParams("Missing string argument: \(key).")
         }
         return value
+    }
+
+    private static func resolvedBrowserProfile(
+        _ value: Any?,
+        fallback: String,
+        configuration: AppConfiguration
+    ) throws -> String {
+        let profileID: String
+        if let rawValue = value as? String {
+            profileID = BrowserAccountCatalog.normalizedProfileID(rawValue)
+        } else if value == nil {
+            profileID = BrowserAccountCatalog.normalizedProfileID(fallback)
+        } else {
+            throw MCPError.invalidParams("browserProfile must be a string profile ID from list_browser_accounts.")
+        }
+
+        guard configuration.browserAccounts.contains(where: { $0.id == profileID }) else {
+            throw MCPError.validation("Browser account \(profileID) was not found. Use list_browser_accounts to choose an existing profile ID.")
+        }
+        return profileID
     }
 
     private static func uuidArgument(_ key: String, _ arguments: [String: Any]) throws -> UUID {

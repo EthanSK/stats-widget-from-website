@@ -5,6 +5,44 @@ Release-by-release notes for the Stats Widget from Website project.
 Format: each entry is dated, lists the user-visible changes first, then the
 under-the-hood / signing / packaging changes. Newest first.
 
+## v0.21.83 — 2026-07-21
+
+### Browser Accounts — track the same page with several separate logins
+
+- **Preferences now has a full Browser Accounts manager.** Create named,
+  colour-badged accounts, open each account's Chromium window to sign in,
+  rename or recolour it without losing the session, reveal its local data, or
+  reset/remove it with recoverable Trash-based cleanup. The legacy login is
+  retained as the protected built-in **Default** account.
+- **Every tracker now exposes a Browser Account picker.** Tracker rows show the
+  assigned badge and account name, and the context menu can duplicate an
+  existing tracker—including its URL and selector—straight into another
+  account. This is the fast path for showing the same statistic for Personal,
+  Work, and Client logins side by side.
+- **Preview, Identify in Chrome, MCP Identify, and scheduled scraping all route
+  through the tracker's selected account.** Each account has an independent
+  Chromium user-data directory and CDP port, so cookies, local storage, tabs,
+  and sign-in state cannot cross between accounts. Identify waits only for
+  scrapes using that account, and same-URL freshness bookkeeping is also keyed
+  by account.
+- Account removal is blocked while any tracker references it. Browser-account
+  catalog writes are transactional; removal persists that guard before moving
+  browser data to the Trash.
+
+### Configuration and MCP
+
+- Configuration schema v6 adds `browserAccounts`. Existing installs migrate
+  without moving browser data: the old profile becomes Default, and any
+  pre-existing non-default tracker profile IDs are retained and synthesized in
+  the catalog.
+- MCP adds `list_browser_accounts`, `add_browser_account`, and
+  `update_browser_account`; `add_tracker`, `update_tracker`, and
+  `identify_element` now accept `browserProfile` IDs. Status payloads include
+  account details and tracker counts.
+- Fixed the documented `update_tracker` contract for secondary elements:
+  sending `secondaryElements: []` now actually clears all secondary elements
+  instead of leaving the existing list unchanged.
+
 ## v0.21.80 — 2026-07-06
 
 ### The "last updated" time is now a trustworthy "last successful refresh" signal

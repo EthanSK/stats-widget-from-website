@@ -24,6 +24,26 @@ Each entry looks like:
 (newest first)
 
 ---
+**Date:** 2026-07-20T21:48:10Z
+**Trigger:** Ethan task 2026-07-20: use the same website URL and element with three independently signed-in accounts
+**Symptom:** Tracker.browserProfile already existed and background scraping used it, but every user-facing creation/Identify path hardcoded the legacy default profile, there was no account catalog or picker, and the forced-navigation cache used URL alone. Users could not deliberately create, distinguish, or manage several isolated logins, and same-URL accounts could share a false freshness watermark.
+**Root cause:** browserProfile was treated as an internal storage string instead of a first-class, stable identity. UI, MCP Identify, and capture controllers never carried it end to end; display names and storage identity were not separated; per-profile lifecycle safeguards were still global in a few places.
+**Fix:** v0.21.83 adds schema-v6 BrowserAccount catalog entries with immutable IDs, renameable names, deterministic badges, separate user-data directories and collision-checked CDP ports. Tracker editor/list/duplicate, preview, Identify, MCP add/update/identify, and background routing all preserve the account ID. Identify lock/drain and forced-navigation watermarks are per account. The legacy singular `MACOS_WIDGETS_STATS_CDP_PORT` development override applies only to Default so it cannot collapse additional accounts onto one endpoint. Default and unknown legacy IDs migrate without moving data. Removal is guarded by tracker references and reset/removal uses Trash.
+**Commit:** pending
+**Guard:** BrowserAccountTests cover v5 migration, unknown-profile preservation, v6 round-trip, account-only persistence, same-URL port/directory isolation, legacy port-override scoping, unique IDs/ports, name/colour validation, in-use/default deletion guards, deletion after tracker reassignment, and rename-stable tracker references. Main app, CLI, widget, MCP smoke, and temporary-container UI/session-isolation checks are required before completion.
+---
+
+---
+**Date:** 2026-07-20T21:48:10Z
+**Trigger:** full-suite verification during Browser Accounts implementation
+**Symptom:** SecondaryElementsCodableTests.testApplySecondaryElementsEmptyArrayClearsAll failed: sending the documented MCP replacement value `secondaryElements: []` returned the existing elements instead of clearing them.
+**Root cause:** SecondaryElementMCPParser initialized its result from the existing array and relied entirely on a per-entry mutation loop. An empty input ran zero iterations, so the result stayed unchanged despite comments, MCP schema copy, changelog, and tests promising clear-all semantics.
+**Fix:** v0.21.83 adds an explicit empty-array fast path returning `[]` before merge processing.
+**Commit:** pending
+**Guard:** SecondaryElementsCodableTests.testApplySecondaryElementsEmptyArrayClearsAll now passes in the full unit suite; keep the explicit fast path aligned with the MCP replace contract.
+---
+
+---
 **Date:** 2026-07-11T13:14:46Z
 **Trigger:** Ethan task 2026-07-11: battery-drain bug from live logs + ps
 **Symptom:** Battery drain: a Chromium renderer pegged at 55-78% CPU continuously (24/7) even though trackers scrape only every ~30 min. ps + activity.log showed ~10 open tabs of claude.ai / chatgpt.com and log lines 'persistent-mode: keeping Chrome alive between scrapes' + 'left reused scrape target open' + tabCount=10.
@@ -340,4 +360,3 @@ Each entry looks like:
 **Commit:** fbd1fe1
 **Guard:** Activity-log gate: zero 'CDP websocket disconnected' lines over 10 consecutive scrape cycles post-install. The [scheduler] staggering scrape log line ALSO fires whenever stagger applies, so it can be greped for to confirm the watermark code is actually executing.
 ---
-

@@ -31,7 +31,7 @@ struct TrackersListView: View {
                         .foregroundStyle(.secondary)
                     Text("No trackers yet")
                         .font(.headline)
-                    Text("Add a tracker, paste a page URL, then identify the value or page region in the app's Chrome profile.")
+                    Text("Add a tracker, choose a browser account, then identify the value or page region you want to show.")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)
@@ -50,6 +50,7 @@ struct TrackersListView: View {
                     ForEach(store.trackers) { tracker in
                         TrackerRowView(
                             tracker: tracker,
+                            browserAccount: store.browserAccount(for: tracker.browserProfile),
                             reading: readingsByTrackerID[tracker.id],
                             isRefreshing: backgroundScheduler.inFlightTrackerIDs.contains(tracker.id),
                             onEdit: { edit(tracker) },
@@ -67,6 +68,15 @@ struct TrackersListView: View {
                                 }
                                 Button("Duplicate") {
                                     store.duplicateTracker(tracker)
+                                }
+                                if store.browserAccounts.count > 1 {
+                                    Menu("Duplicate to Browser Account") {
+                                        ForEach(store.browserAccounts) { account in
+                                            Button(account.name) {
+                                                store.duplicateTracker(tracker, browserProfile: account.id)
+                                            }
+                                        }
+                                    }
                                 }
                                 Button("Scrape Now") {
                                     backgroundScheduler.triggerScrapeNow(trackerID: tracker.id)
@@ -328,6 +338,7 @@ struct TrackersListView: View {
 
     private func scrapeRelevantFieldsChanged(from old: Tracker, to new: Tracker) -> Bool {
         old.url != new.url
+            || old.browserProfile != new.browserProfile
             || old.selector != new.selector
             || old.contentSelectorHint != new.contentSelectorHint
             || old.elementBoundingBox != new.elementBoundingBox
@@ -357,6 +368,7 @@ struct TrackersListView: View {
 
 private struct TrackerRowView: View {
     let tracker: Tracker
+    let browserAccount: BrowserAccount
     /// v0.21.7: reading is now provided by the parent's single readings
     /// cache instead of being read+subscribed per-row. See
     /// TrackersListView.readingsByTrackerID.
@@ -376,11 +388,17 @@ private struct TrackerRowView: View {
                 Text(tracker.name.isEmpty ? "Untitled tracker" : tracker.name)
                     .font(.body.weight(.medium))
                     .lineLimit(1)
-                Text(tracker.url)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
+                HStack(spacing: 6) {
+                    BrowserAccountBadge(account: browserAccount, size: 14)
+                    Text(browserAccount.name)
+                        .lineLimit(1)
+                    Text("·")
+                    Text(tracker.url)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
                 // Failure-status subtitle (v0.21.6). Surfaces a short
                 // user-actionable label like "Login required — Tap to
                 // re-identify" right under the URL so the user doesn't
@@ -540,7 +558,7 @@ private struct TrackerRowView: View {
         case .browserChallenge:
             return "The page is showing a browser verification challenge. The last good value is kept and the background scheduler will retry without asking you to re-identify."
         case .loginRequired:
-            return "The tracker's URL needs sign-in inside the app's Chromium profile. Tap to open Identify in Chrome and re-capture the selector once you're logged in."
+            return "The tracker's URL needs sign-in inside its assigned browser account. Tap to open Identify in Chrome and re-capture the selector once you're logged in."
         case .selectorNotFound:
             return "The saved CSS selector no longer matches anything on the page. Tap to re-capture it via Identify in Chrome."
         case .pageTimeout:

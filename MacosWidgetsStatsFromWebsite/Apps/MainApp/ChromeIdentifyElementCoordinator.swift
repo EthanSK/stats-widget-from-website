@@ -32,10 +32,16 @@ struct ChromeElementCaptureView: View {
     init(
         url: URL,
         renderMode: RenderMode,
+        browserAccount: BrowserAccount = .defaultAccount,
         contextLabel: String? = nil,
         onElementCaptured: @escaping (ElementPick) -> Void
     ) {
-        _controller = StateObject(wrappedValue: ChromeElementCaptureController(url: url, renderMode: renderMode, contextLabel: contextLabel))
+        _controller = StateObject(wrappedValue: ChromeElementCaptureController(
+            url: url,
+            renderMode: renderMode,
+            browserAccount: browserAccount,
+            contextLabel: contextLabel
+        ))
         self.onElementCaptured = onElementCaptured
     }
 
@@ -44,7 +50,7 @@ struct ChromeElementCaptureView: View {
             VStack(alignment: .leading, spacing: 6) {
                 Text("Identify Element in Chrome")
                     .font(.title3.weight(.semibold))
-                Text("The app uses its persistent Chrome/Chromium CDP profile so signed-in pages, Google auth, and dashboard sessions behave like a real browser.")
+                Text("The selected browser account keeps its own cookies and site storage, so signed-in pages and dashboard sessions behave like a real browser.")
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -54,6 +60,10 @@ struct ChromeElementCaptureView: View {
                     .lineLimit(1)
                     .truncationMode(.middle)
                     .textSelection(.enabled)
+            }
+
+            LabeledContent("Browser account") {
+                BrowserAccountLabel(account: controller.browserAccount)
             }
 
             VStack(alignment: .leading, spacing: 8) {
@@ -189,6 +199,7 @@ struct ChromeElementCaptureView: View {
 private final class ChromeElementCaptureController: ObservableObject {
     let url: URL
     let renderMode: RenderMode
+    let browserAccount: BrowserAccount
     let contextLabel: String?
 
     @Published var isIdentifying = false
@@ -210,9 +221,10 @@ private final class ChromeElementCaptureController: ObservableObject {
     private var coordinator: ChromeIdentifyElementCoordinator?
     private var lastTargetID: String?
 
-    init(url: URL, renderMode: RenderMode, contextLabel: String?) {
+    init(url: URL, renderMode: RenderMode, browserAccount: BrowserAccount, contextLabel: String?) {
         self.url = url
         self.renderMode = renderMode
+        self.browserAccount = browserAccount
         self.contextLabel = contextLabel
     }
 
@@ -237,6 +249,7 @@ private final class ChromeElementCaptureController: ObservableObject {
 
         let nextCoordinator = ChromeIdentifyElementCoordinator(
             renderMode: renderMode,
+            profileName: browserAccount.id,
             contextLabel: contextLabel,
             onPreviewReady: { [weak self] preview in
                 self?.coordinator = nil
@@ -384,6 +397,7 @@ struct ElementCapturePreviewSheet: View {
 
 final class ChromeIdentifyElementCoordinator {
     private let renderMode: RenderMode
+    private let profileName: String
     private let contextLabel: String?
     private let onPreviewReady: (ElementCapturePreview) -> Void
     private let onError: (String, Bool) -> Void
@@ -422,6 +436,7 @@ final class ChromeIdentifyElementCoordinator {
 
     init(
         renderMode: RenderMode,
+        profileName: String = Tracker.defaultBrowserProfile,
         contextLabel: String? = nil,
         onPreviewReady: @escaping (ElementCapturePreview) -> Void,
         onError: @escaping (String, Bool) -> Void,
@@ -433,6 +448,7 @@ final class ChromeIdentifyElementCoordinator {
         onCancelled: @escaping () -> Void
     ) {
         self.renderMode = renderMode
+        self.profileName = BrowserAccountCatalog.normalizedProfileID(profileName)
         self.contextLabel = contextLabel
         self.onPreviewReady = onPreviewReady
         self.onError = onError
@@ -450,7 +466,7 @@ final class ChromeIdentifyElementCoordinator {
         // Cleared in `finishWithPreview` / `finishWithError` /
         // `finishCancelled` / `cancel` — the lock-release is idempotent
         // so duplicate clears on the same flow are safe.
-        let lockPort = ChromeBrowserProfile.shared.configuration(profileName: Tracker.defaultBrowserProfile).cdpPort
+        let lockPort = ChromeBrowserProfile.shared.configuration(profileName: profileName).cdpPort
         self.identifyLockedPort = lockPort
         ChromeBrowserProfile.shared.beginIdentifyInProgress(port: lockPort)
 
@@ -475,7 +491,7 @@ final class ChromeIdentifyElementCoordinator {
     ) {
         guard !didComplete else { return }
 
-        let activeScrapeCount = ChromeCDPScraper.currentActiveScrapeCount
+        let activeScrapeCount = ChromeCDPScraper.activeScrapeCount(profileName: profileName)
         if activeScrapeCount > 0, activeScrapeDrainStartedAt == nil {
             activeScrapeDrainStartedAt = Date()
             ActivityLogger.log("identify", "waiting for active scrapes before identify launch", metadata: [
@@ -527,7 +543,7 @@ final class ChromeIdentifyElementCoordinator {
         // tab between teardown and spawn. End-state: one window, one
         // tab, on the right page, ready for the overlay injection.
         ChromeBrowserProfile.shared.ensureLaunched(
-            profileName: Tracker.defaultBrowserProfile,
+            profileName: profileName,
             foreground: true,
             initialURL: url
         ) { [weak self] result in

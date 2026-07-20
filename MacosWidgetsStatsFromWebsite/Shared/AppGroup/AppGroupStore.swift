@@ -28,6 +28,7 @@ final class AppGroupStore: ObservableObject {
 
     @Published private(set) var schemaVersion: Int
     @Published var trackers: [Tracker]
+    @Published private(set) var browserAccounts: [BrowserAccount]
     @Published var widgetConfigurations: [WidgetConfiguration]
     @Published var preferences: AppPreferences
     @Published private(set) var lastPersistenceError: String?
@@ -36,6 +37,7 @@ final class AppGroupStore: ObservableObject {
         let configuration = Self.loadSharedConfiguration()
         schemaVersion = configuration.schemaVersion
         trackers = configuration.trackers
+        browserAccounts = configuration.browserAccounts
         widgetConfigurations = configuration.widgetConfigurations
         preferences = configuration.preferences
     }
@@ -63,12 +65,81 @@ final class AppGroupStore: ObservableObject {
         }
     }
 
-    func duplicateTracker(_ tracker: Tracker) {
+    func duplicateTracker(_ tracker: Tracker, browserProfile: String? = nil) {
         var copy = tracker
         copy.id = UUID()
-        copy.name = "\(tracker.name) Copy"
+        if let browserProfile,
+           let account = browserAccounts.first(where: { $0.id == browserProfile }) {
+            copy.browserProfile = account.id
+            copy.name = "\(tracker.name) — \(account.name)"
+        } else {
+            copy.name = "\(tracker.name) Copy"
+        }
         trackers.append(copy)
         persist()
+    }
+
+    @discardableResult
+    func addBrowserAccount(named name: String, colorHex: String? = nil) throws -> BrowserAccount {
+        var createdAccount: BrowserAccount?
+        let saved = try Self.mutateSharedConfiguration { configuration in
+            var account = try BrowserAccountCatalog.makeAccount(
+                named: name,
+                existing: configuration.browserAccounts
+            )
+            if let colorHex {
+                guard let normalizedColor = BrowserAccountCatalog.normalizedColorHex(colorHex) else {
+                    throw BrowserAccountCatalogError.invalidColor(colorHex)
+                }
+                account.colorHex = normalizedColor
+            }
+            configuration.browserAccounts.append(account)
+            createdAccount = account
+        }
+        apply(saved)
+        guard let createdAccount else {
+            throw BrowserAccountCatalogError.accountNotFound("new-account")
+        }
+        return createdAccount
+    }
+
+    func updateBrowserAccount(id: String, name: String, colorHex: String) throws {
+        guard let normalizedColor = BrowserAccountCatalog.normalizedColorHex(colorHex) else {
+            throw BrowserAccountCatalogError.invalidColor(colorHex)
+        }
+        let saved = try Self.mutateSharedConfiguration(allowEmptyOverwrite: true) { configuration in
+            guard let index = configuration.browserAccounts.firstIndex(where: { $0.id == id }) else {
+                throw BrowserAccountCatalogError.accountNotFound(id)
+            }
+            configuration.browserAccounts[index].name = try BrowserAccountCatalog.validatedName(
+                name,
+                excludingID: id,
+                existing: configuration.browserAccounts
+            )
+            configuration.browserAccounts[index].colorHex = normalizedColor
+        }
+        apply(saved)
+    }
+
+    func deleteBrowserAccount(id: String) throws {
+        let saved = try Self.mutateSharedConfiguration(allowEmptyOverwrite: true) { configuration in
+            guard let account = configuration.browserAccounts.first(where: { $0.id == id }) else {
+                throw BrowserAccountCatalogError.accountNotFound(id)
+            }
+            guard !account.isDefault else {
+                throw BrowserAccountCatalogError.cannotDeleteDefault
+            }
+            let trackerCount = configuration.trackers.lazy.filter { $0.browserProfile == id }.count
+            guard trackerCount == 0 else {
+                throw BrowserAccountCatalogError.accountInUse(name: account.name, trackerCount: trackerCount)
+            }
+            configuration.browserAccounts.removeAll { $0.id == id }
+        }
+        apply(saved)
+    }
+
+    func browserAccount(for profileID: String) -> BrowserAccount {
+        browserAccounts.first(where: { $0.id == profileID }) ?? .defaultAccount
     }
 
     func deleteTracker(id: UUID) {
@@ -179,6 +250,7 @@ final class AppGroupStore: ObservableObject {
             let configuration = AppConfiguration(
                 schemaVersion: currentSchemaVersion,
                 trackers: trackers,
+                browserAccounts: browserAccounts,
                 widgetConfigurations: widgetConfigurations,
                 preferences: preferences
             )
@@ -188,6 +260,7 @@ final class AppGroupStore: ObservableObject {
             lastPersistenceError = nil
             ActivityLogger.log("store", "saved configuration", metadata: [
                 "trackers": "\(trackers.count)",
+                "browserAccounts": "\(browserAccounts.count)",
                 "widgets": "\(widgetConfigurations.count)"
             ])
         } catch {
@@ -198,15 +271,21 @@ final class AppGroupStore: ObservableObject {
 
     func reloadFromDisk() {
         let configuration = Self.loadSharedConfiguration()
-        schemaVersion = configuration.schemaVersion
-        trackers = configuration.trackers
-        widgetConfigurations = configuration.widgetConfigurations
-        preferences = configuration.preferences
+        apply(configuration)
         lastPersistenceError = nil
         ActivityLogger.log("store", "reloaded configuration", metadata: [
             "trackers": "\(trackers.count)",
+            "browserAccounts": "\(browserAccounts.count)",
             "widgets": "\(widgetConfigurations.count)"
         ])
+    }
+
+    private func apply(_ configuration: AppConfiguration) {
+        schemaVersion = configuration.schemaVersion
+        trackers = configuration.trackers
+        browserAccounts = configuration.browserAccounts
+        widgetConfigurations = configuration.widgetConfigurations
+        preferences = configuration.preferences
     }
 
     static func hasExistingConfigurationFile() -> Bool {
@@ -646,10 +725,12 @@ final class AppGroupStore: ObservableObject {
     private static func saveUnlocked(configuration: AppConfiguration, allowEmptyOverwrite: Bool = false) throws {
         var normalized = configuration
         normalized.schemaVersion = currentSchemaVersion
+        normalized.normalizeBrowserAccounts()
         let canonicalURL = AppGroupPaths.canonicalTrackersURL()
         let appGroupURL = AppGroupPaths.appGroupTrackersURL()
         ActivityLogger.log("store", "writing configuration", metadata: [
             "trackers": "\(normalized.trackers.count)",
+            "browserAccounts": "\(normalized.browserAccounts.count)",
             "widgets": "\(normalized.widgetConfigurations.count)",
             "canonicalPath": canonicalURL.path,
             "appGroupPath": appGroupURL?.path ?? "",
@@ -736,6 +817,9 @@ final class AppGroupStore: ObservableObject {
         }
 
         migrated["preferences"] = migratePreferencesObject(migrated["preferences"])
+        if migrated["browserAccounts"] == nil {
+            migrated["browserAccounts"] = []
+        }
         migrated["schemaVersion"] = currentSchemaVersion
         migrated.removeValue(forKey: "metrics")
         migrated.removeValue(forKey: "detectedCLIs")
@@ -880,7 +964,17 @@ final class AppGroupStore: ObservableObject {
     }
 
     private static func hasUserConfigurationData(_ configuration: AppConfiguration) -> Bool {
-        !configuration.trackers.isEmpty || !configuration.widgetConfigurations.isEmpty
+        !configuration.trackers.isEmpty
+            || !configuration.widgetConfigurations.isEmpty
+            || hasCustomizedBrowserAccounts(configuration.browserAccounts)
+    }
+
+    private static func hasCustomizedBrowserAccounts(_ accounts: [BrowserAccount]) -> Bool {
+        guard accounts.count == 1, let account = accounts.first, account.isDefault else {
+            return !accounts.isEmpty
+        }
+        return account.name != BrowserAccount.defaultAccount.name
+            || account.colorHex.caseInsensitiveCompare(BrowserAccount.defaultAccount.colorHex) != .orderedSame
     }
 
     private static func modificationDate(for url: URL) -> Date {
@@ -897,7 +991,7 @@ final class AppGroupStore: ObservableObject {
     ) throws {
         guard !hasUserConfigurationData(configuration),
               let counts = rawConfigurationCounts(at: destinationURL),
-              counts.trackers > 0 || counts.widgets > 0 else {
+              counts.trackers > 0 || counts.widgets > 0 || counts.hasBrowserAccountData else {
             return
         }
 
@@ -913,7 +1007,8 @@ final class AppGroupStore: ObservableObject {
             "path": destinationURL.path,
             "backup": backupURL.path,
             "previousTrackers": "\(counts.trackers)",
-            "previousWidgets": "\(counts.widgets)"
+            "previousWidgets": "\(counts.widgets)",
+            "previousBrowserAccounts": "\(counts.browserAccounts)"
         ])
     }
 
@@ -925,12 +1020,12 @@ final class AppGroupStore: ObservableObject {
             return
         }
 
-        let nonEmptyDestinations = destinationURLs.compactMap { url -> (URL, Int, Int)? in
+        let nonEmptyDestinations = destinationURLs.compactMap { url -> (URL, Int, Int, Int, Bool)? in
             guard let counts = rawConfigurationCounts(at: url),
-                  counts.trackers > 0 || counts.widgets > 0 else {
+                  counts.trackers > 0 || counts.widgets > 0 || counts.hasBrowserAccountData else {
                 return nil
             }
-            return (url, counts.trackers, counts.widgets)
+            return (url, counts.trackers, counts.widgets, counts.browserAccounts, counts.hasBrowserAccountData)
         }
 
         guard !nonEmptyDestinations.isEmpty else {
@@ -944,7 +1039,8 @@ final class AppGroupStore: ObservableObject {
         ActivityLogger.log("store", "blocked empty configuration overwrite", metadata: [
             "destinations": nonEmptyDestinations.map { $0.0.path }.joined(separator: ","),
             "previousTrackers": nonEmptyDestinations.map { "\($0.1)" }.joined(separator: ","),
-            "previousWidgets": nonEmptyDestinations.map { "\($0.2)" }.joined(separator: ",")
+            "previousWidgets": nonEmptyDestinations.map { "\($0.2)" }.joined(separator: ","),
+            "previousBrowserAccounts": nonEmptyDestinations.map { "\($0.3)" }.joined(separator: ",")
         ])
         throw AppGroupStoreError.emptyConfigurationOverwriteBlocked
     }
@@ -956,7 +1052,9 @@ final class AppGroupStore: ObservableObject {
         }
     }
 
-    private static func rawConfigurationCounts(at url: URL) -> (trackers: Int, widgets: Int)? {
+    private static func rawConfigurationCounts(
+        at url: URL
+    ) -> (trackers: Int, widgets: Int, browserAccounts: Int, hasBrowserAccountData: Bool)? {
         guard let data = try? Data(contentsOf: url),
               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             return nil
@@ -966,7 +1064,21 @@ final class AppGroupStore: ObservableObject {
             ?? (object["metrics"] as? [Any])?.count
             ?? 0
         let widgets = (object["widgetConfigurations"] as? [Any])?.count ?? 0
-        return (trackers, widgets)
+        let rawBrowserAccounts = (object["browserAccounts"] as? [Any]) ?? []
+        let browserAccounts = rawBrowserAccounts.count
+        let hasBrowserAccountData: Bool = {
+            guard rawBrowserAccounts.count == 1,
+                  let account = rawBrowserAccounts[0] as? [String: Any],
+                  BrowserAccountCatalog.normalizedProfileID(account["id"] as? String ?? "") == Tracker.defaultBrowserProfile else {
+                return !rawBrowserAccounts.isEmpty
+            }
+            let name = (account["name"] as? String) ?? BrowserAccount.defaultAccount.name
+            let color = BrowserAccountCatalog.normalizedColorHex(account["colorHex"] as? String ?? "")
+                ?? BrowserAccount.defaultAccount.colorHex
+            return name != BrowserAccount.defaultAccount.name
+                || color.caseInsensitiveCompare(BrowserAccount.defaultAccount.colorHex) != .orderedSame
+        }()
+        return (trackers, widgets, browserAccounts, hasBrowserAccountData)
     }
 
     private static func write(readingsFile: TrackerReadingsFile) throws {
@@ -1088,13 +1200,58 @@ final class AppGroupStore: ObservableObject {
 struct AppConfiguration: Codable {
     var schemaVersion: Int
     var trackers: [Tracker]
+    var browserAccounts: [BrowserAccount]
     var widgetConfigurations: [WidgetConfiguration]
     var preferences: AppPreferences
+
+    init(
+        schemaVersion: Int,
+        trackers: [Tracker],
+        browserAccounts: [BrowserAccount] = [.defaultAccount],
+        widgetConfigurations: [WidgetConfiguration],
+        preferences: AppPreferences
+    ) {
+        self.schemaVersion = schemaVersion
+        self.trackers = trackers
+        self.browserAccounts = browserAccounts
+        self.widgetConfigurations = widgetConfigurations
+        self.preferences = preferences
+        normalizeBrowserAccounts()
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case schemaVersion
+        case trackers
+        case browserAccounts
+        case widgetConfigurations
+        case preferences
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = try container.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? currentSchemaVersion
+        trackers = try container.decodeIfPresent([Tracker].self, forKey: .trackers) ?? []
+        browserAccounts = try container.decodeIfPresent([BrowserAccount].self, forKey: .browserAccounts) ?? []
+        widgetConfigurations = try container.decodeIfPresent([WidgetConfiguration].self, forKey: .widgetConfigurations) ?? []
+        preferences = try container.decodeIfPresent(AppPreferences.self, forKey: .preferences) ?? AppPreferences()
+        normalizeBrowserAccounts()
+    }
+
+    mutating func normalizeBrowserAccounts() {
+        for index in trackers.indices {
+            trackers[index].browserProfile = BrowserAccountCatalog.normalizedProfileID(trackers[index].browserProfile)
+        }
+        browserAccounts = BrowserAccountCatalog.normalized(
+            browserAccounts,
+            referencedProfileIDs: trackers.map(\.browserProfile)
+        )
+    }
 
     static var empty: AppConfiguration {
         AppConfiguration(
             schemaVersion: currentSchemaVersion,
             trackers: [],
+            browserAccounts: [.defaultAccount],
             widgetConfigurations: [],
             preferences: AppPreferences()
         )

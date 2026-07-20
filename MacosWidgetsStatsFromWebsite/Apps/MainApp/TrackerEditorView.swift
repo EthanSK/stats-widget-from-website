@@ -15,6 +15,7 @@ struct TrackerEditorView: View {
     }
 
     @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject private var store: AppGroupStore
     @State private var draft: Tracker
     @State private var labelText: String
     @State private var accentColor: Color
@@ -70,6 +71,18 @@ struct TrackerEditorView: View {
                                 .font(.caption)
                                 .foregroundStyle(.red)
                         }
+                    }
+
+                    VStack(alignment: .leading, spacing: 4) {
+                        Picker("Browser account", selection: $draft.browserProfile) {
+                            ForEach(store.browserAccounts) { account in
+                                BrowserAccountLabel(account: account)
+                                    .tag(account.id)
+                            }
+                        }
+                        Text("Each browser account keeps separate sign-in cookies and site storage.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                     }
 
                     Picker("Render mode", selection: $draft.renderMode) {
@@ -263,6 +276,9 @@ struct TrackerEditorView: View {
         .onChange(of: draft.renderMode) { newMode in
             draft.refreshIntervalSec = newMode.defaultRefreshIntervalSec
         }
+        .onChange(of: draft.browserProfile) { _ in
+            previewState = .idle
+        }
         .sheet(item: $browserPresentation) { presentation in
             // v0.21.9: secondary elements are always TEXT-mode reads (they
             // surface short status strings like "resets in 4d"), so force
@@ -274,7 +290,12 @@ struct TrackerEditorView: View {
                 case .secondary: return .text
                 }
             }()
-            ChromeElementCaptureView(url: presentation.url, renderMode: captureMode, contextLabel: presentation.contextLabel) { pick in
+            ChromeElementCaptureView(
+                url: presentation.url,
+                renderMode: captureMode,
+                browserAccount: presentation.browserAccount,
+                contextLabel: presentation.contextLabel
+            ) { pick in
                 applyCapturedElement(pick)
             }
         }
@@ -438,7 +459,7 @@ struct TrackerEditorView: View {
         var probeTracker = draft
         probeTracker.url = url.absoluteString
         probeTracker.selector = trimmedSelectorValue
-        probeTracker.browserProfile = Tracker.defaultBrowserProfile
+        probeTracker.browserProfile = resolvedBrowserAccount.id
 
         ChromeCDPScraper.previewScrape(tracker: probeTracker) { result in
             DispatchQueue.main.async {
@@ -595,7 +616,7 @@ struct TrackerEditorView: View {
         savedTracker.label = labelText.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
         savedTracker.icon = savedTracker.icon.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty ?? Tracker.defaultIcon
         savedTracker.accentColorHex = accentColor.hexString ?? Tracker.defaultAccentColorHex
-        savedTracker.browserProfile = Tracker.defaultBrowserProfile
+        savedTracker.browserProfile = resolvedBrowserAccount.id
         savedTracker.selector = trimmedSelector
         onSave(savedTracker, didCaptureElement)
         dismiss()
@@ -607,7 +628,11 @@ struct TrackerEditorView: View {
         }
 
         identifyTarget = .primary
-        browserPresentation = IdentifyBrowserPresentation(url: url, contextLabel: identifyContextLabel(for: .primary))
+        browserPresentation = IdentifyBrowserPresentation(
+            url: url,
+            browserAccount: resolvedBrowserAccount,
+            contextLabel: identifyContextLabel(for: .primary)
+        )
     }
 
     private func openIdentifyBrowserForSecondary(elementID: UUID) {
@@ -617,7 +642,15 @@ struct TrackerEditorView: View {
 
         let target = IdentifyTarget.secondary(elementID: elementID)
         identifyTarget = target
-        browserPresentation = IdentifyBrowserPresentation(url: url, contextLabel: identifyContextLabel(for: target))
+        browserPresentation = IdentifyBrowserPresentation(
+            url: url,
+            browserAccount: resolvedBrowserAccount,
+            contextLabel: identifyContextLabel(for: target)
+        )
+    }
+
+    private var resolvedBrowserAccount: BrowserAccount {
+        store.browserAccounts.first(where: { $0.id == draft.browserProfile }) ?? .defaultAccount
     }
 
     private func identifyContextLabel(for target: IdentifyTarget) -> String? {
@@ -934,6 +967,7 @@ struct TrackerEditorView: View {
 private struct IdentifyBrowserPresentation: Identifiable {
     let id = UUID()
     let url: URL
+    let browserAccount: BrowserAccount
     let contextLabel: String?
 }
 

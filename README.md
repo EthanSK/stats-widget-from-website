@@ -2,7 +2,7 @@
 
 **See any number on any logged-in webpage at a glance — without opening another tab.**
 
-[![Status](https://img.shields.io/badge/status-v0.12.4-orange.svg)](PLAN.md)
+[![Status](https://img.shields.io/badge/status-v0.21.83-orange.svg)](PLAN.md)
 [![Release](https://github.com/EthanSK/stats-widget-from-website/actions/workflows/release.yml/badge.svg)](https://github.com/EthanSK/stats-widget-from-website/actions/workflows/release.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Platform: macOS](https://img.shields.io/badge/platform-macOS%2013%2B-blue.svg)](#)
@@ -21,7 +21,7 @@ refreshing in the background.
 
 [Website](https://ethansk.github.io/stats-widget-from-website/) · [Direct download](https://github.com/EthanSK/stats-widget-from-website/releases/latest/download/Stats-Widget-from-Website-latest.zip) · [Architecture (PLAN.md)](PLAN.md) · [Issues](https://github.com/EthanSK/stats-widget-from-website/issues) · [Releases](https://github.com/EthanSK/stats-widget-from-website/releases)
 
-> **Status:** v0.12.4 implements the local app, widget extension, CLI, scraping,
+> **Status:** v0.21.83 implements the local app, widget extension, CLI, scraping,
 > snapshot rendering, widget template catalog, selector packs, MCP server,
 > first-launch flow, and polish pass. Read
 > [PLAN.md](PLAN.md) for detailed architecture notes and the roadmap.
@@ -78,8 +78,8 @@ See [docs/release.md](docs/release.md) for release setup and validation gates.
 
 ## Features
 
-- Text and snapshot trackers for pages opened through the app's local Chrome/Chromium CDP profile.
-- Shared browser profile between setup, manual re-identify, MCP identify requests, and app-owned scraping.
+- Text and snapshot trackers for pages opened through isolated local Chrome/Chromium **Browser Accounts**.
+- Multiple signed-in accounts for the same website: each Browser Account has separate cookies, site storage, Chromium data, and a CDP connection. Every tracker, preview, manual re-identify, MCP identify request, and scheduled scrape uses its assigned account.
 - Snapshot mode that captures the selected page region through Chrome/CDP and refreshes from the app scheduler.
 - Twelve WidgetKit templates for small, medium, large, and macOS 14 extra-large
   families, with separate widget configurations per widget instance.
@@ -98,9 +98,9 @@ See [docs/release.md](docs/release.md) for release setup and validation gates.
 
 The widget reads a JSON config from
 `~/Library/Application Support/Stats Widget from Website/trackers.json`. Each tracker
-has a target URL, a CSS selector or element bounding rect, a refresh interval,
-and a render mode (Text or Snapshot). Widget configurations live in the same
-file as named instances with a size, template, and tracker list. See
+has a target URL, a Browser Account ID, a CSS selector or element bounding
+rect, a refresh interval, and a render mode (Text or Snapshot). The same file
+stores the Browser Account catalog and widget configurations. See
 [PLAN.md §5 Configuration schema](PLAN.md#5-configuration-schema) for the full
 shape and migration strategy.
 
@@ -124,6 +124,23 @@ shape and migration strategy.
 Open **Preferences → Widgets** later to create, duplicate, edit, or rename widget
 configurations. The desktop widget configuration picker reads from the shared
 app-owned configuration store.
+
+### Track the same page with several logins
+
+1. Open **Preferences → Browser Accounts** and press **+** for each additional
+   login (for example, Personal, Work, and Client).
+2. Select each account, click **Open _account name_**, and sign in inside that
+   Chromium window. Renaming an account later does not change its saved login.
+3. In **Preferences → Trackers**, choose the account in the tracker editor. To
+   reuse an existing URL and selector, right-click the tracker and choose
+   **Duplicate to Browser Account**.
+4. Identify or preview the element normally. The picker and every future
+   refresh use that tracker's account, even when several trackers share the
+   exact same URL and selector.
+
+Browser-account data stays under the app's local Application Support folder.
+Resetting or removing an account moves its data to the Trash, and an account
+cannot be removed while a tracker still uses it.
 
 ## Wiring up an AI agent (optional)
 
@@ -160,23 +177,27 @@ Minimal stdio MCP config shape:
 
 Useful setup flow for an assistant:
 
-1. Call `get_status` and `tools/list`.
-2. If a selector is already known, call `add_tracker`; otherwise call
+1. Call `get_status`, `list_browser_accounts`, and `tools/list`.
+2. Call `add_browser_account` when another isolated login is needed, then have
+   the user open that account in Preferences and sign in.
+3. If a selector is already known, call `add_tracker` with its `browserProfile`
+   ID; otherwise call
    `identify_element` over the app socket and have the user pick the element in
-   the Chrome/CDP picker.
-3. Call `trigger_scrape` to verify the reading.
-4. Call `update_widget_configuration` to create the widget layout.
-5. If a tracker later becomes stale/broken, inspect it with `list_trackers` /
+   the correct Browser Account's Chrome/CDP picker.
+4. Call `trigger_scrape` to verify the reading.
+5. Call `update_widget_configuration` to create the widget layout.
+6. If a tracker later becomes stale/broken, inspect it with `list_trackers` /
    `get_tracker`, repair it with `update_tracker` or socket-only
    `identify_element`, then `trigger_scrape` or `reset_tracker_failure_state` if
    verification must wait for the next scheduled scrape.
 
 ## Caveats
 
-- **Browser profile reality.** The app's user-facing browser path is the
-  persistent Chrome/Chromium CDP profile. This avoids embedded-browser OAuth
-  dead ends and keeps setup, re-identify, MCP identify, and scraping on the same
-  local browser session. See [docs/google-auth-cdp-path.md](docs/google-auth-cdp-path.md).
+- **Browser-account reality.** The app uses persistent, isolated
+  Chrome/Chromium CDP Browser Accounts. This avoids embedded-browser OAuth dead
+  ends while keeping each tracker's setup, re-identify, MCP identify, and
+  scraping on the same local signed-in session. See
+  [docs/google-auth-cdp-path.md](docs/google-auth-cdp-path.md).
 - **Local-only scraping.** The app signs in *as you* on this Mac. Cookies stay
   on your machine. No third-party server is involved. If a site changes its
   layout the app marks the tracker stale or broken after repeated failures and

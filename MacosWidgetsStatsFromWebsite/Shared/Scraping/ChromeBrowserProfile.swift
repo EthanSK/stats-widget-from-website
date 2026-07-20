@@ -63,7 +63,6 @@ final class ChromeBrowserProfile {
     static let shared = ChromeBrowserProfile()
     static let defaultProfileName = Tracker.defaultBrowserProfile
 
-    private let baseCDPPort = 18880
     private let fileManager = FileManager.default
     private let queue = DispatchQueue(label: "ChromeBrowserProfile")
     // v0.21.74 — MAIN-THREAD BLOCK FIX (Ethan's #1 symptom: "Chromium takes
@@ -1063,6 +1062,20 @@ final class ChromeBrowserProfile {
             self.userVisiblePorts.remove(configuration.cdpPort)
             self.terminateHeadlessInstance(configuration: configuration, completion: completion)
         }
+    }
+
+    /// Closes one app-owned browser account without touching any other
+    /// account (or the user's personal Chrome). Browser-account reset/removal
+    /// uses this before moving profile data to Trash so Chromium cannot keep a
+    /// lock file or rewrite the directory during the operation.
+    func terminateProfile(
+        profileName: String,
+        completion: @escaping () -> Void
+    ) {
+        terminateHeadedIdentifyInstance(
+            configuration: configuration(profileName: profileName),
+            completion: completion
+        )
     }
 
     private func terminateHeadlessInstance(
@@ -3458,26 +3471,26 @@ final class ChromeBrowserProfile {
     }
 
     private func cdpPort(for safeProfileName: String) -> Int {
-        if let override = ProcessInfo.processInfo.environment["MACOS_WIDGETS_STATS_CDP_PORT"]?.nilIfEmpty,
+        // The legacy override names one singular port and predates Browser
+        // Accounts. Keep it as a Default-account development escape hatch,
+        // but never apply it to additional accounts: doing so would put every
+        // isolated user-data directory behind the same CDP endpoint and could
+        // attach a tracker to the wrong signed-in session.
+        let defaultSafeProfileName = BrowserAccountCatalog.safeStorageIdentifier(
+            Tracker.defaultBrowserProfile
+        )
+        if safeProfileName == defaultSafeProfileName,
+           let override = ProcessInfo.processInfo.environment["MACOS_WIDGETS_STATS_CDP_PORT"]?.nilIfEmpty,
            let port = Int(override),
            (1...65535).contains(port) {
             return port
         }
 
-        var hash: UInt32 = 2_166_136_261
-        for scalar in safeProfileName.unicodeScalars {
-            hash ^= UInt32(scalar.value)
-            hash = hash &* 16_777_619
-        }
-
-        return baseCDPPort + Int(hash % 1_000)
+        return BrowserAccountCatalog.derivedCDPPort(for: safeProfileName)
     }
 
     private func safeProfileName(_ raw: String) -> String {
-        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_."))
-        let scalars = raw.unicodeScalars.map { allowed.contains($0) ? Character($0) : "-" }
-        let safe = String(scalars).trimmingCharacters(in: CharacterSet(charactersIn: "-."))
-        return safe.isEmpty ? "openclaw" : safe
+        BrowserAccountCatalog.safeStorageIdentifier(raw)
     }
 
     private static let cdpQueryAllowedCharacters: CharacterSet = {

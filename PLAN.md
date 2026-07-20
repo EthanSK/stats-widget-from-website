@@ -1,7 +1,7 @@
 # Stats Widget from Website — Plan
 
-> Living design document. **Current implementation state: v0.12.4.** The app now
-> uses a persistent Chrome/Chromium profile controlled through CDP for setup,
+> Living design document. **Current implementation state: v0.21.83.** The app now
+> uses persistent, isolated Chrome/Chromium Browser Accounts controlled through CDP for setup,
 > identify, authentication, scraping, and snapshots. The old embedded-browser
 > implementation has been removed from source. Widget instance configuration is
 > AppIntent-backed and requires macOS 14+; the main app and CLI still build for
@@ -60,7 +60,7 @@ exposes the data plane to local AI agents:
    ┌──────────────────────────────────────────────────────────┐
    │  Main App (sandbox)                                      │
    │  - Preferences UI                                        │
-   │  - Chrome/Chromium CDP browser profile                  │
+   │  - Chrome/Chromium CDP Browser Accounts                 │
    │  - Element-capture flow (Identify Element overlay)       │
    │  - Background scrape (NSBackgroundActivityScheduler)     │
    │  - Chrome/CDP snapshot sessions (Chrome/CDP scraper)     │
@@ -225,6 +225,7 @@ MacosWidgetsStatsFromWebsite/
   Shared/
     Models/
       Tracker.swift                   — Tracker struct (config row)
+      BrowserAccount.swift            — stable IDs, names, badge colours, CDP-port allocation
       TrackerResult.swift             — last reading + sparkline history
       RenderMode.swift                — .text | .snapshot
       TrackerStatus.swift             — .ok | .stale | .broken
@@ -236,7 +237,7 @@ MacosWidgetsStatsFromWebsite/
       AppGroupStore.swift             — atomic JSON read/write helpers
       SchemaVersion.swift             — current version + migrators
     Scraping/
-      ChromeBrowserProfile.swift      — app-owned Chrome/Chromium profile launcher
+      ChromeBrowserProfile.swift      — app-owned, per-account Chrome/Chromium launcher
       ChromeCDPClient.swift           — bounded Chrome DevTools Protocol client
       ChromeCDPScraper.swift          — Chrome/CDP text + snapshot scraper
       SelectorExtraction.swift        — selector validation JS and parsing helpers
@@ -265,13 +266,25 @@ widget reads, written atomically by the main app):
 
 ```jsonc
 {
-  "schemaVersion": 4,
+  "schemaVersion": 6,
+  "browserAccounts": [
+    {
+      "id": "macos-widgets-stats-from-website", // stable; also used by legacy trackers
+      "name": "Default",                        // user-facing and renameable
+      "colorHex": "#4C8DFF"
+    },
+    {
+      "id": "browser-account-550e8400-…",       // immutable storage identity
+      "name": "Work",
+      "colorHex": "#8B5CF6"
+    }
+  ],
   "trackers": [
     {
       "id": "8c1b2e6e-…",                 // UUID, immutable — the tracker ID
       "name": "Codex weekly spend",
       "url": "https://platform.openai.com/usage",
-      "browserProfile": "macos-widgets-stats-from-website", // Chrome/Chromium profile storage identifier
+      "browserProfile": "browser-account-550e8400-…", // Browser Account stable ID
       "renderMode": "text",               // "text" | "snapshot"
       "selector": "div[data-testid=\"weekly-cost\"] span",
       "elementBoundingBox": {              // captured at Identify Element time
@@ -370,6 +383,12 @@ Readings live in a separate file (App Group only, never in user docs):
   widget configuration; add `snapshotConcurrencyCap` to preferences; remove
   earlier dev-build AI-CLI preference fields (those features were dropped —
   the app no longer detects or invokes AI CLIs).
+- `schemaVersion = 5` (v0.21.9): add secondary elements, per-reading
+  secondary values, and per-widget-slot secondary-element bindings.
+- `schemaVersion = 6` (v0.21.83): add the `browserAccounts` catalog. Existing
+  trackers keep their `browserProfile` identifiers; the legacy identifier is
+  represented by the built-in Default account, and any other pre-existing IDs
+  receive synthesized catalog entries without moving their browser data.
 
 On app launch we read both files, compare against `currentSchemaVersion`,
 and run forward migrators (`Migrator_1_to_2`, `Migrator_2_to_3`,
@@ -413,22 +432,26 @@ rotating backups.
 [Save] → writes trackers.json, schedules background scrape, reload widget timeline
 ```
 
-**Sign-in persistence UX (Preferences → Browser).** A dedicated panel lets
+**Sign-in persistence UX (Preferences → Browser Accounts).** A dedicated panel lets
 the user manage logged-in state without going back to the Identify Element
 flow:
 
 ```
-┌─ Browser & Sign-in ─────────────────────────────────────────┐
-│  Profile: macos-widgets-stats-from-website (Chrome/Chromium profile storage)           │
-│                                                              │
-│  [ Sign in to a site ]   opens the Chrome/CDP browser            │
-│  [ Re-sign in to … ▾  ]   pick a site we have cookies for    │
-│  [ Reset browser data ]   wipes cookies, IndexedDB, caches   │
-│                                                              │
-│  Stored credentials (Keychain): 0 entries                    │
-│  Passkeys available: AuthenticationServices framework        │
+┌─ Browser Accounts ───────────────────────────────────────────┐
+│  Default          2 trackers  │  Default                     │
+│  Work             1 tracker   │  [ Open Default ]            │
+│  Client           1 tracker   │  [ Open URL ]                 │
+│  [+]                          │  [ Reset Sign-In Data… ]      │
+│                               │                               │
+│  Each row has a stable colour │  ID, CDP endpoint, and local  │
+│  + initials badge.            │  user-data path are visible.  │
 └──────────────────────────────────────────────────────────────┘
 ```
+
+Names and badge colours are editable, but IDs, user-data directories, and CDP
+ports remain stable. Removal is blocked until all trackers move elsewhere;
+reset/removal closes only that account's Chromium process and moves its data to
+the Trash.
 
 `Reset browser data` is destructive — it wipes the entire profile and forces
 re-login on every tracked site. Confirmation dialog. The button exists so
@@ -1139,15 +1162,18 @@ The MCP server exposes the entire app feature set as tools. Initial set:
 
 | Tool | Signature | Description |
 |---|---|---|
-| `get_status` | `() → Status` | Server status, browser profile, transport, data counts, tracker health counts/IDs, and available tool names. |
+| `get_status` | `() → Status` | Server status, Browser Accounts, transport, data counts, tracker health counts/IDs, and available tool names. |
+| `list_browser_accounts` | `() → [BrowserAccount]` | List account IDs, names, colours, tracker counts, CDP endpoints, and local data directories. |
+| `add_browser_account` | `(name, colorHex?) → BrowserAccount` | Create a new isolated Browser Account; the user signs in through Preferences. |
+| `update_browser_account` | `(id, name?, colorHex?) → BrowserAccount` | Rename or recolour an account without changing its login/session identity. |
 | `list_trackers` | `() → [Tracker]` | Return all trackers with current values, status, last-updated. |
 | `get_tracker` | `(id) → Tracker & {history}` | Current value + sparkline + full config. |
-| `add_tracker` | `(name, url, renderMode, selector, …) → {id}` | Add a tracker. Selector required if known; if absent, agent should call `identify_element` instead. |
-| `update_tracker` | `(id, fields…) → Tracker` | Modify name, URL, selector, element bounds, label, icon, refresh interval, etc. |
+| `add_tracker` | `(name, url, browserProfile?, renderMode, selector, …) → {id}` | Add a tracker assigned to a Browser Account. Selector required if known; if absent, agent should call `identify_element` instead. |
+| `update_tracker` | `(id, fields…) → Tracker` | Modify the Browser Account, name, URL, selector, element bounds, label, icon, refresh interval, etc. |
 | `delete_tracker` | `(id) → {ok}` | Remove a tracker (also unlinks from any `widgetConfigurations`). |
 | `trigger_scrape` | `(id) → TrackerResult` | Force-refresh one tracker now. |
 | `reset_tracker_failure_state` | `(id, reason?) → Tracker` | Clear stale/broken failure metadata after a manual repair and mark the tracker stale until the next scrape proves it works. |
-| `identify_element` | `(trackerId?, url?) → {trackerId, status: "awaiting_user"}` | **Human-in-the-loop.** Socket-only. Open the Chrome/CDP browser, prompt the user for sign-in + Identify Element, then update the existing or pending tracker. |
+| `identify_element` | `(trackerId?, url?, browserProfile?) → {trackerId, status: "awaiting_user"}` | **Human-in-the-loop.** Socket-only. Open the selected Browser Account, prompt the user for sign-in + Identify Element, then update the existing or pending tracker. |
 | `list_widget_configurations` | `() → [WidgetConfiguration]` | All widget compositions. |
 | `get_widget_configuration` | `(id) → WidgetConfiguration` | One widget composition. |
 | `update_widget_configuration` | `(id, fields…) → WidgetConfiguration` | Rename, change template, change size, reorder trackers, change layout. |
@@ -1179,7 +1205,7 @@ Future tools (post-v1, listed for visibility): `pause_tracker`,
   socket transport — the user must complete the capture flow in the visible
   browser. This prevents an agent (compromised or otherwise) from quietly
   tracking new pages.
-- `add_tracker`, `update_tracker`, `delete_tracker`, `update_widget_configuration`,
+- `add_browser_account`, `update_browser_account`, `add_tracker`, `update_tracker`, `delete_tracker`, `update_widget_configuration`,
   `delete_widget_configuration`, `import_selector_pack`, `attach_webhook`, and
   `reset_tracker_failure_state` are state-changing; the app rate-limits them
   (max 10 destructive/state-changing operations per minute per session) and

@@ -76,7 +76,12 @@ struct PreferencesWindow: View {
             openMCPIdentifyRequest(notification)
         }
         .sheet(item: $mcpIdentifyPresentation) { presentation in
-            ChromeElementCaptureView(url: presentation.url, renderMode: presentation.renderMode, contextLabel: presentation.contextLabel) { pick in
+            ChromeElementCaptureView(
+                url: presentation.url,
+                renderMode: presentation.renderMode,
+                browserAccount: presentation.browserAccount,
+                contextLabel: presentation.contextLabel
+            ) { pick in
                 completeMCPIdentifyRequest(presentation, pick: pick)
             }
         }
@@ -174,8 +179,22 @@ struct PreferencesWindow: View {
         NSApp.activate(ignoringOtherApps: true)
         store.reloadFromDisk()
 
+        let requestedProfileID = (notification.userInfo?["browserProfile"] as? String)
+            .map(BrowserAccountCatalog.normalizedProfileID)
+        let existingProfileID = store.trackers.first(where: { $0.id == trackerID })?.browserProfile
+        let browserAccount = store.browserAccount(
+            for: requestedProfileID ?? existingProfileID ?? Tracker.defaultBrowserProfile
+        )
+
         if !store.trackers.contains(where: { $0.id == trackerID }) {
-            store.addTracker(Tracker(id: trackerID, name: "Pending \(url.host ?? "Tracker")", url: url.absoluteString, renderMode: renderMode, selector: ""))
+            store.addTracker(Tracker(
+                id: trackerID,
+                name: "Pending \(url.host ?? "Tracker")",
+                url: url.absoluteString,
+                browserProfile: browserAccount.id,
+                renderMode: renderMode,
+                selector: ""
+            ))
         }
         let contextLabel = store.trackers
             .first(where: { $0.id == trackerID })?
@@ -187,6 +206,7 @@ struct PreferencesWindow: View {
             trackerID: trackerID,
             url: url,
             renderMode: renderMode,
+            browserAccount: browserAccount,
             contextLabel: contextLabel?.isEmpty == false ? contextLabel : nil
         ))
     }
@@ -232,6 +252,7 @@ struct PreferencesWindow: View {
         updated.elementBoundingBox = pick.bbox
         updated.renderMode = presentation.renderMode
         updated.url = presentation.url.absoluteString
+        updated.browserProfile = presentation.browserAccount.id
         store.updateTracker(updated)
         _ = try? AppGroupStore.resetFailureState(
             for: presentation.trackerID,
@@ -247,6 +268,7 @@ private struct MCPIdentifyPresentation: Identifiable {
     let trackerID: UUID
     let url: URL
     let renderMode: RenderMode
+    let browserAccount: BrowserAccount
     let contextLabel: String?
 }
 
@@ -269,7 +291,7 @@ enum PreferencesSection: String, CaseIterable, Hashable, Identifiable {
         case .widgets:
             return "Widgets"
         case .browser:
-            return "Chrome Profile"
+            return "Browser Accounts"
         case .mcp:
             return "MCP"
         case .logs:

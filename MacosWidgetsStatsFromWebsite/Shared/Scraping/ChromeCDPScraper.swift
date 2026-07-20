@@ -23,6 +23,10 @@ final class ChromeCDPScraper {
         activeScrapers.count
     }
 
+    static func activeScrapeCount(profileName: String) -> Int {
+        activeScrapers.values.lazy.filter { $0.tracker.browserProfile == profileName }.count
+    }
+
     /// v0.21.12 race fix: returns the Chromium CDP target IDs currently
     /// owned by in-flight scrapers (excluding the scraper passed in
     /// `excluding`, which is the post-teardown caller about to sweep —
@@ -72,7 +76,9 @@ final class ChromeCDPScraper {
     // named constant so it's trivial to retune.
     static let forcedReloadInterval: TimeInterval = 90 * 60  // 90 minutes
 
-    // Per-page "last forced navigation" watermark, keyed by the tracker's URL.
+    // Per-page "last forced navigation" watermark, keyed by browser profile
+    // AND URL. Different signed-in accounts can visit the same URL, but a
+    // navigation in one profile says nothing about freshness in another.
     //
     // Keyed by URL (not tracker id) on purpose: multiple trackers can point at
     // the SAME page (primary + sibling trackers sharing one warm tab), and a
@@ -84,20 +90,26 @@ final class ChromeCDPScraper {
     // matters (a process restart simply forces one reload on first reuse, which
     // is harmless / desirable). Mutated only on the main queue (same discipline
     // as `activeScrapers`), so no extra locking is needed.
-    private static var lastForcedNavigationByURL: [String: Date] = [:]
+    private static var lastForcedNavigationByProfileAndURL: [String: Date] = [:]
 
     /// Whether the page at `url` is due for a periodic forced reload — i.e. it
     /// has never been force-navigated this process, or it was last navigated
     /// more than `forcedReloadInterval` ago. Read/written on the main queue.
-    private static func isForcedReloadDue(forURL url: String) -> Bool {
-        guard let last = lastForcedNavigationByURL[url] else { return true }
+    private static func isForcedReloadDue(forURL url: String, profileName: String) -> Bool {
+        guard let last = lastForcedNavigationByProfileAndURL[navigationKey(url: url, profileName: profileName)] else {
+            return true
+        }
         return Date().timeIntervalSince(last) >= forcedReloadInterval
     }
 
     /// Stamp `url` as freshly navigated "now" so the next reuse within
     /// `forcedReloadInterval` skips the forced reload. Main queue only.
-    private static func markForcedNavigation(forURL url: String) {
-        lastForcedNavigationByURL[url] = Date()
+    private static func markForcedNavigation(forURL url: String, profileName: String) {
+        lastForcedNavigationByProfileAndURL[navigationKey(url: url, profileName: profileName)] = Date()
+    }
+
+    private static func navigationKey(url: String, profileName: String) -> String {
+        "\(profileName)\u{0}\(url)"
     }
 
     // MARK: - v0.21.81 battery-drain fix (park scrape tabs at about:blank)
@@ -502,14 +514,14 @@ final class ChromeCDPScraper {
         // per-page watermark so a subsequent within-90-min reuse (if any) skips
         // the periodic reload — this navigation already made the DOM fresh.
         if needsInitialNavigation, let url = validatedURL(from: tracker.url), let client {
-            Self.markForcedNavigation(forURL: urlString)
+            Self.markForcedNavigation(forURL: urlString, profileName: tracker.browserProfile)
             navigateThenPoll(to: url, client: client, logReason: "reused parked blank tab")
             return
         }
 
         // Case 1: fresh tab — already navigated, just stamp + poll.
         guard !shouldCloseOnFinish else {
-            Self.markForcedNavigation(forURL: urlString)
+            Self.markForcedNavigation(forURL: urlString, profileName: tracker.browserProfile)
             startSelectorPoll()
             return
         }
@@ -518,7 +530,7 @@ final class ChromeCDPScraper {
         // due. (In practice, since the battery fix parks preserved tabs at
         // about:blank after each run, this warm-DOM path now mostly fires for
         // back-to-back sibling trackers whose shared tab hasn't been parked yet.)
-        guard Self.isForcedReloadDue(forURL: urlString),
+        guard Self.isForcedReloadDue(forURL: urlString, profileName: tracker.browserProfile),
               let url = validatedURL(from: tracker.url),
               let client else {
             // Not due (or no client/url) → read the warm DOM as today.
@@ -526,7 +538,9 @@ final class ChromeCDPScraper {
             return
         }
 
-        let lastNav = Self.lastForcedNavigationByURL[urlString]
+        let lastNav = Self.lastForcedNavigationByProfileAndURL[
+            Self.navigationKey(url: urlString, profileName: tracker.browserProfile)
+        ]
         let minutesSince = lastNav.map { Int(Date().timeIntervalSince($0) / 60) }
         ActivityLogger.log("scrape", "periodic forced reload (SPA stale-data guard)", metadata: [
             "scrapeID": scrapeID.uuidString,
@@ -537,7 +551,7 @@ final class ChromeCDPScraper {
             "intervalMin": "\(Int(Self.forcedReloadInterval / 60))"
         ])
         // Stamp BEFORE navigating so a failing navigate can't reload-loop.
-        Self.markForcedNavigation(forURL: urlString)
+        Self.markForcedNavigation(forURL: urlString, profileName: tracker.browserProfile)
         navigateThenPoll(to: url, client: client, logReason: "periodic forced reload")
     }
 
