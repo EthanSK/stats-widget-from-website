@@ -5,6 +5,32 @@ Release-by-release notes for the Stats Widget from Website project.
 Format: each entry is dated, lists the user-visible changes first, then the
 under-the-hood / signing / packaging changes. Newest first.
 
+## v0.21.84 — 2026-07-21
+
+### A calmer, complete first-run experience
+
+- **A new Home page explains the whole journey before exposing settings:**
+  open a webpage, choose the value, then add the prepared widget to the Mac
+  desktop. A live checklist always shows the next unfinished step.
+- **Guided setup now creates the tracked value and its desktop-widget
+  configuration together.** It uses plain language, a visible three-step
+  progress indicator, a focused value preview, and exact macOS Edit Widgets
+  instructions at the end. Skipping or finishing always returns to Home.
+- **The original multi-login feature is easier to discover and safer to use.**
+  Browser Accounts are now called Website Logins, and when more than one
+  exists the correct login picker appears directly before Choose Value. The
+  same picker is prominent in every tracked-value editor.
+- Beginner-facing navigation now says **Tracked Values**, **Desktop Widgets**,
+  and **Website Logins**. Automation, troubleshooting, and About live inside
+  a collapsed Advanced section; detailed selectors, refresh intervals, and
+  repair hooks live inside Advanced options in the editor.
+- Empty screens offer Guided Setup instead of dead ends, sidebar labels no
+  longer truncate, and desktop-widget placement instructions are available
+  again from Home whenever needed.
+- Fixed a fresh-install bug where automatic hook initialization could create
+  an empty configuration file before the first-launch check and silently skip
+  onboarding.
+
 ## v0.21.83 — 2026-07-21
 
 ### Browser Accounts — track the same page with several separate logins

@@ -24,6 +24,16 @@ Each entry looks like:
 (newest first)
 
 ---
+**Date:** 2026-07-21T01:10:00Z
+**Trigger:** Ethan task 2026-07-21: make Trackers, Widgets, and the many settings tabs safe and obvious for a brand-new user
+**Symptom:** A fresh install could silently skip onboarding, and the first visible window exposed product-internal nouns, several equal-weight tabs, manual tracker/widget setup, and truncated sidebar labels without showing the end-to-end path from webpage to desktop.
+**Root cause:** App initialization checked for an existing configuration only after the default-hook backfill had already persisted an empty configuration. The preferences window also treated every feature as primary navigation, remembered arbitrary prior UserDefaults state, and had no shared journey model or calm landing page.
+**Fix:** v0.21.84 captures first-launch state before hook backfill, adds a Home journey/checklist and a three-step guided flow, creates the first tracked value and desktop-widget configuration together, surfaces the website-login picker immediately before browser selection, replaces beginner-facing Tracker/Widget Configuration/Browser Account language with Tracked Value/Desktop Widget/Website Login, hides diagnostics and automation under Advanced, adds contextual empty states and explicit macOS widget-placement instructions, widens the sidebar, and always returns from guided setup to Home.
+**Commit:** pending
+**Guard:** SetupJourneyTests pin every blank/partial/prepared setup state. Final verification requires the full unit suite, Debug app build, release-metadata validation, and an isolated `MACOS_WIDGETS_STATS_TEST_CONTAINER` Computer Use pass proving first launch opens the wizard and “Not now” lands on Home with untruncated setup labels.
+---
+
+---
 **Date:** 2026-07-20T21:48:10Z
 **Trigger:** Ethan task 2026-07-20: use the same website URL and element with three independently signed-in accounts
 **Symptom:** Tracker.browserProfile already existed and background scraping used it, but every user-facing creation/Identify path hardcoded the legacy default profile, there was no account catalog or picker, and the forced-navigation cache used URL alone. Users could not deliberately create, distinguish, or manage several isolated logins, and same-URL accounts could share a false freshness watermark.

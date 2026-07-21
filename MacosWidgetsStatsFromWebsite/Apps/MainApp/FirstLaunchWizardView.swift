@@ -14,6 +14,7 @@ struct FirstLaunchWizardView: View {
     @State private var step: Step = .url
     @State private var customURL = ""
     @State private var selectedURL: URL?
+    @State private var selectedBrowserAccountID = Tracker.defaultBrowserProfile
     @State private var identifyBrowser: BrowserPresentation?
 
     @State private var trackerName = ""
@@ -42,10 +43,15 @@ struct FirstLaunchWizardView: View {
             }
         }
         .padding(28)
-        .frame(width: 640)
-        .frame(minHeight: 470)
+        .frame(width: 660)
+        .frame(minHeight: 540)
         .sheet(item: $identifyBrowser) { presentation in
-            ChromeElementCaptureView(url: presentation.url, renderMode: renderMode, contextLabel: presentation.contextLabel) { pick in
+            ChromeElementCaptureView(
+                url: presentation.url,
+                renderMode: renderMode,
+                browserAccount: selectedBrowserAccount,
+                contextLabel: presentation.contextLabel
+            ) { pick in
                 applyCapturedElement(pick)
             }
         }
@@ -56,20 +62,54 @@ struct FirstLaunchWizardView: View {
         }
         .onAppear {
             chromiumAvailable = ChromeBrowserProfile.shared.chromiumIsAvailable()
+            ensureSelectedBrowserAccount()
         }
+        .onChange(of: store.browserAccounts) { _ in ensureSelectedBrowserAccount() }
         .onReceive(NotificationCenter.default.publisher(for: ChromeBrowserProfile.chromiumAvailabilityDidChangeNotification)) { _ in
             chromiumAvailable = ChromeBrowserProfile.shared.chromiumIsAvailable()
         }
     }
 
     private var header: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 14) {
             // User-facing welcome header — matches the renamed .app wrapper
             // "Stats Widget from Website.app" introduced in v0.21.22 (voice
             // 4002 / MBP-CC bridge msg-65036391). Internal product name in
             // build artefacts / log labels stays MacosWidgetsStatsFromWebsite.
             Text("Welcome to Stats Widget from Website")
                 .font(.title2.weight(.semibold))
+
+            HStack(spacing: 8) {
+                ForEach(Step.allCases) { candidate in
+                    HStack(spacing: 7) {
+                        ZStack {
+                            Circle()
+                                .fill(candidate.index <= step.index ? Color.accentColor : Color.secondary.opacity(0.16))
+                            if candidate.index < step.index {
+                                Image(systemName: "checkmark")
+                                    .font(.caption2.weight(.bold))
+                                    .foregroundStyle(.white)
+                            } else {
+                                Text("\(candidate.index + 1)")
+                                    .font(.caption2.weight(.bold))
+                                    .foregroundStyle(candidate.index <= step.index ? Color.white : Color.secondary)
+                            }
+                        }
+                        .frame(width: 22, height: 22)
+
+                        Text(candidate.shortTitle)
+                            .font(.caption.weight(candidate == step ? .semibold : .regular))
+                            .foregroundStyle(candidate == step ? Color.primary : Color.secondary)
+                    }
+
+                    if candidate != Step.allCases.last {
+                        Rectangle()
+                            .fill(Color.secondary.opacity(0.18))
+                            .frame(height: 1)
+                    }
+                }
+            }
+
             Text(step.subtitle)
                 .foregroundStyle(.secondary)
         }
@@ -80,7 +120,7 @@ struct FirstLaunchWizardView: View {
             VStack(alignment: .leading, spacing: 8) {
                 Text("Start with any website")
                     .font(.headline)
-                Text("Paste the page you want to track. The app opens its persistent Chrome/Chromium profile when it is time to choose the exact value or region.")
+                Text("Paste the page where the number lives. Next, the app will open it and let you click exactly what you want to see.")
                     .foregroundStyle(.secondary)
             }
 
@@ -96,27 +136,28 @@ struct FirstLaunchWizardView: View {
                         .font(.caption)
                         .foregroundStyle(.red)
                 } else {
-                    Text("Examples: a usage dashboard, bank balance, weather page, status page, or any page with a value you care about.")
+                    Text("Examples: a usage limit, account balance, follower count, queue size, or status page.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
             }
 
-            Text("Cookies stay in the app's local Chrome/Chromium profile. Nothing is sent to a third-party server.")
+            Label("Your login stays on this Mac. The app does not send page data to a third-party server.", systemImage: "lock.shield")
                 .font(.callout)
                 .foregroundStyle(.secondary)
 
             Spacer(minLength: 16)
 
             HStack {
-                Button("Skip") {
+                Button("Not now") {
                     skip()
                 }
                 Spacer()
-                Button("Continue") {
+                Button("Choose a value") {
                     continueWithURL()
                 }
                 .disabled(validatedCustomURL == nil)
+                .buttonStyle(.borderedProminent)
                 .keyboardShortcut(.defaultAction)
             }
         }
@@ -124,102 +165,89 @@ struct FirstLaunchWizardView: View {
 
     private var captureStep: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Form {
-                Section {
-                    LabeledContent("URL") {
-                        Text(selectedURL?.absoluteString ?? "No URL selected")
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                            .textSelection(.enabled)
-                    }
-                    TextField("Tracker name", text: $trackerName)
+            VStack(alignment: .leading, spacing: 12) {
+                LabeledContent("Page") {
+                    Text(selectedURL?.absoluteString ?? "No page selected")
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .textSelection(.enabled)
+                }
 
-                    Picker("Render mode", selection: $renderMode) {
-                        ForEach(RenderMode.allCases) { mode in
-                            Text(mode.displayName).tag(mode)
+                LabeledContent("Name") {
+                    TextField("What should this be called?", text: $trackerName)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 330)
+                }
+
+                if store.browserAccounts.count > 1 {
+                    LabeledContent("Website login") {
+                        Picker("Website login", selection: $selectedBrowserAccountID) {
+                            ForEach(store.browserAccounts) { account in
+                                BrowserAccountLabel(account: account).tag(account.id)
+                            }
                         }
+                        .labelsHidden()
+                        .frame(width: 330)
                     }
+                }
+
+                LabeledContent("Show as") {
+                    Picker("Show as", selection: $renderMode) {
+                        Text("Number or text").tag(RenderMode.text)
+                        Text("Picture of page area").tag(RenderMode.snapshot)
+                    }
+                    .labelsHidden()
                     .pickerStyle(.segmented)
-
-                    // v0.21.41 — "First widget layout" picker dropped.
-                    // Only one template (single-big-number) ever ships
-                    // now, so the picker had a single-item list and was
-                    // therefore meaningless. The new tracker's widget
-                    // is auto-created as a single-big-number small
-                    // widget below in `saveFirstTracker`.
-                } header: {
-                    Text("Tracker")
-                }
-
-                Section {
-                    VStack(alignment: .leading, spacing: 8) {
-                        if !chromiumAvailable {
-                            VStack(alignment: .leading, spacing: 6) {
-                                Label("Bundled Chromium is missing.", systemImage: "exclamationmark.triangle")
-                                    .foregroundStyle(.orange)
-                                // v0.21.22 rename: user-facing product name is "Stats Widget from Website".
-                                Text("Identify needs the Chromium browser bundled inside this app. Reinstall Stats Widget from Website to restore it.")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                Button {
-                                    isShowingChromiumInstallSheet = true
-                                } label: {
-                                    Label("Check Chromium", systemImage: "arrow.clockwise.circle")
-                                }
-                                .buttonStyle(.borderedProminent)
-                            }
-                            .padding(.bottom, 4)
-                        }
-
-                        Button {
-                            openIdentifyBrowser()
-                        } label: {
-                            Label(capturedPick == nil ? "Open Chrome and Identify Element" : "Re-identify in Chrome", systemImage: "viewfinder")
-                        }
-                        .disabled(selectedURL == nil || !chromiumAvailable)
-
-                        if let capturedPick {
-                            VStack(alignment: .leading, spacing: 6) {
-                                Text("Captured selector")
-                                    .font(.caption.weight(.semibold))
-                                Text(capturedPick.selector)
-                                    .font(.system(.caption, design: .monospaced))
-                                    .lineLimit(2)
-                                    .textSelection(.enabled)
-
-                                Text(capturedPick.text.isEmpty ? "No text captured; snapshot mode can still use the selected region." : capturedPick.text)
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                    .lineLimit(3)
-                                    .textSelection(.enabled)
-
-                                Text("Bounds: \(formattedBoundingBox(capturedPick.bbox))")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                            .padding(.top, 4)
-                        } else {
-                            Text("Required before saving: Chrome opens with the app profile. Sign in or navigate if needed, hover the value or region, then click to preview and use it.")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                } header: {
-                    Text("Capture")
-                }
-
-                Section {
-                    // v0.21.41 — SF Symbol picker dropped per voice 4206
-                    // ("get rid of that. Is that unnecessary?"). The
-                    // tracker's `icon` field still defaults to
-                    // `Tracker.defaultIcon` via `saveFirstTracker`. Only
-                    // the accent color picker survives.
-                    ColorPicker("Accent color", selection: $accentColor, supportsOpacity: false)
-                } header: {
-                    Text("Presentation")
+                    .frame(width: 330)
                 }
             }
-            .formStyle(.grouped)
+            .padding(16)
+            .background(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(Color.primary.opacity(0.035))
+            )
+
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Choose what you want to see")
+                    .font(.headline)
+
+                if !chromiumAvailable {
+                    Label("The app's browser is missing. Reinstall Stats Widget from Website to restore it.", systemImage: "exclamationmark.triangle")
+                        .font(.callout)
+                        .foregroundStyle(.orange)
+                    Button("Check Browser") { isShowingChromiumInstallSheet = true }
+                }
+
+                Button {
+                    openIdentifyBrowser()
+                } label: {
+                    Label(capturedPick == nil ? "Open Browser and Choose Value" : "Choose a Different Value", systemImage: "viewfinder")
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(selectedURL == nil || !chromiumAvailable)
+
+                if let capturedPick {
+                    Label("Value selected", systemImage: "checkmark.circle.fill")
+                        .font(.callout.weight(.semibold))
+                        .foregroundStyle(.green)
+
+                    Text(capturedPick.text.isEmpty ? "The selected page area is ready." : "Preview: \(capturedPick.text)")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(3)
+                        .textSelection(.enabled)
+                } else {
+                    Text("The browser will explain what to do. Sign in if needed, hover over the number, then click it and confirm the preview.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .padding(16)
+            .background(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(Color.accentColor.opacity(0.075))
+            )
             .onChange(of: renderMode) { newMode in
                 if !availableWidgetTemplates(for: newMode).contains(widgetTemplate) {
                     widgetTemplate = Self.defaultWidgetTemplate(for: newMode)
@@ -239,65 +267,58 @@ struct FirstLaunchWizardView: View {
             Spacer(minLength: 12)
 
             HStack {
-                Button("Skip") {
-                    skip()
-                }
-                Spacer()
                 Button("Back") {
                     errorMessage = nil
                     step = .url
                 }
-                Button("Save Tracker") {
+                Spacer()
+                Button("Create My Widget") {
                     saveFirstTracker()
                 }
                 .disabled(!canSaveTracker)
+                .buttonStyle(.borderedProminent)
                 .keyboardShortcut(.defaultAction)
             }
         }
     }
 
     private var widgetStep: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            if let createdTracker {
-                LabeledContent("Tracker") {
-                    Text(createdTracker.name)
-                        .textSelection(.enabled)
+        VStack(alignment: .leading, spacing: 18) {
+            HStack(alignment: .center, spacing: 14) {
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.system(size: 42))
+                    .foregroundStyle(.green)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Your first value is ready")
+                        .font(.title2.weight(.semibold))
+                    Text("\(createdTracker?.name ?? "Your value") will refresh automatically in the background.")
+                        .foregroundStyle(.secondary)
                 }
             }
 
-            if let createdWidgetConfiguration {
-                LabeledContent("Widget configuration") {
-                    Text("\(createdWidgetConfiguration.name) - \(createdWidgetConfiguration.templateID.displayName) - \(createdWidgetConfiguration.size.displayName)")
-                        .textSelection(.enabled)
-                }
-            }
+            Divider()
 
-            VStack(alignment: .leading, spacing: 8) {
-                Text("Add it from the desktop widget picker:")
+            VStack(alignment: .leading, spacing: 7) {
+                Text("One last step: add it to your desktop")
                     .font(.headline)
-                Text("1. Right-click the desktop and choose Edit Widgets")
-                // v0.21.22: instruct users to look up the renamed widget name in
-                // the desktop widget picker. The system shows whatever the widget
-                // extension's configurationDisplayName resolves to (see StatsWidget
-                // + PlaceholderWidget — both renamed to "Stats Widget from Website").
-                Text("2. Search for Stats Widget from Website")
-                Text("3. Drag a \(createdWidgetConfiguration?.size.displayName.lowercased() ?? "small") widget onto the desktop")
-                Text("4. Click/right-click the placed widget and choose Edit “Stats Widget from Website”")
-                Text("5. Choose \"\(createdWidgetConfiguration?.name ?? "your new configuration")\" from the configuration picker")
-                Text("   Desktop widgets require macOS 14 or later.")
+                Text("The app has already prepared the widget. macOS controls where it appears.")
+                    .foregroundStyle(.secondary)
             }
-            .foregroundStyle(.secondary)
+
+            DesktopWidgetInstructionsView(configurationName: createdWidgetConfiguration?.name)
+
+            Text("Desktop widgets require macOS 14 or later.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
 
             Spacer(minLength: 16)
 
             HStack {
-                Button("I'll do this later") {
-                    finish()
-                }
                 Spacer()
-                Button("Done") {
+                Button("Finish") {
                     finish()
                 }
+                .buttonStyle(.borderedProminent)
                 .keyboardShortcut(.defaultAction)
             }
         }
@@ -333,15 +354,15 @@ struct FirstLaunchWizardView: View {
 
     private var saveReadinessMessage: String? {
         if selectedURL == nil {
-            return "Enter and continue with a URL before saving."
+            return "Enter the webpage before continuing."
         }
 
         if trimmedTrackerName.isEmpty {
-            return "Name the tracker before saving."
+            return "Give this value a name before continuing."
         }
 
         if capturedPick == nil {
-            return "Open Chrome and identify the value or region before saving the tracker."
+            return "Open the browser and choose the value before creating the widget."
         }
 
         return nil
@@ -418,7 +439,7 @@ struct FirstLaunchWizardView: View {
             icon: icon.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty ?? Tracker.defaultIcon,
             accentColorHex: accentColor.hexString ?? Tracker.defaultAccentColorHex
         )
-        tracker.browserProfile = Tracker.defaultBrowserProfile
+        tracker.browserProfile = selectedBrowserAccount.id
 
         let widgetConfiguration = WidgetConfiguration(
             name: "\(tracker.name) Widget",
@@ -446,16 +467,29 @@ struct FirstLaunchWizardView: View {
         isPresented = false
     }
 
+    private var selectedBrowserAccount: BrowserAccount {
+        store.browserAccounts.first(where: { $0.id == selectedBrowserAccountID })
+            ?? store.browserAccounts.first
+            ?? .defaultAccount
+    }
+
+    private func ensureSelectedBrowserAccount() {
+        guard store.browserAccounts.contains(where: { $0.id == selectedBrowserAccountID }) else {
+            selectedBrowserAccountID = store.browserAccounts.first?.id ?? Tracker.defaultBrowserProfile
+            return
+        }
+    }
+
     private func validatedURL(from string: String) -> URL? {
         TrackerURLValidator.httpOrHTTPSURL(from: string)
     }
 
     private func defaultTrackerName(for url: URL) -> String {
         guard let host = url.host?.replacingOccurrences(of: "www.", with: ""), !host.isEmpty else {
-            return "Website Tracker"
+            return "Website value"
         }
 
-        return "\(host) Tracker"
+        return host
     }
 
     /// v0.21.41 — collapsed to a single-element list. The previous
@@ -473,28 +507,32 @@ struct FirstLaunchWizardView: View {
         return .singleBigNumber
     }
 
-    private func formattedBoundingBox(_ bbox: ElementBoundingBox) -> String {
-        let width = Int(round(bbox.width))
-        let height = Int(round(bbox.height))
-        let x = Int(round(bbox.x))
-        let y = Int(round(bbox.y))
-        return "\(width)x\(height) at \(x), \(y)"
-    }
 }
 
-private enum Step {
+private enum Step: Int, CaseIterable, Identifiable {
     case url
     case capture
     case widget
 
+    var id: Int { rawValue }
+    var index: Int { rawValue }
+
+    var shortTitle: String {
+        switch self {
+        case .url: return "Webpage"
+        case .capture: return "Choose value"
+        case .widget: return "Desktop"
+        }
+    }
+
     var subtitle: String {
         switch self {
         case .url:
-            return "Step 1 of 3: enter the page you want to track."
+            return "First, tell us where the number lives."
         case .capture:
-            return "Step 2 of 3: choose the render mode and capture the value or page region."
+            return "Now choose exactly what should appear in the widget."
         case .widget:
-            return "Step 3 of 3: add the first desktop widget."
+            return "Your value is ready. Add it to the Mac desktop."
         }
     }
 }

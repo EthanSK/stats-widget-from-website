@@ -11,25 +11,56 @@ import UniformTypeIdentifiers
 
 struct PreferencesWindow: View {
     @EnvironmentObject private var store: AppGroupStore
-    @State private var selection: PreferencesSection? = .trackers
+    @AppStorage("preferences.selectedSection") private var selectedSectionRawValue = PreferencesSection.home.rawValue
+    @State private var isAdvancedExpanded = false
     @State private var mcpIdentifyPresentation: MCPIdentifyPresentation?
     @State private var isSelectorPackDropTargeted = false
     @State private var selectorPackImportMessage: String?
 
+    let onStartGuidedSetup: () -> Void
+
+    init(onStartGuidedSetup: @escaping () -> Void = {}) {
+        self.onStartGuidedSetup = onStartGuidedSetup
+    }
+
     var body: some View {
         NavigationSplitView {
-            List(PreferencesSection.allCases, selection: $selection) { section in
-                NavigationLink(value: section) {
-                    Label(section.title, systemImage: section.systemImage)
+            List(selection: selection) {
+                NavigationLink(value: PreferencesSection.home) {
+                    Label(PreferencesSection.home.title, systemImage: PreferencesSection.home.systemImage)
+                }
+
+                Section("Set up") {
+                    ForEach(PreferencesSection.setupSections) { section in
+                        NavigationLink(value: section) {
+                            Label(section.title, systemImage: section.systemImage)
+                        }
+                    }
+                }
+
+                Section {
+                    DisclosureGroup(isExpanded: $isAdvancedExpanded) {
+                        ForEach(PreferencesSection.advancedSections) { section in
+                            NavigationLink(value: section) {
+                                Label(section.title, systemImage: section.systemImage)
+                            }
+                        }
+                    } label: {
+                        Label("Advanced", systemImage: "gearshape.2")
+                            .fontWeight(.medium)
+                    }
                 }
             }
-            .navigationTitle("Preferences")
+            .navigationTitle("Stats Widget")
+            .navigationSplitViewColumnWidth(min: 190, ideal: 205, max: 240)
         } detail: {
-            switch selection ?? .trackers {
+            switch selectedSection {
+            case .home:
+                GettingStartedPrefsView(onStartGuidedSetup: onStartGuidedSetup)
             case .trackers:
-                TrackersListView()
+                TrackersListView(onStartGuidedSetup: onStartGuidedSetup)
             case .widgets:
-                WidgetConfigsView()
+                WidgetConfigsView(onStartGuidedSetup: onStartGuidedSetup)
             case .browser:
                 SignInPrefsView()
             case .mcp:
@@ -41,6 +72,11 @@ struct PreferencesWindow: View {
             }
         }
         .frame(minWidth: 780, minHeight: 520)
+        .onAppear {
+            if PreferencesSection.advancedSections.contains(selectedSection) {
+                isAdvancedExpanded = true
+            }
+        }
         .onDrop(
             of: [SelectorPack.contentTypeIdentifier, UTType.fileURL.identifier, UTType.json.identifier],
             isTargeted: $isSelectorPackDropTargeted,
@@ -64,12 +100,15 @@ struct PreferencesWindow: View {
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: AppNavigationEvents.openTrackerSettingsNotification)) { _ in
-            selection = .trackers
+            selectedSectionRawValue = PreferencesSection.trackers.rawValue
         }
         .onReceive(NotificationCenter.default.publisher(for: .menuBarPreferencesSectionRequested)) { notification in
             if let rawValue = notification.userInfo?["section"] as? String,
                let section = PreferencesSection(rawValue: rawValue) {
-                selection = section
+                selectedSectionRawValue = section.rawValue
+                if PreferencesSection.advancedSections.contains(section) {
+                    isAdvancedExpanded = true
+                }
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: .mcpIdentifyElementRequested)) { notification in
@@ -85,6 +124,21 @@ struct PreferencesWindow: View {
                 completeMCPIdentifyRequest(presentation, pick: pick)
             }
         }
+    }
+
+    private var selectedSection: PreferencesSection {
+        PreferencesSection(rawValue: selectedSectionRawValue) ?? .home
+    }
+
+    private var selection: Binding<PreferencesSection?> {
+        Binding(
+            get: { selectedSection },
+            set: { newValue in
+                if let newValue {
+                    selectedSectionRawValue = newValue.rawValue
+                }
+            }
+        )
     }
 
     private func importDroppedSelectorPacks(_ providers: [NSItemProvider]) -> Bool {
@@ -131,7 +185,7 @@ struct PreferencesWindow: View {
             let tracker = try SelectorPackImportCoordinator.importSelectorPack(at: url)
             DispatchQueue.main.async {
                 store.reloadFromDisk()
-                selection = .trackers
+                selectedSectionRawValue = PreferencesSection.trackers.rawValue
                 showSelectorPackImportResult("Imported \(tracker.name).")
             }
         } catch {
@@ -148,7 +202,7 @@ struct PreferencesWindow: View {
             }
             DispatchQueue.main.async {
                 store.reloadFromDisk()
-                selection = .trackers
+                selectedSectionRawValue = PreferencesSection.trackers.rawValue
                 showSelectorPackImportResult("Imported \(tracker.name).")
             }
         } catch {
@@ -201,7 +255,7 @@ struct PreferencesWindow: View {
             .name
             .trimmingCharacters(in: .whitespacesAndNewlines)
 
-        selection = .trackers
+        selectedSectionRawValue = PreferencesSection.trackers.rawValue
         presentMCPIdentifySheet(MCPIdentifyPresentation(
             trackerID: trackerID,
             url: url,
@@ -273,6 +327,7 @@ private struct MCPIdentifyPresentation: Identifiable {
 }
 
 enum PreferencesSection: String, CaseIterable, Hashable, Identifiable {
+    case home
     case trackers
     case widgets
     case browser
@@ -286,16 +341,18 @@ enum PreferencesSection: String, CaseIterable, Hashable, Identifiable {
 
     var title: String {
         switch self {
+        case .home:
+            return "Home"
         case .trackers:
-            return "Trackers"
+            return "Tracked Values"
         case .widgets:
-            return "Widgets"
+            return "Desktop Widgets"
         case .browser:
-            return "Browser Accounts"
+            return "Website Logins"
         case .mcp:
-            return "MCP"
+            return "Automation"
         case .logs:
-            return "Activity Log"
+            return "Troubleshooting"
         case .about:
             return "About"
         }
@@ -303,20 +360,25 @@ enum PreferencesSection: String, CaseIterable, Hashable, Identifiable {
 
     var systemImage: String {
         switch self {
+        case .home:
+            return "house.fill"
         case .trackers:
-            return "list.bullet.rectangle"
+            return "eye"
         case .widgets:
-            return "rectangle.grid.2x2"
+            return "rectangle.on.rectangle"
         case .browser:
-            return "globe"
+            return "person.crop.circle.badge.checkmark"
         case .mcp:
             return "point.3.connected.trianglepath.dotted"
         case .logs:
-            return "doc.text.magnifyingglass"
+            return "stethoscope"
         case .about:
             return "info.circle"
         }
     }
+
+    static let setupSections: [PreferencesSection] = [.trackers, .widgets, .browser]
+    static let advancedSections: [PreferencesSection] = [.mcp, .logs, .about]
 }
 
 private struct ActivityLogPrefsView: View {
@@ -384,7 +446,7 @@ private struct ActivityLogPrefsView: View {
             )
         }
         .padding(24)
-        .navigationTitle("Activity Log")
+        .navigationTitle("Troubleshooting")
         .onAppear {
             ActivityLogger.log("ui", "opened activity log preferences")
             refresh()

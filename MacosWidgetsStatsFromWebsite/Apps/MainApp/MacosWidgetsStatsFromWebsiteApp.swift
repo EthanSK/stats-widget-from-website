@@ -95,6 +95,23 @@ struct MacosWidgetsStatsFromWebsiteApp: App {
 
         AppDelegate.terminatePriorInstancesIfNeeded()
         AppGroupStore.migrateLegacyAppGroupContainerIfNeeded()
+        // Capture first-launch state BEFORE the hook-scaffold backfill below.
+        // `mutateSharedConfiguration` intentionally persists even an empty
+        // configuration, so asking `hasExistingConfigurationFile()` afterward
+        // makes a genuinely fresh install look configured and silently skips
+        // onboarding. Legacy migration runs first so an existing legacy user
+        // is still recognised correctly.
+        let shouldShowFirstLaunchFlow = !AppGroupStore.hasExistingConfigurationFile()
+        if shouldShowFirstLaunchFlow {
+            // A clean configuration should always land on the calm Home page
+            // after onboarding is dismissed. UserDefaults can outlive an app
+            // reinstall (and isolated UI tests deliberately share them), so a
+            // remembered advanced/setup tab is not reliable first-run state.
+            UserDefaults.standard.set(
+                PreferencesSection.home.rawValue,
+                forKey: "preferences.selectedSection"
+            )
+        }
         ChromeBrowserProfile.shared.terminateAppOwnedBrowsersFromPreviousSessions(reason: "startup")
 
         do {
@@ -110,7 +127,7 @@ struct MacosWidgetsStatsFromWebsiteApp: App {
 
         AppDelegate.pendingStore = store
         AppDelegate.pendingScheduler = scheduler
-        AppDelegate.shouldShowFirstLaunchFlow = !AppGroupStore.hasExistingConfigurationFile()
+        AppDelegate.shouldShowFirstLaunchFlow = shouldShowFirstLaunchFlow
 
         // Trigger an initial sync of the in-process schedulers so the
         // menu-bar agent starts scraping immediately on launch.

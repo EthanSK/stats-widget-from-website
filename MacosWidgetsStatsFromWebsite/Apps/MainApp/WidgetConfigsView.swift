@@ -8,8 +8,14 @@
 import SwiftUI
 
 struct WidgetConfigsView: View {
+    let onStartGuidedSetup: () -> Void
+
+    init(onStartGuidedSetup: @escaping () -> Void = {}) {
+        self.onStartGuidedSetup = onStartGuidedSetup
+    }
+
     var body: some View {
-        WidgetConfigurationsView()
+        WidgetConfigurationsView(onStartGuidedSetup: onStartGuidedSetup)
     }
 }
 
@@ -18,6 +24,8 @@ struct WidgetConfigurationsView: View {
     @State private var selectedConfigurationID: UUID?
     @State private var editorPresentation: WidgetConfigurationEditorPresentation?
 
+    let onStartGuidedSetup: () -> Void
+
     var body: some View {
         ZStack {
             if store.widgetConfigurations.isEmpty {
@@ -25,29 +33,28 @@ struct WidgetConfigurationsView: View {
                     Image(systemName: "rectangle.grid.2x2")
                         .font(.system(size: 38))
                         .foregroundStyle(.secondary)
-                    Text("No widget configurations yet")
-                        .font(.headline)
-                    Text(store.trackers.isEmpty ? "Add a tracker first, then create the widget configuration the desktop widget will show." : "Create or edit the configuration the desktop widget pulls from the app.")
+                    Text("No desktop widgets yet")
+                        .font(.title3.weight(.semibold))
+                    Text(store.trackers.isEmpty ? "Choose a value from a webpage first. Guided setup will prepare its desktop widget automatically." : "Prepare a desktop widget for one of your tracked values.")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)
                         .frame(maxWidth: 430)
                     Button {
-                        add()
+                        if store.trackers.isEmpty {
+                            onStartGuidedSetup()
+                        } else {
+                            add()
+                        }
                     } label: {
-                        Label("Create Widget Configuration", systemImage: "plus")
+                        Label(store.trackers.isEmpty ? "Start Guided Setup" : "Prepare Desktop Widget", systemImage: store.trackers.isEmpty ? "sparkles" : "plus")
                     }
-                    .disabled(store.trackers.isEmpty)
-                    Text("After you create a configuration, add the desktop widget from macOS Edit Widgets, then choose this configuration in the widget's edit panel. Requires macOS 14 or later.")
+                    .buttonStyle(.borderedProminent)
+                    Text("After preparing it here, add Stats Widget from Website from macOS Edit Widgets and choose the widget by name.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)
                         .frame(maxWidth: 520)
-                    if store.trackers.isEmpty {
-                        Text("Tip: the first-launch wizard creates one tracker and one widget configuration together.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .padding()
@@ -102,33 +109,33 @@ struct WidgetConfigurationsView: View {
                 }
             }
         }
-        .navigationTitle("Widgets")
+        .navigationTitle("Desktop Widgets")
         .toolbar {
             ToolbarItemGroup {
                 Button {
                     add()
                 } label: {
-                    Label("Add Widget Configuration", systemImage: "plus")
+                    Label("Prepare Desktop Widget", systemImage: "plus")
                 }
-                .help("Add Widget Configuration")
+                .help("Prepare Desktop Widget")
 
                 Button {
                     editSelected()
                 } label: {
-                    Label("Edit Widget Configuration", systemImage: "pencil")
+                    Label("Edit Desktop Widget", systemImage: "pencil")
                 }
                 .disabled(selectedConfiguration == nil)
-                .help("Edit Widget Configuration")
+                .help("Edit Desktop Widget")
 
                 Button {
                     if let selectedConfiguration {
                         delete(selectedConfiguration)
                     }
                 } label: {
-                    Label("Delete Widget Configuration", systemImage: "trash")
+                    Label("Delete Desktop Widget", systemImage: "trash")
                 }
                 .disabled(selectedConfiguration == nil)
-                .help("Delete Widget Configuration")
+                .help("Delete Desktop Widget")
             }
         }
         .sheet(item: $editorPresentation) { presentation in
@@ -204,7 +211,7 @@ private struct WidgetSetupInstructionsFooter: View {
     let configurationName: String?
 
     var body: some View {
-        Text("Add the widget from macOS Edit Widgets, then choose \(quotedConfigurationName) in the placed widget's edit panel. Requires macOS 14 or later.")
+        Text("Next: open macOS Edit Widgets, add Stats Widget from Website, then choose \(quotedConfigurationName) in the placed widget's edit panel.")
             .font(.caption)
             .foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)
@@ -269,7 +276,7 @@ private struct WidgetConfigurationRow: View {
         // nested array scans per row render. Map is computed once by the
         // parent list.
         let names = configuration.trackerIDs.compactMap { trackerNamesByID[$0] }
-        return names.isEmpty ? "No trackers" : names.joined(separator: ", ")
+        return names.isEmpty ? "No tracked values" : names.joined(separator: ", ")
     }
 }
 
@@ -325,14 +332,14 @@ private struct WidgetConfigurationEditorView: View {
                     // WidgetConfiguration init default + the decoder
                     // coercion in WidgetTemplate.swift).
                 } header: {
-                    Text("Configuration")
+                    Text("Widget")
                 } footer: {
-                    Text("Small widget · 1 tracker slot. Pick the small size in macOS Edit Widgets.")
+                    Text("Small desktop widget · shows 1 tracked value.")
                 }
 
                 Section {
                     if trackers.isEmpty {
-                        Text("Add trackers before binding this widget.")
+                        Text("Choose a value from a webpage before preparing this widget.")
                             .foregroundStyle(.secondary)
                     } else {
                         // Per-slot radio button groups (v0.21.7). Each slot
@@ -371,7 +378,7 @@ private struct WidgetConfigurationEditorView: View {
                         }
                     }
                 } header: {
-                    Text("Tracker Slots")
+                    Text("Tracked Value")
                 } footer: {
                     Text(slotFooterDescription)
                 }
@@ -421,7 +428,7 @@ private struct WidgetConfigurationEditorView: View {
             }
             .padding()
         }
-        .navigationTitle(mode == .add ? "Add Widget Configuration" : "Edit Widget Configuration")
+        .navigationTitle(mode == .add ? "Prepare Desktop Widget" : "Edit Desktop Widget")
         // v0.21.41 — the `.onChange(of: draft.templateID)` watcher was
         // removed. It existed to keep `size` / `layout` / `trackerIDs`
         // in sync when the user changed the template picker; with the
@@ -452,20 +459,20 @@ private struct WidgetConfigurationEditorView: View {
     private var slotDescription: String {
         let range = draft.templateID.slotCount
         if range.lowerBound == range.upperBound {
-            return "Requires \(range.lowerBound) tracker\(range.lowerBound == 1 ? "" : "s")."
+            return "Requires \(range.lowerBound) tracked value\(range.lowerBound == 1 ? "" : "s")."
         }
 
-        return "Requires \(range.lowerBound)-\(range.upperBound) trackers."
+        return "Requires \(range.lowerBound)-\(range.upperBound) tracked values."
     }
 
     private var slotFooterDescription: String {
         let selected = draft.trackerIDs.count
         let range = draft.templateID.slotCount
         if selected < range.lowerBound {
-            return "Selected \(selected). Add \(range.lowerBound - selected) more tracker\((range.lowerBound - selected) == 1 ? "" : "s") to save. \(slotDescription)"
+            return "Selected \(selected). Add \(range.lowerBound - selected) more tracked value\((range.lowerBound - selected) == 1 ? "" : "s") to save. \(slotDescription)"
         }
         if selected > range.upperBound {
-            return "Selected \(selected). Remove \(selected - range.upperBound) tracker\((selected - range.upperBound) == 1 ? "" : "s") to save. \(slotDescription)"
+            return "Selected \(selected). Remove \(selected - range.upperBound) tracked value\((selected - range.upperBound) == 1 ? "" : "s") to save. \(slotDescription)"
         }
         return "Selected \(selected). Ready to save. \(slotDescription)"
     }

@@ -16,10 +16,12 @@ import WidgetKit
 struct ContentView: View {
     @EnvironmentObject private var store: AppGroupStore
     @EnvironmentObject private var backgroundScheduler: BackgroundScheduler
-    @State private var showsFirstLaunchFlow: Bool = !AppGroupStore.hasExistingConfigurationFile()
+    @State private var showsFirstLaunchFlow: Bool = AppDelegate.shouldShowFirstLaunchFlow
 
     var body: some View {
-        PreferencesWindow()
+        PreferencesWindow(onStartGuidedSetup: {
+            showsFirstLaunchFlow = true
+        })
             .onAppear {
                 ActivityLogger.log("app", "preferences window appeared")
                 backgroundScheduler.sync()
@@ -46,6 +48,23 @@ struct ContentView: View {
             .sheet(isPresented: $showsFirstLaunchFlow) {
                 FirstLaunchWizardView(isPresented: $showsFirstLaunchFlow)
                     .environmentObject(store)
+            }
+            .onChange(of: showsFirstLaunchFlow) { isShowing in
+                guard !isShowing else { return }
+
+                // Whether the user finishes setup or chooses "Not now",
+                // return them to the calm journey overview instead of
+                // exposing whichever setup/advanced tab happened to be
+                // remembered in UserDefaults.
+                UserDefaults.standard.set(
+                    PreferencesSection.home.rawValue,
+                    forKey: "preferences.selectedSection"
+                )
+                NotificationCenter.default.post(
+                    name: .menuBarPreferencesSectionRequested,
+                    object: nil,
+                    userInfo: ["section": PreferencesSection.home.rawValue]
+                )
             }
     }
 

@@ -22,25 +22,35 @@ struct TrackersListView: View {
     /// UI-lag cause during config / list navigation.
     @State private var readingsByTrackerID: [UUID: TrackerReading] = [:]
 
+    let onStartGuidedSetup: () -> Void
+
+    init(onStartGuidedSetup: @escaping () -> Void = {}) {
+        self.onStartGuidedSetup = onStartGuidedSetup
+    }
+
     var body: some View {
         ZStack {
             if store.trackers.isEmpty {
-                VStack(spacing: 12) {
-                    Image(systemName: "target")
-                        .font(.system(size: 40))
-                        .foregroundStyle(.secondary)
-                    Text("No trackers yet")
-                        .font(.headline)
-                    Text("Add a tracker, choose a browser account, then identify the value or page region you want to show.")
+                VStack(spacing: 14) {
+                    Image(systemName: "sparkles.rectangle.stack")
+                        .font(.system(size: 42))
+                        .symbolRenderingMode(.hierarchical)
+                        .foregroundStyle(Color.accentColor)
+                    Text("Put your first number on the desktop")
+                        .font(.title3.weight(.semibold))
+                    Text("Guided setup opens the webpage, lets you click the value you want, and prepares the desktop widget automatically.")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)
                         .frame(maxWidth: 420)
                     Button {
-                        add()
+                        onStartGuidedSetup()
                     } label: {
-                        Label("Add Tracker", systemImage: "plus")
+                        Label("Start Guided Setup", systemImage: "sparkles")
                     }
+                    .buttonStyle(.borderedProminent)
+                    Button("Set up manually") { add() }
+                        .buttonStyle(.link)
                     .keyboardShortcut("n", modifiers: .command)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -105,32 +115,32 @@ struct TrackersListView: View {
                 }
             }
         }
-        .navigationTitle("Trackers")
+        .navigationTitle("Tracked Values")
         .toolbar {
             ToolbarItemGroup {
                 Button {
                     add()
                 } label: {
-                    Label("Add Tracker", systemImage: "plus")
+                    Label("Add Tracked Value", systemImage: "plus")
                 }
                 .keyboardShortcut("n", modifiers: .command)
-                .help("Add Tracker")
+                .help("Add Tracked Value")
 
                 Button {
                     editSelected()
                 } label: {
-                    Label("Edit Tracker", systemImage: "pencil")
+                    Label("Edit Tracked Value", systemImage: "pencil")
                 }
                 .disabled(selectedTracker == nil)
-                .help("Edit Tracker")
+                .help("Edit Tracked Value")
 
                 Button {
                     scrapeSelected()
                 } label: {
-                    Label("Scrape Now", systemImage: "arrow.triangle.2.circlepath")
+                    Label("Refresh Now", systemImage: "arrow.triangle.2.circlepath")
                 }
                 .disabled(selectedTracker == nil)
-                .help("Scrape Now")
+                .help("Refresh Now")
 
                 // v0.21.7 prefs-button audit: Export Tracker Config (formerly
                 // "Export Selector Pack") was rarely used as a toolbar button —

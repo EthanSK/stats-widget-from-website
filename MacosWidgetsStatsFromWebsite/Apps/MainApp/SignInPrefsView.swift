@@ -40,7 +40,7 @@ struct SignInPrefsView: View {
             Divider()
             accountDetail
         }
-        .navigationTitle("Browser Accounts")
+        .navigationTitle("Website Logins")
         .sheet(item: $accountEditor) { presentation in
             BrowserAccountEditorSheet(
                 presentation: presentation,
@@ -53,7 +53,7 @@ struct SignInPrefsView: View {
             case .reset(let account):
                 return Alert(
                     title: Text("Reset \(account.name)?"),
-                    message: Text("This closes the account's Chromium window and moves its sign-in data to the Trash. Trackers stay assigned to this account, but you will need to sign in again."),
+                    message: Text("This closes the login's browser window and moves its sign-in data to the Trash. Tracked values stay assigned to this login, but you will need to sign in again."),
                     primaryButton: .destructive(Text("Reset Sign-In Data")) {
                         resetBrowserData(for: account)
                     },
@@ -62,8 +62,8 @@ struct SignInPrefsView: View {
             case .remove(let account):
                 return Alert(
                     title: Text("Remove \(account.name)?"),
-                    message: Text("This closes the account's Chromium window, moves its browser data to the Trash, and removes the account from Stats Widget from Website."),
-                    primaryButton: .destructive(Text("Remove Account")) {
+                    message: Text("This closes the login's browser window, moves its browser data to the Trash, and removes the login from Stats Widget from Website."),
+                    primaryButton: .destructive(Text("Remove Website Login")) {
                         removeBrowserAccount(account)
                     },
                     secondaryButton: .cancel()
@@ -94,7 +94,7 @@ struct SignInPrefsView: View {
     private var accountList: some View {
         VStack(spacing: 0) {
             HStack {
-                Text("Browser Accounts")
+                Text("Website Logins")
                     .font(.headline)
                 Spacer()
                 Button {
@@ -103,7 +103,7 @@ struct SignInPrefsView: View {
                     Image(systemName: "plus")
                 }
                 .buttonStyle(.borderless)
-                .help("Add Browser Account")
+                .help("Add Website Login")
             }
             .padding(.horizontal, 14)
             .padding(.vertical, 12)
@@ -124,7 +124,7 @@ struct SignInPrefsView: View {
                         if account.isDefault {
                             Image(systemName: "checkmark.seal.fill")
                                 .foregroundStyle(.secondary)
-                                .help("Original browser account")
+                                .help("Original website login")
                         }
                     }
                     .padding(.vertical, 3)
@@ -133,7 +133,7 @@ struct SignInPrefsView: View {
             }
             .listStyle(.sidebar)
 
-            Text("Accounts isolate cookies, local storage, and login sessions. A tracker always refreshes with its assigned account.")
+            Text("Each website login keeps its own cookies and signed-in session. Every tracked value refreshes with the login you choose.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -159,7 +159,7 @@ struct SignInPrefsView: View {
                                     .background(.quaternary, in: Capsule())
                             }
                         }
-                        Text(selectedTrackerCount == 1 ? "Used by 1 tracker" : "Used by \(selectedTrackerCount) trackers")
+                        Text(selectedTrackerCount == 1 ? "Used by 1 tracked value" : "Used by \(selectedTrackerCount) tracked values")
                             .foregroundStyle(.secondary)
                     }
                     Spacer()
@@ -209,7 +209,7 @@ struct SignInPrefsView: View {
                     .disabled(!chromiumAvailable || isWorking)
                 }
 
-                Text("Open this account, sign in to the website, then assign it to a tracker. Passwords are entered in Chromium and are never stored by the widget app.")
+                Text("Open this login, sign in to the website, then choose it for a tracked value. Passwords are entered in the browser and are never stored by the widget app.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -244,13 +244,13 @@ struct SignInPrefsView: View {
                 .disabled(isWorking)
 
                 if !selectedAccount.isDefault {
-                    Button("Remove Browser Account…", role: .destructive) {
+                    Button("Remove Website Login…", role: .destructive) {
                         pendingDestructiveAction = .remove(selectedAccount)
                     }
                     .disabled(isWorking || selectedTrackerCount > 0)
 
                     if selectedTrackerCount > 0 {
-                        Text("Move its \(selectedTrackerCount) tracker\(selectedTrackerCount == 1 ? "" : "s") to another browser account before removing it.")
+                        Text("Move its \(selectedTrackerCount) tracked value\(selectedTrackerCount == 1 ? "" : "s") to another website login before removing it.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -469,7 +469,7 @@ private struct BrowserAccountEditorSheet: View {
             HStack(spacing: 12) {
                 BrowserAccountBadge(account: previewAccount, size: 42)
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(presentation.account == nil ? "New Browser Account" : "Edit Browser Account")
+                    Text(presentation.account == nil ? "New Website Login" : "Edit Website Login")
                         .font(.title3.weight(.semibold))
                     Text("Use a name that makes the signed-in identity obvious.")
                         .foregroundStyle(.secondary)

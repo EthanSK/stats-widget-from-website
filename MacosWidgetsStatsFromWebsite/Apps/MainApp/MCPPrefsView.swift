@@ -57,6 +57,6 @@ struct MCPPrefsView: View {
             }
         }
         .formStyle(.grouped)
-        .navigationTitle("MCP")
+        .navigationTitle("Automation")
     }
 }

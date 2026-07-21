@@ -27,6 +27,7 @@ struct TrackerEditorView: View {
     @State private var previewState: PreviewState = .idle
     @State private var previewSelector: String = ""
     @State private var refreshIntervalUnit: RefreshIntervalUnit = .minutes
+    @State private var showsAdvancedOptions = false
     /// v0.21.9: which element the active Identify-in-Chrome flow is
     /// capturing for. `.primary` → the existing top-level fields; `.secondary(id)`
     /// → append/update a secondary element. Set right before `browserPresentation`
@@ -74,85 +75,24 @@ struct TrackerEditorView: View {
                     }
 
                     VStack(alignment: .leading, spacing: 4) {
-                        Picker("Browser account", selection: $draft.browserProfile) {
+                        Picker("Website login", selection: $draft.browserProfile) {
                             ForEach(store.browserAccounts) { account in
                                 BrowserAccountLabel(account: account)
                                     .tag(account.id)
                             }
                         }
-                        Text("Each browser account keeps separate sign-in cookies and site storage.")
+                        Text("Choose which signed-in website session this value should use.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
 
-                    Picker("Render mode", selection: $draft.renderMode) {
-                        ForEach(RenderMode.allCases) { mode in
-                            Text(mode.displayName).tag(mode)
-                        }
+                    Picker("Show as", selection: $draft.renderMode) {
+                        Text("Number or text").tag(RenderMode.text)
+                        Text("Picture of page area").tag(RenderMode.snapshot)
                     }
                     .pickerStyle(.segmented)
-
-                    // Typeable refresh interval input. Stored as seconds in the
-                    // model; user types in the same unit the current value reads
-                    // in (seconds when <60, minutes when <60min, hours otherwise).
-                    // Range clamping happens on commit so an out-of-range type
-                    // doesn't quietly break scheduling.
-                    HStack(spacing: 8) {
-                        Text("Refresh interval")
-                        Spacer()
-                        TextField("", value: refreshIntervalDisplayBinding, format: .number)
-                            .multilineTextAlignment(.trailing)
-                            .frame(width: 60)
-                            .textFieldStyle(.roundedBorder)
-                        Picker("", selection: $refreshIntervalUnit) {
-                            Text("sec").tag(RefreshIntervalUnit.seconds)
-                            Text("min").tag(RefreshIntervalUnit.minutes)
-                            Text("hr").tag(RefreshIntervalUnit.hours)
-                        }
-                        .pickerStyle(.menu)
-                        .frame(width: 80)
-                        .labelsHidden()
-                    }
                 } header: {
-                    Text("Tracker")
-                }
-
-                Section {
-                    VStack(alignment: .leading, spacing: 4) {
-                        TextField("Label", text: $labelText)
-                        Text("Optional shorter caption shown by widget templates instead of Name. Leave empty to use Name.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-
-                    // Value transform optionally rewrites the numeric reading
-                    // before display + gradient interpolation. e.g. for a
-                    // "Claude weekly usage: 1%" reading, `.invertFromHundred`
-                    // displays it as "99% remaining" — and the gradient
-                    // interpolates on 99 instead of 1, so the user typically
-                    // wants to flip gradientMode at the same time.
-                    Picker("Value display", selection: $draft.valueTransform) {
-                        ForEach(ValueTransform.allCases, id: \.self) { transform in
-                            Text(transform.displayName).tag(transform)
-                        }
-                    }
-
-                    Toggle("Remove letters", isOn: $draft.valueDisplayOptions.stripLetters)
-
-                    Toggle("Remove % symbol", isOn: $draft.valueDisplayOptions.stripPercentSymbol)
-                } header: {
-                    Text("Display")
-                } footer: {
-                    // v0.21.41 — accent color lives on the Widget
-                    // configuration editor's Visuals section. SF Symbol
-                    // picker + value gradient picker were dropped per
-                    // voice 4206 ("get rid of that. Is that unnecessary?
-                    // ... the color is the color stuff is useful, so
-                    // keep that."). See WidgetConfigsView.swift →
-                    // `TrackerVisualConfigCard`.
-                    Text("Accent color is in the Widgets section.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    Text("Value")
                 }
 
                 Section {
@@ -175,16 +115,17 @@ struct TrackerEditorView: View {
                             .padding(.bottom, 4)
                         }
 
-                        HStack(spacing: 8) {
-                            TextField("No element captured", text: readOnlySelectorBinding)
-                                .textFieldStyle(.roundedBorder)
-                                .font(.system(.body, design: .monospaced))
-                                .textSelection(.enabled)
-
+                        HStack(spacing: 10) {
+                            Label(
+                                trimmedSelector.isEmpty ? "No value selected yet" : "Value selected",
+                                systemImage: trimmedSelector.isEmpty ? "circle.dashed" : "checkmark.circle.fill"
+                            )
+                            .foregroundStyle(trimmedSelector.isEmpty ? Color.secondary : Color.green)
+                            Spacer()
                             Button {
                                 openIdentifyBrowser()
                             } label: {
-                                Label(draft.selector.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Identify in Chrome" : "Re-identify in Chrome", systemImage: "viewfinder")
+                                Label(trimmedSelector.isEmpty ? "Choose in Browser" : "Choose Again", systemImage: "viewfinder")
                             }
                             .disabled(validatedURL == nil || !chromiumAvailable)
                         }
@@ -196,60 +137,87 @@ struct TrackerEditorView: View {
                         }
 
                         if !capturedText.isEmpty {
-                            Text(capturedText)
+                            Text("Preview: \(capturedText)")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                                 .lineLimit(3)
                                 .textSelection(.enabled)
                         }
 
-                        if let bbox = draft.elementBoundingBox {
-                            Text("Bounds: \(formattedBoundingBox(bbox))")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-
                         if !trimmedSelector.isEmpty {
                             previewSection
                         }
 
-                        // v0.21.9: secondary elements editor. Hidden until
-                        // the primary element has been captured (no point
-                        // adding "secondary text" before the main text
-                        // exists). Renders one row per element with the
-                        // selector + a rename field + a remove button, plus
-                        // a "+ Add secondary element" button that opens
-                        // Identify-in-Chrome for the new element.
-                        //
-                        // Flag history (see ChromeBrowserProfile.enableSecondaryElements):
-                        //   • v0.21.48 (voice 4277, 2026-05-27) — flag flipped to
-                        //     `false`; UX removed from the editor while the model +
-                        //     widget render path stayed intact, so re-enable would
-                        //     be a one-line flip.
-                        //   • v0.21.76 (2026-06-01, voice via MBP-CC bridge) —
-                        //     RE-ENABLED. Ethan wants the secondary-line UX back
-                        //     so trackers can show a small caption (e.g. "Resets
-                        //     9:27 PM") under the hero number on the small widget.
-                        //
-                        // The flag lives on ChromeBrowserProfile because that's
-                        // the cross-target spot already imported everywhere;
-                        // semantically it's a generic UX flag, not a Chrome-
-                        // specific one. To hide the UI again, flip the flag back
-                        // to `false` — every consumer already respects the gate.
-                        if ChromeBrowserProfile.enableSecondaryElements && !trimmedSelector.isEmpty {
-                            secondaryElementsSection
-                        }
                     }
                 } header: {
-                    Text("Capture")
+                    Text("Choose from the webpage")
                 }
 
                 Section {
-                    hooksPanel
-                } header: {
-                    Text("Hooks")
+                    DisclosureGroup("Advanced options", isExpanded: $showsAdvancedOptions) {
+                        VStack(alignment: .leading, spacing: 16) {
+                            HStack(spacing: 8) {
+                                Text("Refresh every")
+                                Spacer()
+                                TextField("", value: refreshIntervalDisplayBinding, format: .number)
+                                    .multilineTextAlignment(.trailing)
+                                    .frame(width: 60)
+                                    .textFieldStyle(.roundedBorder)
+                                Picker("", selection: $refreshIntervalUnit) {
+                                    Text("seconds").tag(RefreshIntervalUnit.seconds)
+                                    Text("minutes").tag(RefreshIntervalUnit.minutes)
+                                    Text("hours").tag(RefreshIntervalUnit.hours)
+                                }
+                                .pickerStyle(.menu)
+                                .frame(width: 105)
+                                .labelsHidden()
+                            }
+
+                            TextField("Short widget label (optional)", text: $labelText)
+
+                            Picker("Value display", selection: $draft.valueTransform) {
+                                ForEach(ValueTransform.allCases, id: \.self) { transform in
+                                    Text(transform.displayName).tag(transform)
+                                }
+                            }
+
+                            Toggle("Remove letters from the displayed value", isOn: $draft.valueDisplayOptions.stripLetters)
+                            Toggle("Remove the % symbol", isOn: $draft.valueDisplayOptions.stripPercentSymbol)
+
+                            if !trimmedSelector.isEmpty {
+                                Divider()
+                                DisclosureGroup("Selection details") {
+                                    VStack(alignment: .leading, spacing: 6) {
+                                        Text(trimmedSelector)
+                                            .font(.system(.caption, design: .monospaced))
+                                            .textSelection(.enabled)
+                                        if let bbox = draft.elementBoundingBox {
+                                            Text("Bounds: \(formattedBoundingBox(bbox))")
+                                                .font(.caption)
+                                                .foregroundStyle(.secondary)
+                                        }
+                                    }
+                                    .padding(.top, 6)
+                                }
+                            }
+
+                            if ChromeBrowserProfile.enableSecondaryElements && !trimmedSelector.isEmpty {
+                                Divider()
+                                secondaryElementsSection
+                            }
+
+                            Divider()
+                            Text("Automatic repair")
+                                .font(.headline)
+                            Text("Optional actions that run after a refresh, including repairing a broken webpage selection.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            hooksPanel
+                        }
+                        .padding(.vertical, 8)
+                    }
                 } footer: {
-                    Text("Hooks fire after every scrape. New trackers get the built-in auto-repair failure hook by default — it spawns Claude Code in a new Terminal window when a scrape fails so the agent can re-identify the broken element. Disable it per tracker if you'd rather repair manually.")
+                    Text("Most people can leave these settings alone.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -272,7 +240,7 @@ struct TrackerEditorView: View {
             }
             .padding()
         }
-        .navigationTitle(mode == .add ? "Add Tracker" : "Edit Tracker")
+        .navigationTitle(mode == .add ? "Add Tracked Value" : "Edit Tracked Value")
         .onChange(of: draft.renderMode) { newMode in
             draft.refreshIntervalSec = newMode.defaultRefreshIntervalSec
         }
@@ -544,15 +512,15 @@ struct TrackerEditorView: View {
 
     private var captureValidationMessage: String {
         if validatedURL == nil {
-            return "Enter a valid URL before opening Chrome to identify an element."
+            return "Enter a valid webpage before choosing a value."
         }
 
         if trimmedSelector.isEmpty {
-            return "Use Identify in Chrome to capture a CSS selector before saving."
+            return "Choose the value you want from the webpage before saving."
         }
 
         if draft.elementBoundingBox == nil {
-            return "Re-identify the element to capture its bounds."
+            return "Choose the value again so the app can remember its page area."
         }
 
         return ""
