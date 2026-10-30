@@ -4,7 +4,7 @@
 
 [![Status](https://img.shields.io/badge/status-v0.21.83-orange.svg)](PLAN.md)
 [![Release](https://github.com/EthanSK/stats-widget-from-website/actions/workflows/release.yml/badge.svg)](https://github.com/EthanSK/stats-widget-from-website/actions/workflows/release.yml)
-[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![License: No-sale source](https://img.shields.io/badge/License-No--sale%20source-purple.svg)](LICENSE)
 [![Platform: macOS](https://img.shields.io/badge/platform-macOS%2013%2B-blue.svg)](#)
 [![Website](https://img.shields.io/badge/website-ethansk.github.io-7eecaf.svg)](https://ethansk.github.io/stats-widget-from-website/)
 [![Latest release](https://img.shields.io/github/v/release/EthanSK/stats-widget-from-website?include_prereleases&sort=semver&label=release&color=ffe27a)](https://github.com/EthanSK/stats-widget-from-website/releases)
@@ -239,7 +239,7 @@ and [docs/app-store.md](docs/app-store.md).
 
 ## License
 
-[MIT](LICENSE) — copyright Ethan Sarif-Kattan, 2026.
+Source-available under [Ethan Source-Available No-Sale Terms 1.0](LICENSE). You can use and modify the covered code, including internally at work, and share it without charge. Selling the software, modified versions, paid access, or bundles requires a separate commercial license. Earlier licenses and third-party rights remain in force. See [scope and release policy](LICENSING.md).
 
 ## Acknowledgments
 
