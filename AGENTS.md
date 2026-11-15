@@ -3,6 +3,14 @@
 Conventions for any AI agent (Claude Code, OpenClaw, Codex, etc.) working in
 this repo. Project-level rules take precedence over global CLAUDE.md.
 
+## Project ownership and verification
+
+This is a purely vibe-coded project. Ethan is not reviewing the changes made;
+install it and test it. Do not hand code review back to him or create a
+user-review requirement. Agents own implementation review, installation and
+verification, including checking that the configured accounts are still logged
+in and their stats have refreshed. User-requested — 2026-11-15.
+
 ## Version: single source of truth
 
 The marketing version + Sparkle build number live in **one place**:
