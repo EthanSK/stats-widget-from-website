@@ -77,7 +77,7 @@ settings:
     # from Bundle.main.infoDictionary at runtime, so nothing else needs touching.
     # Enforced by .githooks/pre-commit (see core.hooksPath in repo config) and
     # by scripts/validate_release_metadata.py.
-    MARKETING_VERSION: "0.21.85"
+    MARKETING_VERSION: "0.21.91"
     # v0.21.43 (Ethan voice 4212, 2026-05-26) — jump-leap past historical
     # mega-numbers. Pre-v0.21.43 build-suffix releases (e.g. v0.21.41-build.90)
     # encoded CFBundleVersion as `base_build * 100000 + run_number`,
@@ -97,7 +97,7 @@ settings:
     # tag-channel only) so the mega-number space never grows again.
     # See LEARNINGS.md "sparkle:version mega-number drift" entry for
     # the full incident.
-    CURRENT_PROJECT_VERSION: "129700132"
+    CURRENT_PROJECT_VERSION: "129700138"
 
 packages:
   Sparkle:
@@ -422,12 +422,9 @@ targets:
         com.apple.security.network.client: true
         com.apple.security.application-groups:
           - T34G959ZG8.group.com.ethansk.macos-widgets-stats-from-website
-        # Hard-coded team prefix instead of $(AppIdentifierPrefix); see
-        # MacosWidgetsStatsFromWebsite.entitlements for why $(AppIdentifierPrefix)
-        # silently fails to substitute in Debug builds without a resolved
-        # provisioning profile, triggering RunningBoard error 5.
-        keychain-access-groups:
-          - T34G959ZG8.com.ethansk.macos-widgets-stats-from-website
+        # Team-prefixed macOS app groups work without a provisioning
+        # profile. Keep the unrelated, profile-gated Keychain Access
+        # Groups entitlement absent; KeychainHelper uses its fallback.
 
   # Hook-system + lightweight browser-selection unit tests. The target
   # pulls in Shared/ sources only (no MainApp SwiftUI surface), so tests
@@ -446,6 +443,9 @@ targets:
           - MCP
           - SelectorPacks
           - SignIn
+      # Exercise token rotation against a disposable native keychain,
+      # without importing the sign-in UI or using the login keychain.
+      - path: MacosWidgetsStatsFromWebsite/Shared/SignIn/KeychainHelper.swift
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.ethansk.macos-widgets-stats-from-website.hook-tests

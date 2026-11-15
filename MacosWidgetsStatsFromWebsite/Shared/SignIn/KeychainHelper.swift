@@ -42,7 +42,7 @@ enum KeychainHelper {
         throw lastError ?? KeychainError.unexpectedStatus(errSecInternalError)
     }
 
-    private static func saveGenericPassword(_ password: String, service: String, account: String, accessGroup: String?) throws {
+    static func saveGenericPassword(_ password: String, service: String, account: String, accessGroup: String?, keychain: SecKeychain? = nil) throws {
         let data = Data(password.utf8)
         var query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
@@ -53,9 +53,25 @@ enum KeychainHelper {
             query[kSecAttrAccessGroup as String] = accessGroup
         }
 
-        SecItemDelete(query as CFDictionary)
+        if let keychain {
+            // Used by isolated native regression tests, never the login
+            // keychain. Match only this keychain when rotating its fixture.
+            query[kSecMatchSearchList as String] = [keychain]
+        }
+
+        // Ethan's "keeps asking for pw" was the CLI reading mcp-secret,
+        // not the signing key. Restarting the host rotates this token;
+        // deleting/recreating it discarded every saved Always Allow grant.
+        // Update the value in place so the item and its native ACL survive.
+        let updateStatus = SecItemUpdate(query as CFDictionary, [kSecValueData as String: data] as CFDictionary)
+        if updateStatus == errSecSuccess { return }
+        guard updateStatus == errSecItemNotFound else {
+            throw KeychainError.unexpectedStatus(updateStatus)
+        }
 
         var attributes = query
+        attributes.removeValue(forKey: kSecMatchSearchList as String)
+        if let keychain { attributes[kSecUseKeychain as String] = keychain }
         attributes[kSecValueData as String] = data
         attributes[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
 
@@ -65,11 +81,11 @@ enum KeychainHelper {
         }
     }
 
-    static func readGenericPassword(service: String, account: String) throws -> String? {
+    static func readGenericPassword(service: String, account: String, allowInteraction: Bool = true) throws -> String? {
         var lastError: Error?
         for accessGroup in accessGroupCandidates() {
             do {
-                if let password = try readGenericPassword(service: service, account: account, accessGroup: accessGroup) {
+                if let password = try readGenericPassword(service: service, account: account, accessGroup: accessGroup, allowInteraction: allowInteraction) {
                     return password
                 }
             } catch {
@@ -84,7 +100,7 @@ enum KeychainHelper {
         return nil
     }
 
-    private static func readGenericPassword(service: String, account: String, accessGroup: String?) throws -> String? {
+    private static func readGenericPassword(service: String, account: String, accessGroup: String?, allowInteraction: Bool) throws -> String? {
         var query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -94,6 +110,11 @@ enum KeychainHelper {
         ]
         if let accessGroup {
             query[kSecAttrAccessGroup as String] = accessGroup
+        }
+        if !allowInteraction {
+            // Automated checks must prove saved authorization works; they
+            // must not silently ask Ethan to approve another native prompt.
+            query[kSecUseAuthenticationUI as String] = kSecUseAuthenticationUIFail
         }
 
         var result: CFTypeRef?
@@ -141,7 +162,7 @@ enum KeychainHelper {
         return token
     }
 
-    static func currentMCPToken() throws -> String? {
-        try readGenericPassword(service: mcpService, account: mcpAccount)
+    static func currentMCPToken(allowInteraction: Bool = true) throws -> String? {
+        try readGenericPassword(service: mcpService, account: mcpAccount, allowInteraction: allowInteraction)
     }
 }

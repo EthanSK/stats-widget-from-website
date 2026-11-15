@@ -46,13 +46,15 @@
 //  the user hasn't clicked yet, but the next access fires its own prompt
 //  before the first resolves → TWO stacked dialogs in the queue.
 //
-//  Why the host has no `application-groups` entitlement (=Apple's intended
-//  fix): adding that entitlement re-introduces the AMFI -413 SIGKILL
-//  documented in v0.21.31 — `com.apple.security.application-groups` is an
-//  AMFI-restricted entitlement on Sonoma+ and requires an embedded Developer
-//  ID Direct Distribution provisioning profile to validate. The Sparkle
-//  release flow ships profile-free. So we cannot use the architecturally
-//  correct fix without rebuilding the entire CI signing pipeline.
+//  v0.21.89 update: the Release host now has native membership of its
+//  TEAM-ID-prefixed macOS group, just like Debug and the widget. Apple
+//  documents that this group format needs no provisioning profile. The
+//  v0.21.31 experiment removed both this and Keychain Access Groups; it
+//  did not isolate their different authorization requirements. Only the
+//  Keychain Access Groups entitlement remains absent. Native membership
+//  avoids the other-app-data dialog for our own container; this prewarm
+//  remains first for compatibility with builds missing membership.
+//  https://developer.apple.com/documentation/xcode/accessing-app-group-containers
 //
 //  ============================================================================
 //  THE FIX
@@ -68,10 +70,9 @@
 //  Net effect: ONE dialog per boot instead of TWO.
 //
 //  Caveats:
-//   - This does NOT eliminate the dialog entirely. Eliminating it requires
-//     re-adding the App Group entitlement + embedding a Direct Distribution
-//     provisioning profile in the bundle. That's the v0.22 architectural
-//     fix tracked separately.
+//   - A correctly signed group member does not need this TCC grant.
+//     Builds missing membership may still prompt; prewarm only coalesces
+//     their accesses and cannot substitute for correct signing.
 //   - If the user clicks "Don't Allow", subsequent file ops will all fail.
 //     We log a clear warning so the activity log captures it; users in
 //     that state need to re-grant via System Settings → Privacy & Security

@@ -2,7 +2,7 @@
 
 **See any number on any logged-in webpage at a glance — without opening another tab.**
 
-[![Status](https://img.shields.io/badge/status-v0.21.83-orange.svg)](PLAN.md)
+[![Status](https://img.shields.io/badge/status-v0.21.91-orange.svg)](PLAN.md)
 [![Release](https://github.com/EthanSK/stats-widget-from-website/actions/workflows/release.yml/badge.svg)](https://github.com/EthanSK/stats-widget-from-website/actions/workflows/release.yml)
 [![License: No-sale source](https://img.shields.io/badge/License-No--sale%20source-purple.svg)](LICENSE)
 [![Platform: macOS](https://img.shields.io/badge/platform-macOS%2013%2B-blue.svg)](#)
@@ -138,11 +138,28 @@ app-owned configuration store.
    refresh use that tracker's account, even when several trackers share the
    exact same URL and selector.
 
+Background checks use one account's Chromium at a time by default. The app
+keeps the current account warm, closes its background browser when another
+account needs a turn, and reopens Chromium with that account's separate profile.
+Visible sign-in and Identify windows stay open. Chromium still has several
+helper processes; the limit applies to background browser instances.
+
+The stored `preferences.singleBackgroundBrowserMode` setting defaults to `true`
+for existing configurations too. Set it to `false` to retain concurrent account
+browsers; there is currently no dedicated settings switch. Account switching
+trades browser startup work for lower idle memory use.
+
 Browser-account data stays under the app's local Application Support folder.
 Resetting or removing an account moves its data to the Trash, and an account
 cannot be removed while a tracker still uses it.
 
 ## Wiring up an AI agent (optional)
+
+For unattended socket authentication, `macos-widgets-stats-from-website
+mcp-token --no-interaction` reads the existing connection token only when saved
+Keychain approval already permits it. It fails instead of opening a password
+dialog. Keep token output private. App restarts rotate the token in place so
+saved helper approvals survive.
 
 The app embeds an MCP server. Any external MCP client or local automation can
 connect to it and manage trackers, trigger scrapes, request the visible

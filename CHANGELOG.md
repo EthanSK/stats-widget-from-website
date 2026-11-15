@@ -5,6 +5,20 @@ Release-by-release notes for the Stats Widget from Website project.
 Format: each entry is dated, lists the user-visible changes first, then the
 under-the-hood / signing / packaging changes. Newest first.
 
+## v0.21.91 — 2026-11-15
+
+- Run background checks through one Chromium account at a time by default,
+  while preserving separate logins and visible sign-in/Identify windows.
+- Restore native shared-folder membership to the signed host and CLI so the
+  app can save readings without relying on other-app-data approval.
+- Preserve the existing memory-pressure safeguard and cancel queued checks
+  cleanly when it pauses browser work.
+- Wait for Chromium to finish exiting before handing over to another account.
+- Preserve saved authorization during ordinary builds instead of resetting
+  app-data permission every time.
+- Rotate the local MCP connection token in place so app restarts preserve
+  saved Keychain approvals for the command-line helper.
+
 ## v0.21.85 — 2026-08-11
 
 ### Clearer recovery when a tracked page needs attention

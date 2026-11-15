@@ -18,7 +18,7 @@ final class BackgroundScheduler: ObservableObject {
         "com.ethansk.macos-widgets-stats-from-website.trackerReadingDidChange"
     )
 
-    /// Tracker IDs currently being scraped on-demand (Scrape Now). Exposed so
+    /// Tracker IDs queued or being scraped (scheduled or Scrape Now). Exposed so
     /// list rows / toolbar buttons can show a busy indicator. Published so
     /// SwiftUI observers refresh when the set changes.
     @Published private(set) var inFlightTrackerIDs: Set<UUID> = []
@@ -160,6 +160,7 @@ final class BackgroundScheduler: ObservableObject {
     }
 
     private func scrapeAllDueTrackers(force: Bool, source: String) {
+        guard EmergencyMemoryRelief.shared.permit() != nil else { return }
         let configuration = AppGroupStore.loadSharedConfiguration()
         let readings = AppGroupStore.loadReadings().readings
         let plan = DueScrapePlanner.plan(
@@ -240,28 +241,11 @@ final class BackgroundScheduler: ObservableObject {
             return
         }
 
-        markInFlight(tracker.id)
-        scrape(tracker) { [weak self] in
-            self?.markFinished(tracker.id)
-        }
+        scrape(tracker)
     }
 
     func isScrapeInFlight(trackerID: UUID) -> Bool {
         inFlightTrackerIDs.contains(trackerID)
-    }
-
-    private func markInFlight(_ trackerID: UUID) {
-        DispatchQueue.main.async { [weak self] in
-            guard let self else { return }
-            self.inFlightTrackerIDs.insert(trackerID)
-        }
-    }
-
-    private func markFinished(_ trackerID: UUID) {
-        DispatchQueue.main.async { [weak self] in
-            guard let self else { return }
-            self.inFlightTrackerIDs.remove(trackerID)
-        }
     }
 
     private func schedule(_ tracker: Tracker) {
@@ -332,6 +316,8 @@ final class BackgroundScheduler: ObservableObject {
     }
 
     private func scrape(_ tracker: Tracker, completion: (() -> Void)? = nil) {
+        let relief = EmergencyMemoryRelief.shared
+        guard let permit = relief.permit() else { completion?(); return }
         guard tracker.isScrapeReady else {
             ActivityLogger.log("scheduler", "skipped scrape for incomplete tracker", metadata: [
                 "reason": "selector-empty",
@@ -342,9 +328,22 @@ final class BackgroundScheduler: ObservableObject {
             return
         }
 
-        ChromeCDPScraper.scrape(tracker: tracker) { [weak self] result in
-            self?.record(result: result, for: tracker)
-            completion?()
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { completion?(); return }
+            // The due watchdog can run again while round-robin checks wait
+            // for another account. Coalesce duplicate manual/scheduled work
+            // rather than growing an unbounded backlog of the same tracker.
+            guard self.inFlightTrackerIDs.insert(tracker.id).inserted else {
+                completion?()
+                return
+            }
+            ChromeCDPScraper.scrape(tracker: tracker) { [weak self] result in
+                if relief.isValid(permit) {
+                    self?.record(result: result, for: tracker)
+                }
+                self?.inFlightTrackerIDs.remove(tracker.id)
+                completion?()
+            }
         }
     }
 

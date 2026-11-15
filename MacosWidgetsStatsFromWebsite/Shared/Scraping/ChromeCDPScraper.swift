@@ -12,6 +12,7 @@ final class ChromeCDPScraper {
     typealias Completion = (Result<TrackerReading, Error>) -> Void
 
     private static var activeScrapers: [UUID: ChromeCDPScraper] = [:]
+    private static let backgroundScrapeQueue = BackgroundScrapeQueue()
 
     /// v0.21.8 observability: read-only count of in-flight scrapers so other
     /// subsystems (browser teardown) can log whether they collided with one.
@@ -149,6 +150,7 @@ final class ChromeCDPScraper {
     private let completion: Completion
     private var configuration: ChromeBrowserLaunchConfiguration?
     private var backgroundUseConfiguration: ChromeBrowserLaunchConfiguration?
+    private var backgroundBrowserLease: ChromeBrowserProfile.BackgroundBrowserLease?
     private var target: ChromeBrowserTarget?
     private var shouldCloseTargetOnFinish = false
     // v0.21.81 battery-drain fix: true when this scrape REUSED a parked
@@ -180,57 +182,99 @@ final class ChromeCDPScraper {
     private static let selectorPollLogEveryN: Int = 8
 
     static func scrape(tracker: Tracker, completion: @escaping Completion) {
-        let scraper = ChromeCDPScraper(tracker: tracker, completion: completion)
-
-        // v0.21.14 — stagger scrape kickoffs on the same profile by at
-        // least `ChromeBrowserProfile.minScrapeStartGap` seconds (15s).
-        // `reserveScrapeStart` atomically advances the per-profile
-        // watermark BEFORE returning the delay, so concurrent callers
-        // race-correctly serialize (see ChromeBrowserProfile.reserveScrapeStart
-        // docstring for race-correctness rationale).
-        //
-        // Fixes the multi-tracker CDP parallel-scrape flake (Ethan voice
-        // 3988): the MBP-side activity.log was showing intermittent
-        // `CDP websocket disconnected` + `scrape failed` storms whenever
-        // two trackers' NSBackgroundActivityScheduler windows fired
-        // within a second of each other. Layered ON TOP OF v0.21.12's
-        // `pinnedActiveScrapeTargets` orphan-sweep pin, which handles
-        // the residual case where two starts still happen to overlap
-        // (e.g. one already in flight when the next is forced via
-        // Scrape Now).
-        let delay = ChromeBrowserProfile.shared.reserveScrapeStart(profileName: tracker.browserProfile)
-
-        let kickoff = {
-            activeScrapers[scraper.scrapeID] = scraper
-            scraper.start()
+        let relief = EmergencyMemoryRelief.shared
+        guard let permit = relief.permit() else {
+            completion(.failure(CancellationError()))
+            return
         }
+        DispatchQueue.main.async {
+            let serialized = AppGroupStore.loadSharedConfiguration().preferences.singleBackgroundBrowserMode
+            backgroundScrapeQueue.enqueue(profileName: tracker.browserProfile, serialized: serialized) { releaseTurn in
+                let scraper = ChromeCDPScraper(tracker: tracker) { result in
+                    completion(relief.isValid(permit) ? result : .failure(CancellationError()))
+                    // finish() removes the active scraper on this main-queue
+                    // turn. Start the next queued job after that cleanup.
+                    DispatchQueue.main.async(execute: releaseTurn)
+                }
 
-        // v0.21.48 — defer the kickoff if an Identify-in-Chrome flow is
-        // currently driving the foreground Chromium for this profile's
-        // CDP port. Voice 4277 root cause: background scrapers fired
-        // their NSBackgroundActivityScheduler windows DURING an Identify
-        // session, each called `ensureLaunched(foreground: false)`, hit
-        // the `joined in-flight Chrome launch` path inside the same
-        // pending-launch slot the foreground identify was using, and
-        // ALL of those scrape completions ran `openTab(...)` the moment
-        // the visible Chromium booted — opening 3-4 extra tracker tabs
-        // in the user's window between the about:blank placeholder
-        // (now removed) and the Identify-target tab.
-        //
-        // `whenIdentifyClear` runs `body` immediately if the port is
-        // free, otherwise enqueues it. Combined with the v0.21.48
-        // `ensureLaunched(foreground: true)` rewrite that ALWAYS tears
-        // down + spawns fresh for foreground requests, this gives a
-        // single-tab Chromium window during Identify. Pending scrapes
-        // drain naturally when Identify finishes.
-        let port = ChromeBrowserProfile.shared.configuration(profileName: tracker.browserProfile).cdpPort
-        let dispatchKickoff = {
-            ChromeBrowserProfile.shared.whenIdentifyClear(port: port, kickoff)
-        }
-        if delay > 0 {
-            DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: dispatchKickoff)
-        } else {
-            DispatchQueue.main.async(execute: dispatchKickoff)
+                // v0.21.14 — stagger scrape kickoffs on the same profile by at
+                // least `ChromeBrowserProfile.minScrapeStartGap` seconds (15s).
+                // `reserveScrapeStart` atomically advances the per-profile
+                // watermark BEFORE returning the delay, so concurrent callers
+                // race-correctly serialize (see ChromeBrowserProfile.reserveScrapeStart
+                // docstring for race-correctness rationale).
+                //
+                // Fixes the multi-tracker CDP parallel-scrape flake (Ethan voice
+                // 3988): the MBP-side activity.log was showing intermittent
+                // `CDP websocket disconnected` + `scrape failed` storms whenever
+                // two trackers' NSBackgroundActivityScheduler windows fired
+                // within a second of each other. Layered ON TOP OF v0.21.12's
+                // `pinnedActiveScrapeTargets` orphan-sweep pin, which handles
+                // the residual case where two starts still happen to overlap
+                // (e.g. one already in flight when the next is forced via
+                // Scrape Now).
+                let delay = ChromeBrowserProfile.shared.reserveScrapeStart(profileName: tracker.browserProfile)
+
+                let kickoff = {
+                    // Retain the installed exhaustion safeguard for work that
+                    // waited in the round-robin queue, including after recovery.
+                    guard relief.isValid(permit) else {
+                        scraper.finish(.failure(CancellationError()))
+                        return
+                    }
+                    activeScrapers[scraper.scrapeID] = scraper
+                    scraper.start()
+                }
+
+                // v0.21.48 — defer the kickoff if an Identify-in-Chrome flow is
+                // currently driving the foreground Chromium for this profile's
+                // CDP port. Voice 4277 root cause: background scrapers fired
+                // their NSBackgroundActivityScheduler windows DURING an Identify
+                // session, each called `ensureLaunched(foreground: false)`, hit
+                // the `joined in-flight Chrome launch` path inside the same
+                // pending-launch slot the foreground identify was using, and
+                // ALL of those scrape completions ran `openTab(...)` the moment
+                // the visible Chromium booted — opening 3-4 extra tracker tabs
+                // in the user's window between the about:blank placeholder
+                // (now removed) and the Identify-target tab.
+                //
+                // `whenIdentifyClear` runs `body` immediately if the port is
+                // free, otherwise enqueues it. Combined with the v0.21.48
+                // `ensureLaunched(foreground: true)` rewrite that ALWAYS tears
+                // down + spawns fresh for foreground requests, this gives a
+                // single-tab Chromium window during Identify. Pending scrapes
+                // drain naturally when Identify finishes.
+                let port = ChromeBrowserProfile.shared.configuration(profileName: tracker.browserProfile).cdpPort
+                let dispatchKickoff = {
+                    ChromeBrowserProfile.shared.whenIdentifyClear(port: port) {
+                        guard relief.isValid(permit) else {
+                            scraper.finish(.failure(CancellationError()))
+                            return
+                        }
+                        if serialized {
+                            ChromeBrowserProfile.shared.prepareSingleBackgroundBrowser(
+                                profileName: tracker.browserProfile,
+                                canStart: { relief.isValid(permit) }
+                            ) { result in
+                                switch result {
+                                case .success(let lease):
+                                    scraper.backgroundBrowserLease = lease
+                                    ChromeBrowserProfile.shared.whenIdentifyClear(port: port, kickoff)
+                                case .failure(let error):
+                                    scraper.finish(.failure(error))
+                                }
+                            }
+                        } else {
+                            kickoff()
+                        }
+                    }
+                }
+                if delay > 0 {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: dispatchKickoff)
+                } else {
+                    DispatchQueue.main.async(execute: dispatchKickoff)
+                }
+            }
         }
     }
 
@@ -1375,6 +1419,7 @@ final class ChromeCDPScraper {
                     ChromeBrowserProfile.shared.endBackgroundUse(configuration: backgroundUseConfiguration)
                 }
                 ActivityLogger.log("scrape", captured.logMessage(for: result), metadata: captured.logMetadata(for: result))
+                captured.backgroundBrowserLease = nil
                 captured.completion(result)
                 Self.activeScrapers[captured.scrapeID] = nil
             }

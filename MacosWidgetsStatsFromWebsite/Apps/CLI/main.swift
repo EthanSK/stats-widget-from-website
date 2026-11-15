@@ -34,7 +34,9 @@ if arguments.contains("--mcp-stdio") || arguments.first == "mcp-stdio" {
 
 switch arguments.first {
 case "mcp-token":
-    if let token = MCPServer.shared.currentToken() {
+    // Verification/automation can fail fast instead of opening a password
+    // dialog. Success then proves the saved native approval really works.
+    if let token = MCPServer.shared.currentToken(allowInteraction: !arguments.contains("--no-interaction")) {
         print(token)
     } else {
         fputs("No MCP token is available. Launch the app to start the socket server.\n", stderr)
@@ -124,6 +126,7 @@ private enum ScrapeAllCommand {
                             return (false, "record failed: \(error.localizedDescription)")
                         }
                     case .failure(let error):
+                        if error is CancellationError { return (false, nil) }
                         do {
                             _ = try AppGroupStore.recordFailure(message: error.localizedDescription, for: tracker)
                         } catch {

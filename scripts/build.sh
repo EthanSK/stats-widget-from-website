@@ -186,29 +186,18 @@ fi
 if [[ "$DEV_RESIGN_FLAG" == "1" ]]; then
   echo "build.sh: DEV_RESIGN=1 — skipping strict App Group signature/profile checks (dev-resign workaround applied below)"
 else
-  # v0.21.31 — host no longer carries `com.apple.security.application-groups`
-  # or `keychain-access-groups` (both are AMFI-restricted on Sonoma+ and require
-  # an embedded provisioning profile to validate; the Sparkle/Developer-ID
-  # distribution flow ships profile-free, which caused v0.21.30 to be
-  # SIGKILL'd by amfid with `Error: Code=-413 "No matching profile found"`).
-  # The host now resolves its Group Containers path manually (see
-  # MacosWidgetsStatsFromWebsite/Shared/AppGroup/AppGroupPaths.swift) and the
-  # widget appex (still sandboxed) keeps the entitlement + an embedded
-  # provisioning profile, so only the WIDGET needs to be validated here.
-  #
-  # If a future change re-introduces the host entitlement together with an
-  # embedded provisioning profile, restore the matching validators below.
+  # The host and widget both belong to the existing TEAM-ID-prefixed
+  # macOS group. This format needs no profile; Keychain Access Groups
+  # remains absent from the unprovisioned host/CLI signatures.
+  require_signed_app_group_entitlement "$APP_PATH" "host app"
   require_signed_app_group_entitlement "$WIDGET_PATH" "widget extension"
   require_profile_app_group_entitlement "$WIDGET_PATH" "widget extension"
-  echo "build.sh: App Group entitlements verified for widget extension ($APP_GROUP_ID); host intentionally bare"
+  echo "build.sh: App Group entitlements verified for host and widget ($APP_GROUP_ID)"
 fi
 
-# Defensively reset any stale TCC SystemPolicyAppData grant for this bundle.
-# Debug builds use unsandboxed entitlements so this prompt should never fire,
-# but if a previous (sandboxed) Debug build left an auth_value=5 row in TCC.db,
-# resetting it ensures the next launch starts clean.
-# Failure here is non-fatal — the bundle just may not have a row yet.
-tccutil reset SystemPolicyAppData com.ethansk.macos-widgets-stats-from-website >/dev/null 2>&1 || true
+# Preserve existing native authorization across ordinary rebuilds. A TCC
+# reset is a targeted recovery action, not a normal build step; resetting
+# here used to manufacture another app-data prompt on the next launch.
 
 # ---------------------------------------------------------------------------
 # Post-build chronod-resign workaround (DEV ONLY)
@@ -372,12 +361,9 @@ CLI_BIN_DEST="$APP_PATH/Contents/MacOS/macos-widgets-stats-from-website"
 mkdir -p "$APP_PATH/Contents/MacOS"
 cp "$CLI_BIN_SRC" "$CLI_BIN_DEST"
 
-# Pick the entitlements file used to sign the embedded CLI. In DEV_RESIGN
-# mode the dev file strips the profile-gated entitlements that would
-# otherwise SIGKILL the CLI on launch. In normal mode (CI / profile-backed
-# Release builds) the canonical entitlements file is correct because the
-# embedded provisioning profile satisfies the App Group + keychain
-# entitlements.
+# Both CLI variants retain native macOS group membership and omit
+# profile-gated Keychain Access Groups. Keep the existing mode selection
+# so established DEV_RESIGN callers preserve their signing workflow.
 CLI_ENTITLEMENTS_PROD="MacosWidgetsStatsFromWebsite/Apps/CLI/MacosWidgetsStatsFromWebsiteCLI.entitlements"
 CLI_ENTITLEMENTS_DEV="MacosWidgetsStatsFromWebsite/Apps/CLI/MacosWidgetsStatsFromWebsiteCLI.dev.entitlements"
 if [[ "$DEV_RESIGN_FLAG" == "1" ]]; then

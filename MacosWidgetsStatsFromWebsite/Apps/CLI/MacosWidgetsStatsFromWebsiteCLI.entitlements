@@ -10,9 +10,5 @@
 	</array>
 	<key>com.apple.security.network.client</key>
 	<true/>
-	<key>keychain-access-groups</key>
-	<array>
-		<string>T34G959ZG8.com.ethansk.macos-widgets-stats-from-website</string>
-	</array>
 </dict>
 </plist>

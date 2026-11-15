@@ -24,6 +24,42 @@ Each entry looks like:
 (newest first)
 
 ---
+**Date:** 2026-11-15T17:55:00Z
+**Trigger:** Ethan reported repeated password prompts after the signing-key approval was saved.
+**Symptom:** securityd recorded four prompts for the installed command-line helper reading the mcp-secret item. The codesign key was a different item. A process snapshot missed the prompts because SecurityAgent had already exited after Ethan answered.
+**Root cause:** startSocketServer rotates the token on every host launch. KeychainHelper saved it by SecItemDelete followed by SecItemAdd, discarding saved helper access approvals. The current item’s Access Control list already showed both the host and helper after a user approval; the next launch would discard that list again.
+**Fix:** Update the existing value with SecItemUpdate; create an item only when none exists. Keep the account, service, access-group fallback, new-item accessibility and per-launch token rotation unchanged. Never expose or copy the token as a workaround.
+**Guard:** An isolated native-keychain test verifies the persistent item reference survives rotation while the value changes. Verify repeated reads by the signed installed CLI and a host restart before claiming the saved approval persists. A clean signing batch alone does not test app-token access.
+---
+
+---
+**Date:** 2026-11-15T17:43:00Z
+**Trigger:** Real account-switch verification of the round-robin mode.
+**Symptom:** The next account failed with Resource busy even though Chromium's CDP port was already closed. Activity logs showed the old parent process exiting one second later.
+**Root cause:** Browser.close and the existing terminateHeadlessInstance completion guarantee CDP shutdown, not completion of browser process/profile cleanup.
+**Fix:** Capture the previous dedicated browser PID and reuse waitForProcessExit before the final no-parent check. Keep the cross-process lease held through this real shutdown work; never launch a sibling while the old parent survives. Retain visible-browser exemptions and the existing emergency-memory permit checks.
+**Guard:** A subprocess regression test distinguishes a ready/connection signal from process exit. The installed final build must complete a real cross-account scrape without overlap or Resource busy.
+---
+
+---
+**Date:** 2026-11-15T17:36:00Z
+**Trigger:** Frozen stats readings and a requested default round-robin browser mode.
+**Symptom:** The widget could read old data while the Release host reported all seven readings absent and could not persist checks.
+**Root cause:** The profile-free Release host lacked membership of its own macOS app group. macOS 15+ app-data protection applies even without App Sandbox. The v0.21.31 experiment removed app groups and Keychain Access Groups together, so its claim that both always need a profile was not isolated.
+**Fix:** Restore only the existing TEAM-ID-prefixed group entitlement on host and release CLI. Keep Keychain Access Groups absent and retain its established default-group fallback. Apple's documentation explicitly permits this macOS group format without a profile: https://developer.apple.com/documentation/xcode/accessing-app-group-containers. A Developer-ID-signed profile-free probe read all seven saved readings; installed 0.21.89 then saved new successes and the existing widget configurations consumed them. Resetting TCC and changing only the container creator did not fix access; original metadata was restored. Ordinary builds no longer reset app-data authorization.
+**Guard:** Verify signed host/CLI group membership, absence of profile-gated Keychain Access Groups, real host persistence, and widget consumption. Do not infer that a hand-built path bypasses app-data protection. The historical v0.21.31 no-group guard below is superseded for TEAM-ID-prefixed macOS groups.
+
+---
+
+---
+**Date:** 2026-11-15T17:06:25Z
+**Trigger:** Preserving the installed app while adding round-robin account checks.
+**Symptom:** Main at cbe624a lacks the memory-exhaustion safeguard shipped locally as 0.21.86 from the uncommitted stats-memory-relief working copy. A main-based replacement omitted it.
+**Fix:** Restored EmergencyMemoryRelief and its scheduler, browser-launch, CLI and MCP guards from the installed baseline; integrated permit invalidation with queued checks. Keep its command-free root relay and user-visible browser protections unchanged.
+**Guard:** Match the actual installed feature set to the selected source before replacement, including uncommitted installation worktrees. The get_status memoryRelief field is one observable baseline check. A round-robin job cancelled during exhaustion must release its queue turn without recording a failed reading or launching another profile.
+---
+
+---
 **Date:** 2026-08-11T16:48:07Z
 **Trigger:** Ethan task 2026-08-11: explain why `chatgpt 2 weekly` and `chatgpt 3 weekly` simultaneously changed to needs-attention dashes while the other ChatGPT widgets continued updating
 **Symptom:** Both isolated-account widgets rendered a red dash and the generic truncated footer `Selector needs...`; the default ChatGPT tracker and account 4 still returned current percentages from the same analytics URL with the same primary selector.

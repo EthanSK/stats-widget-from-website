@@ -77,14 +77,11 @@ struct MacosWidgetsStatsFromWebsiteApp: App {
         //
         //   Net effect: ONE dialog per reboot instead of TWO.
         //
-        //   The architecturally correct fix (re-add `application-groups`
-        //   entitlement + embed a Developer ID Direct Distribution
-        //   provisioning profile) is deferred — would eliminate the
-        //   dialog ENTIRELY, but requires the CI signing pipeline to
-        //   gain profile-embedding support and risks reintroducing
-        //   the v0.21.31 AMFI -413 SIGKILL if the profile is ever
-        //   missing/expired. See TCCPrewarmer.swift for the full
-        //   write-up.
+        //   v0.21.89 restores native membership of the existing
+        //   TEAM-ID-prefixed macOS group without adding Keychain
+        //   Access Groups or a provisioning profile. Correctly signed
+        //   members no longer need the other-app-data grant. Keep
+        //   prewarm first for compatibility with older/dev signatures.
         //
         // CAUTION: do not reorder this below any line that touches
         // the Group Container. Doing so silently re-introduces the
@@ -113,6 +110,7 @@ struct MacosWidgetsStatsFromWebsiteApp: App {
             )
         }
         ChromeBrowserProfile.shared.terminateAppOwnedBrowsersFromPreviousSessions(reason: "startup")
+        _ = EmergencyMemoryRelief.shared
 
         do {
             _ = try AppGroupStore.backfillDefaultHookScaffoldIfNeeded()

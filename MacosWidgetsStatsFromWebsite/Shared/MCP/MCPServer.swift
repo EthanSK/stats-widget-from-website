@@ -36,8 +36,8 @@ final class MCPServer {
         try? KeychainHelper.rotateMCPToken()
     }
 
-    func currentToken() -> String? {
-        try? KeychainHelper.currentMCPToken()
+    func currentToken(allowInteraction: Bool = true) -> String? {
+        try? KeychainHelper.currentMCPToken(allowInteraction: allowInteraction)
     }
 
     func startSocketServer() {
@@ -1019,6 +1019,7 @@ private enum MCPToolDispatcher {
                 "widgetConfigurations": configuration.widgetConfigurations.count
             ],
             "health": health,
+            "memoryRelief": ["paused": EmergencyMemoryRelief.shared.permit() == nil],
             "tools": Array(MCPToolCatalog.toolNames).sorted()
         ]
     }
@@ -1310,6 +1311,7 @@ private enum MCPToolDispatcher {
             try AppGroupStore.record(reading: newReading, for: tracker)
             reading = newReading
         case .failure(let error):
+            if error is CancellationError { throw error }
             reading = try AppGroupStore.recordFailure(message: error.localizedDescription, for: tracker)
         }
 
@@ -1766,6 +1768,7 @@ private enum MCPToolDispatcher {
                 try AppGroupStore.record(reading: newReading, for: tracker)
                 reading = newReading
             case .failure(let error):
+                if error is CancellationError { throw error }
                 reading = try AppGroupStore.recordFailure(message: error.localizedDescription, for: tracker)
             }
             payload["postRepairReading"] = readingPayload(reading, includeHistory: true)

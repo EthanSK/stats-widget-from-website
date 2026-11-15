@@ -16,52 +16,22 @@
 	     docs/app-store.md. Hardened Runtime remains on for notarization. -->
 	<key>com.apple.security.app-sandbox</key>
 	<false/>
-	<!--
-	v0.21.31 — AMFI / -413 SIGKILL fix.
-
-	REMOVED from the HOST entitlements (were present in v0.21.30 and earlier):
-	  - com.apple.security.application-groups
-	  - keychain-access-groups
-
-	Why removed:
-	  Both are AMFI-restricted entitlements on macOS Sonoma+. Restricted
-	  entitlements require an embedded Developer ID provisioning profile
-	  (`Contents/embedded.provisionprofile`) to validate at exec time. The
-	  Sparkle distribution flow uses `method=developer-id` and ships
-	  PROFILE-FREE, so v0.21.30 signed the host with these entitlements but
-	  had NO embedded profile — every fresh launch triggered:
-	    amfid: Restricted entitlements not validated, bailing out.
-	      Error: Code=-413 "No matching profile found"
-	    taskgated-helper: Disallowing com.ethansk.macos-widgets-stats-from-website
-	      because no eligible provisioning profiles found
-	  and the kernel SIGKILL'd the host process before main().
-
-	Why removing both is safe:
-	  1. App-group data sharing — the host is UNSANDBOXED in Release
-	     (`app-sandbox = false` immediately above). It has direct
-	     filesystem access to `~/Library/Group Containers/<id>/`
-	     without the entitlement. AppGroupPaths.sharedContainerURL()
-	     was updated in v0.21.31 to FALL BACK to building that path
-	     manually when `containerURL(forSecurityApplicationGroupIdentifier:)`
-	     returns nil. The widget extension keeps its entitlement (it's
-	     sandboxed and MUST go through the security API), so both
-	     processes still meet at the same physical directory and shared
-	     data still flows.
-	  2. Keychain sharing — KeychainHelper.swift already candidates
-	     `[sharedAccessGroup, nil]` and falls back to the default access
-	     group (implicitly the team-id-prefixed bundle-id) when the
-	     entitlement is missing. The MCP shared-secret token is only
-	     read/written by the host process; the widget never touches it.
-
-	DO NOT re-add either entitlement here without ALSO embedding a
-	Developer ID Direct Distribution provisioning profile in the bundle.
-	The build-time `require_profile_app_group_entitlement` check in
-	scripts/build.sh was authored against an older expectation that one
-	would exist; in the Sparkle/Developer-ID path it doesn't, hence the
-	AMFI break. If the provisioning-profile path is ever revived, update
-	BOTH this file AND scripts/build.sh + scripts/sign-release.sh to
-	embed the profile + re-introduce the validator.
-	-->
+	<!-- v0.21.89: restore native membership of our existing shared folder.
+	     v0.21.31 removed BOTH app groups and keychain-access-groups after
+	     AMFI -413. That experiment did not isolate which needed a profile.
+	     Apple documents that TEAM-ID-prefixed macOS app groups do NOT need
+	     provisioning; group.-prefixed groups and Keychain Access Groups do.
+	     A Developer-ID signed, profile-free probe with ONLY this group ran
+	     and read all seven saved readings on macOS 27.2.1 (2026-11-15).
+	     Without membership, macOS 15+ protects even an unsandboxed host's
+	     own Group Container and may ask for other-app-data access.
+	     Keep keychain-access-groups absent: KeychainHelper falls back to
+	     the existing default access group. Do not change the group ID.
+	     https://developer.apple.com/documentation/xcode/accessing-app-group-containers -->
+	<key>com.apple.security.application-groups</key>
+	<array>
+		<string>T34G959ZG8.group.com.ethansk.macos-widgets-stats-from-website</string>
+	</array>
 	<key>com.apple.security.files.user-selected.read-write</key>
 	<true/>
 	<key>com.apple.security.network.client</key>

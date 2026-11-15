@@ -2,12 +2,11 @@
 # sign-release.sh — post-archive deep-sign for Sparkle/Developer ID releases.
 #
 # Why this exists (v0.21.22, voice 4002 / MBP-CC bridge msg-65036391):
-#   Under Xcode 16+ the Release archive can NOT be signed with a single
-#   xcodebuild pass because the App Groups + keychain-access-groups
-#   entitlements legitimately require a provisioning profile under Manual
-#   signing, and Developer ID distribution is profile-free. Automatic +
-#   Developer ID Application is also an Xcode conflict. The working
-#   pattern is:
+#   The original archive contained profile-gated Keychain Access Groups;
+#   Automatic + Developer ID Application also conflicts in Xcode. Keep
+#   the established archive-then-sign flow. Current TEAM-ID-prefixed
+#   macOS App Groups need no profile; Keychain Access Groups stays absent.
+#   The working pattern is:
 #     1. xcodebuild archive with CODE_SIGN_IDENTITY="-" (ad-hoc).
 #     2. This script walks the .app inside-out and re-signs every nested
 #        bundle with the real "Developer ID Application" identity using
@@ -51,6 +50,7 @@ fi
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 MAIN_ENTITLEMENTS="$REPO_ROOT/MacosWidgetsStatsFromWebsite/Apps/MainApp/MacosWidgetsStatsFromWebsite.entitlements"
 WIDGET_ENTITLEMENTS="$REPO_ROOT/MacosWidgetsStatsFromWebsite/Apps/WidgetExtension/MacosWidgetsStatsFromWebsiteWidget.entitlements"
+CLI_ENTITLEMENTS="$REPO_ROOT/MacosWidgetsStatsFromWebsite/Apps/CLI/MacosWidgetsStatsFromWebsiteCLI.entitlements"
 
 # v0.21.37 — Chromium helper entitlements directory. Mirrors what
 # scripts/embed-chromium.sh applies during the Xcode build phase. We HAVE to
@@ -71,7 +71,7 @@ CHROMIUM_HELPER_RENDERER_ENTITLEMENTS="$CHROMIUM_ENTITLEMENTS_DIR/helper-rendere
 CHROMIUM_HELPER_GPU_ENTITLEMENTS="$CHROMIUM_ENTITLEMENTS_DIR/helper-gpu.plist"
 CHROMIUM_HELPER_PLUGIN_ENTITLEMENTS="$CHROMIUM_ENTITLEMENTS_DIR/helper-plugin.plist"
 
-for entitlements_file in "$MAIN_ENTITLEMENTS" "$WIDGET_ENTITLEMENTS" \
+for entitlements_file in "$MAIN_ENTITLEMENTS" "$WIDGET_ENTITLEMENTS" "$CLI_ENTITLEMENTS" \
     "$CHROMIUM_APP_ENTITLEMENTS" "$CHROMIUM_HELPER_ENTITLEMENTS" \
     "$CHROMIUM_HELPER_RENDERER_ENTITLEMENTS" "$CHROMIUM_HELPER_GPU_ENTITLEMENTS" \
     "$CHROMIUM_HELPER_PLUGIN_ENTITLEMENTS"; do
@@ -222,7 +222,9 @@ fi
 CLI_BIN="$APP/Contents/MacOS/macos-widgets-stats-from-website"
 if [[ -f "$CLI_BIN" ]]; then
     echo "sign-release.sh: signing embedded CLI binary..."
-    sign "$CLI_BIN"
+    # Native TEAM-ID-prefixed group membership needs no profile and
+    # prevents other-app-data prompts for CLI/MCP checks as well.
+    sign "$CLI_BIN" "$CLI_ENTITLEMENTS"
 fi
 
 # 5. Finally, the outer .app — applies the main-app entitlements (sandbox

@@ -1261,13 +1261,30 @@ struct AppConfiguration: Codable {
 struct AppPreferences: Codable, Equatable {
     var notificationChannels: NotificationChannelPreferences
     var snapshotConcurrencyCap: Int
+    // Ethan's "round robin" mode: keep at most one background account browser.
+    // Missing keys opt existing installations into the RAM-saving default too.
+    var singleBackgroundBrowserMode: Bool
 
     init(
         notificationChannels: NotificationChannelPreferences = NotificationChannelPreferences(),
-        snapshotConcurrencyCap: Int = 8
+        snapshotConcurrencyCap: Int = 8,
+        singleBackgroundBrowserMode: Bool = true
     ) {
         self.notificationChannels = notificationChannels
         self.snapshotConcurrencyCap = snapshotConcurrencyCap
+        self.singleBackgroundBrowserMode = singleBackgroundBrowserMode
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case notificationChannels, snapshotConcurrencyCap, singleBackgroundBrowserMode
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        notificationChannels = try values.decodeIfPresent(NotificationChannelPreferences.self, forKey: .notificationChannels)
+            ?? NotificationChannelPreferences()
+        snapshotConcurrencyCap = try values.decodeIfPresent(Int.self, forKey: .snapshotConcurrencyCap) ?? 8
+        singleBackgroundBrowserMode = try values.decodeIfPresent(Bool.self, forKey: .singleBackgroundBrowserMode) ?? true
     }
 }
 

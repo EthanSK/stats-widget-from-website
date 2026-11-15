@@ -63,6 +63,99 @@ final class ChromeBrowserProfile {
     static let shared = ChromeBrowserProfile()
     static let defaultProfileName = Tracker.defaultBrowserProfile
 
+    /// Holds the cross-process turn used by Ethan's "round robin" mode.
+    /// The GUI, CLI and MCP subprocesses all use this same lock, so a manual
+    /// check cannot start another account while the host is still checking one.
+    final class BackgroundBrowserLease {
+        private let descriptor: Int32
+
+        init() throws {
+            let directory = AppGroupPaths.canonicalApplicationSupportURL()
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            let openedDescriptor = open(directory.appendingPathComponent(".background-browser.lock").path, O_CREAT | O_RDWR, 0o600)
+            guard openedDescriptor >= 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
+            while flock(openedDescriptor, LOCK_EX) != 0 {
+                if errno == EINTR { continue }
+                let code = errno
+                close(openedDescriptor)
+                throw NSError(domain: NSPOSIXErrorDomain, code: Int(code))
+            }
+            descriptor = openedDescriptor
+        }
+
+        deinit {
+            flock(descriptor, LOCK_UN)
+            close(descriptor)
+        }
+    }
+
+    /// Acquire one background-browser turn, then stop idle browsers belonging
+    /// to other accounts BEFORE this account can launch. Keep the last account
+    /// warm between checks; reopening it for each individual stat wastes work.
+    /// User-visible login/Identify browsers are deliberately left alone.
+    func prepareSingleBackgroundBrowser(
+        profileName: String,
+        canStart: @escaping () -> Bool,
+        completion: @escaping (Result<BackgroundBrowserLease, Error>) -> Void
+    ) {
+        probeQueue.async { [self] in
+            do {
+                let lease = try BackgroundBrowserLease()
+                guard canStart() else { throw CancellationError() }
+                let others = AppGroupStore.loadSharedConfiguration().browserAccounts
+                    .filter { $0.id != profileName }
+                    .map { configuration(profileName: $0.id) }
+                closeOtherBackgroundBrowsers(others, lease: lease, completion: completion)
+            } catch {
+                DispatchQueue.main.async { completion(.failure(error)) }
+            }
+        }
+    }
+
+    private func closeOtherBackgroundBrowsers(
+        _ configurations: [ChromeBrowserLaunchConfiguration],
+        lease: BackgroundBrowserLease,
+        completion: @escaping (Result<BackgroundBrowserLease, Error>) -> Void
+    ) {
+        guard let configuration = configurations.first else {
+            DispatchQueue.main.async { completion(.success(lease)) }
+            return
+        }
+        let port = configuration.cdpPort
+        let isVisible = queue.sync {
+            userVisiblePorts.contains(port)
+                || foregroundLaunchedProcesses[port] != nil
+                || foregroundLaunchedApplications[port] != nil
+        }
+        // Check the actual process arguments rather than the durable ownership
+        // sentinel: that sentinel can also belong to a visible login window
+        // opened by another app process. Never close such a window here.
+        guard !isVisible, let previousPID = findDedicatedBrowserPID(configuration: configuration),
+              findDedicatedHeadlessChromeViaPS(configuration: configuration) else {
+            closeOtherBackgroundBrowsers(Array(configurations.dropFirst()), lease: lease, completion: completion)
+            return
+        }
+        terminateHeadlessInstance(configuration: configuration) { [self] in
+            probeQueue.async { [self] in
+                // Browser.close can drop CDP before Chromium finishes flushing
+                // its profile and exits. Reuse the startup-cleanup exit wait;
+                // wait for real work, rather than imposing a fixed pause or
+                // rejecting the next account while its predecessor is closing.
+                waitForProcessExit(pids: [previousPID], timeout: 1.5)
+                // A timeout is not proof of shutdown. Fail this check rather
+                // than silently exceeding the one-background-browser limit.
+                guard findDedicatedBrowserPID(configuration: configuration) == nil else {
+                    ActivityLogger.log("browser", "round robin handoff failed: previous browser still running", metadata: ["profile": configuration.profileName])
+                    DispatchQueue.main.async {
+                        completion(.failure(NSError(domain: NSPOSIXErrorDomain, code: Int(EBUSY))))
+                    }
+                    return
+                }
+                closeOtherBackgroundBrowsers(Array(configurations.dropFirst()), lease: lease, completion: completion)
+            }
+        }
+    }
+
     private let fileManager = FileManager.default
     private let queue = DispatchQueue(label: "ChromeBrowserProfile")
     // v0.21.74 — MAIN-THREAD BLOCK FIX (Ethan's #1 symptom: "Chromium takes
@@ -422,6 +515,10 @@ final class ChromeBrowserProfile {
         initialURL: URL?,
         completion: @escaping (Result<ChromeBrowserLaunchConfiguration, Error>) -> Void
     ) {
+        guard foreground || EmergencyMemoryRelief.shared.permit() != nil else {
+            completion(.failure(CancellationError()))
+            return
+        }
         if isCDPReachable(configuration: configuration) {
             if foreground {
                 // v0.21.48 — REWRITTEN for voice 4277. Previous behavior (v0.21.47
@@ -514,6 +611,10 @@ final class ChromeBrowserProfile {
     ) {
         queue.async { [weak self] in
             guard let self else { return }
+            guard foreground || EmergencyMemoryRelief.shared.permit() != nil else {
+                DispatchQueue.main.async { completion(.failure(CancellationError())) }
+                return
+            }
 
             if self.isCDPReachable(configuration: configuration) {
                 DispatchQueue.main.async {
@@ -1434,6 +1535,35 @@ final class ChromeBrowserProfile {
         }
     }
 
+    /// Emergency relief targets only our tracked background children. Keep
+    /// visible Identify/login sessions intact, and never scan/kill personal
+    /// Chrome. The final launch gate prevents delayed scrapes from undoing it.
+    func releaseBackgroundBrowsersForMemoryEmergency() {
+        queue.async { [weak self] in
+            guard let self else { return }
+            let processes = Array(self.backgroundLaunchedProcesses.values)
+            let applications = Array(self.backgroundLaunchedApplications.values)
+            self.backgroundLaunchedProcesses.removeAll()
+            self.backgroundLaunchedApplications.removeAll()
+            self.backgroundUseCounts.removeAll()
+            for process in processes where process.isRunning { process.terminate() }
+            for application in applications where !application.isTerminated { application.terminate() }
+            // A Chromium child may itself have been suspended by macOS. Give
+            // normal shutdown two seconds, then release even a suspended child.
+            self.queue.asyncAfter(deadline: .now() + 2) {
+                for process in processes where process.isRunning {
+                    _ = Darwin.kill(process.processIdentifier, SIGKILL)
+                }
+                for application in applications where !application.isTerminated {
+                    application.forceTerminate()
+                }
+            }
+            ActivityLogger.log("memory-relief", "released background browsers", metadata: [
+                "processes": "\(processes.count)", "applications": "\(applications.count)"
+            ])
+        }
+    }
+
     func terminateAppOwnedBrowsersOnAppExit() {
         let tracked: (applications: [NSRunningApplication], processes: [Process]) = queue.sync {
             let applications = Array(backgroundLaunchedApplications.values) + Array(foregroundLaunchedApplications.values)
@@ -1538,7 +1668,7 @@ final class ChromeBrowserProfile {
         ])
     }
 
-    private func waitForProcessExit(pids: [pid_t], timeout: TimeInterval) {
+    func waitForProcessExit(pids: [pid_t], timeout: TimeInterval) {
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
             if pids.allSatisfy({ kill($0, 0) != 0 }) {
@@ -2438,7 +2568,11 @@ final class ChromeBrowserProfile {
             )
         }
 
-        try process.run()
+        if foreground {
+            try process.run()
+        } else {
+            try EmergencyMemoryRelief.shared.withLaunchPermit { try process.run() }
+        }
 
         // Drop a sentinel file inside `--user-data-dir` so any later session (or this one
         // after a UA-masking flag strips "HeadlessChrome" from the default UA) can prove
