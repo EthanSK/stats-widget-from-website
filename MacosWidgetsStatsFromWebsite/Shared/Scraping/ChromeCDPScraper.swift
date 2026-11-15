@@ -834,6 +834,13 @@ final class ChromeCDPScraper {
     }
 
     private func attemptContentFallback(finalStatus: [String: Any]) {
+        if Tracker.isClaudeDomain(url: tracker.url),
+           SelectorExtractionJS.requiresClaudeFableDisclosure(selector: tracker.selector) {
+            // A missing Fable bar must remain a failed reading. Nearby weekly
+            // and product-share percentages cannot stand in for its allowance.
+            finishSelectorFailure(finalStatus: finalStatus)
+            return
+        }
         guard let client else {
             finishSelectorFailure(finalStatus: finalStatus)
             return

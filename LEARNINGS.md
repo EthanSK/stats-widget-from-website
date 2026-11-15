@@ -23,6 +23,24 @@ Each entry looks like:
 
 (newest first)
 
+
+---
+**Date:** 2026-11-15T21:33:00Z
+**Trigger:** Installing and force-refreshing the public 0.21.92 build.
+**Symptom:** Signed/notarized app and CLI started, but the bundled Chromium 160 renderer crashed on Page.enable. Local 0.21.91 had used a cached Chromium 153.
+**Root cause:** fetch-chromium.sh accepted any launchable cache and otherwise followed Google's moving LAST_CHANGE marker, so local and CI builds could ship different unqualified browsers.
+**Fix:** CHROMIUM_REVISION pins the verified Apple Silicon snapshot 1677346; both fetch and cache validation use it. Release CI requires the signed browser to enable Page/Runtime and execute JavaScript in an isolated disposable profile before notarization.
+**Guard:** Check the actual downloaded browser revision and renderer, not just GUI/CLI startup and signature. Chromium upgrades require live account scrape checks. Intel builds remain outside the current arm64-only project support.
+---
+
+---
+**Date:** 2026-11-15T21:33:00Z
+**Trigger:** Ethan selected Fable remaining to replace the obsolete Claude Ultra session limit.
+**Symptom:** Claude's new usage page removed the session cap and changed its selectors. Fable is mounted only after opening This week. Generic percentage fallback returned the weekly total or Claude Code product share instead.
+**Fix:** Use the observed pace-week selector for weekly and pace-week-scoped for Fable. Selector validation opens only claude.ai's observed pace-week-toggle once per page for the scoped selector, reusing normal polling. The scoped Fable selector cannot fall back to another percentage. Keep the existing tracker UUID so widget bindings survive.
+**Guard:** JavaScriptCore regression cases cover the correct Fable value, no repeated toggle while mounting, and no toggle for weekly or another site; verify real fresh pages against the usage UI.
+---
+
 ---
 **Date:** 2026-11-15T18:20:00Z
 **Trigger:** Verifying the actual 0.21.91 public download after local installation and successful release CI.

@@ -55,6 +55,14 @@ enum SelectorExtractionError: LocalizedError {
 }
 
 enum SelectorExtractionJS {
+    // Ethan's "Fable remaining" replaces the obsolete Claude session cap.
+    // Ultra keeps this separate weekly allowance behind "This week" on every
+    // fresh page. Keep this exact, provider-owned selector out of fuzzy fallback:
+    // the weekly total and product split are different percentages.
+    static func requiresClaudeFableDisclosure(selector: String) -> Bool {
+        selector.hasPrefix("[data-testid=\"pace-week-scoped\"]")
+    }
+
     static func validationScript(for selector: String) -> String {
         let selectorLiteral = javaScriptStringLiteral(selector)
         return """
@@ -115,6 +123,17 @@ enum SelectorExtractionJS {
           })();
 
           try {
+            // Open only the observed usage disclosure, once per page. Reuse the
+            // existing selector polling; React may mount the Fable bar later.
+            if (\(requiresClaudeFableDisclosure(selector: selector)) &&
+                window.location.hostname === 'claude.ai' &&
+                !document.querySelector(selector)) {
+              const toggle = document.querySelector('[data-testid="pace-week-toggle"]');
+              if (toggle && !toggle.hasAttribute('data-stats-widget-expanded-fable')) {
+                toggle.setAttribute('data-stats-widget-expanded-fable', 'true');
+                toggle.click();
+              }
+            }
             const matches = document.querySelectorAll(selector);
             const element = matches[0] || null;
             const rect = element ? element.getBoundingClientRect() : null;

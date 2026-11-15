@@ -5,6 +5,15 @@ Release-by-release notes for the Stats Widget from Website project.
 Format: each entry is dated, lists the user-visible changes first, then the
 under-the-hood / signing / packaging changes. Newest first.
 
+## v0.21.93 — 2026-11-15
+
+- Keep the tested Chromium snapshot in local builds and public downloads.
+  The release had silently picked a newer snapshot whose renderer crashed.
+- Check that the signed bundled browser loads and runs JavaScript before release.
+- Read Claude Ultra's separate Fable allowance by opening its usage disclosure;
+  keep a missing Fable reading from falling back to a different percentage.
+- Retain the single-browser mode, widget updates and saved Keychain approvals.
+
 ## v0.21.92 — 2026-11-15
 
 - Include the command-line helper in public downloads, matching local builds.

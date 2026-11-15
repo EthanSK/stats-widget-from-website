@@ -53,11 +53,10 @@
 #     arch. May be passed more than once.
 #
 # Pinning:
-#   - By default the script reads the LAST_CHANGE marker for each platform
-#     and uses whatever revision the upstream snapshot bucket currently
-#     publishes. Override via CHROMIUM_REVISION=1628585 in the environment
-#     to pin to a specific revision (recommended for CI to avoid surprise
-#     revision bumps between PRs).
+#   - CHROMIUM_REVISION at the repository root pins the tested snapshot for
+#     local and CI builds. An environment CHROMIUM_REVISION overrides it for
+#     deliberate browser-upgrade trials; ordinary releases never follow the
+#     moving LAST_CHANGE marker. Update the pin only after live scrape checks.
 #
 # Exit codes:
 #   0   success (or no-op)
@@ -149,21 +148,9 @@ bucket_platform_for_arch() {
     esac
 }
 
-# Resolve revision (per-arch since LAST_CHANGE is platform-specific).
+# Local and release builds use the same tested pin for each requested arch.
 resolve_revision_for_platform() {
-    local platform="$1"
-    if [ -n "${CHROMIUM_REVISION:-}" ]; then
-        printf '%s\n' "$CHROMIUM_REVISION"
-        return 0
-    fi
-    local last_change_url="$BUCKET_BASE/$platform/LAST_CHANGE"
-    local revision
-    revision="$(/usr/bin/curl -fsSL --retry 3 --retry-delay 2 "$last_change_url" 2>/dev/null || true)"
-    if [ -z "$revision" ]; then
-        echo "fetch-chromium.sh: ERROR — could not fetch LAST_CHANGE from $last_change_url" >&2
-        return 1
-    fi
-    printf '%s\n' "$revision"
+    printf '%s\n' "$CHROMIUM_REVISION"
 }
 
 # Read CFBundleShortVersionString from a Chromium.app bundle, if present.
@@ -187,6 +174,19 @@ is_unsigned_int() {
 echo "fetch-chromium.sh: vendor root $VENDOR_ROOT"
 echo "fetch-chromium.sh: arches: $ARCHES"
 
+if [ -z "${CHROMIUM_REVISION:-}" ]; then
+    PIN_FILE="$REPO_ROOT/CHROMIUM_REVISION"
+    if [ ! -f "$PIN_FILE" ]; then
+        echo "fetch-chromium.sh: ERROR — missing tested Chromium revision pin: $PIN_FILE" >&2
+        exit 1
+    fi
+    CHROMIUM_REVISION="$(/usr/bin/tr -d '[:space:]' < "$PIN_FILE")"
+fi
+if ! is_unsigned_int "$CHROMIUM_REVISION"; then
+    echo "fetch-chromium.sh: ERROR — invalid pinned Chromium revision '$CHROMIUM_REVISION'" >&2
+    exit 1
+fi
+
 mkdir -p "$VENDOR_ROOT"
 
 # Resolve per-arch revisions up front so the final VERSION marker can record
@@ -200,10 +200,10 @@ get_revision() {
 
 # Fast-path no-op: if a complete cached install exists for every requested
 # arch (VERSION marker present + launchable executable per arch), we can
-# skip the network probe for LAST_CHANGE entirely. This makes the build
+# skip the download entirely. This makes the build
 # resilient to transient google-storage outages — once Chromium is cached,
-# offline rebuilds work indefinitely. To force a refresh-to-latest run
-# `fetch-chromium.sh --force` or delete `vendor/chromium/VERSION`.
+# offline rebuilds work indefinitely. Use --force to redownload the tested
+# pin; changing the pin is a deliberate update after live scrape checks.
 if [ "$FORCE" = "0" ] && [ -f "$VENDOR_ROOT/VERSION" ]; then
     cached_ok=1
     for arch in $ARCHES; do
@@ -212,13 +212,13 @@ if [ "$FORCE" = "0" ] && [ -f "$VENDOR_ROOT/VERSION" ]; then
             cached_ok=0
             break
         fi
-        if ! /usr/bin/grep -Eq "^$arch=[0-9]+$" "$VENDOR_ROOT/VERSION"; then
+        if ! /usr/bin/grep -Fqx "$arch=$CHROMIUM_REVISION" "$VENDOR_ROOT/VERSION"; then
             cached_ok=0
             break
         fi
     done
     if [ "$cached_ok" = "1" ]; then
-        echo "fetch-chromium.sh: cached Chromium present for all requested arches — skipping network probe (use --force to refresh)."
+        echo "fetch-chromium.sh: cached Chromium matches the tested pin — skipping download (use --force to redownload)."
         exit 0
     fi
 fi

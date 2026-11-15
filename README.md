@@ -2,7 +2,7 @@
 
 **See any number on any logged-in webpage at a glance — without opening another tab.**
 
-[![Status](https://img.shields.io/badge/status-v0.21.92-orange.svg)](PLAN.md)
+[![Status](https://img.shields.io/badge/status-v0.21.93-orange.svg)](PLAN.md)
 [![Release](https://github.com/EthanSK/stats-widget-from-website/actions/workflows/release.yml/badge.svg)](https://github.com/EthanSK/stats-widget-from-website/actions/workflows/release.yml)
 [![License: No-sale source](https://img.shields.io/badge/License-No--sale%20source-purple.svg)](LICENSE)
 [![Platform: macOS](https://img.shields.io/badge/platform-macOS%2013%2B-blue.svg)](#)

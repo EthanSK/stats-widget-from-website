@@ -262,6 +262,69 @@ final class IdentifyElementRegressionTests: XCTestCase {
         XCTAssertEqual(status["loginLikely"] as? Bool, false)
     }
 
+    func testClaudeFableDisclosureRevealsItsOwnPercentageWithoutRetoggling() throws {
+        let context = try fableUsageContext(hostname: "claude.ai", mountAfterClick: true)
+        let selector = "[data-testid=\"pace-week-scoped\"] span"
+        for _ in 0..<2 {
+            let value = try XCTUnwrap(context.evaluateScript(SelectorExtractionJS.validationScript(for: selector)))
+            let status = try XCTUnwrap(value.toDictionary())
+            XCTAssertEqual(status["count"] as? Int, 1)
+            XCTAssertEqual(status["text"] as? String, "53% used")
+            XCTAssertNil(context.exception)
+        }
+        XCTAssertEqual(context.evaluateScript("clicks")?.toInt32(), 1)
+    }
+
+    func testClaudeFableDisclosureDoesNotToggleWeeklyOrAnotherSite() throws {
+        for (hostname, selector) in [
+            ("claude.ai", "[data-testid=\"pace-week\"] span"),
+            ("example.com", "[data-testid=\"pace-week-scoped\"] span")
+        ] {
+            let context = try fableUsageContext(hostname: hostname, mountAfterClick: true)
+            _ = context.evaluateScript(SelectorExtractionJS.validationScript(for: selector))
+            XCTAssertNil(context.exception)
+            XCTAssertEqual(context.evaluateScript("clicks")?.toInt32(), 0)
+        }
+    }
+
+    func testClaudeFableDisclosureWaitsForMountWithoutRepeatedClicks() throws {
+        let context = try fableUsageContext(hostname: "claude.ai", mountAfterClick: false)
+        for _ in 0..<2 {
+            let value = try XCTUnwrap(context.evaluateScript(
+                SelectorExtractionJS.validationScript(for: "[data-testid=\"pace-week-scoped\"] span")
+            ))
+            XCTAssertEqual(value.toDictionary()?["count"] as? Int, 0)
+            XCTAssertNil(context.exception)
+        }
+        XCTAssertEqual(context.evaluateScript("clicks")?.toInt32(), 1)
+    }
+
+    private func fableUsageContext(hostname: String, mountAfterClick: Bool) throws -> JSContext {
+        let context = try XCTUnwrap(JSContext())
+        let hostnameLiteral = String(decoding: try JSONEncoder().encode(hostname), as: UTF8.self)
+        context.evaluateScript("""
+        var clicks = 0, mounted = false, attributes = {};
+        var window = {
+          location: {hostname: \(hostnameLiteral), href: 'https://' + \(hostnameLiteral) + '/settings/usage'},
+          innerWidth: 1200, innerHeight: 800, devicePixelRatio: 2
+        };
+        var percentage = {innerText: '53% used', getBoundingClientRect: () => ({left: 0, top: 0, width: 60, height: 20})};
+        var toggle = {
+          hasAttribute: name => name in attributes,
+          setAttribute: (name, value) => { attributes[name] = value; },
+          click: () => { clicks++; mounted = \(mountAfterClick); }
+        };
+        var document = {
+          readyState: 'complete', title: 'Claude', body: {innerText: 'Your usage This week 69% used'},
+          querySelector: selector => selector === '[data-testid="pace-week-toggle"]' ? toggle :
+            (selector.startsWith('[data-testid="pace-week-scoped"]') && mounted ? percentage : null),
+          querySelectorAll: selector => selector.startsWith('[data-testid="pace-week-scoped"]') && mounted ? [percentage] : []
+        };
+        """)
+        XCTAssertNil(context.exception)
+        return context
+    }
+
     func testCloudflareChallengeClassificationDoesNotSuggestReidentify() throws {
         let message = try XCTUnwrap(SelectorExtractionError.browserChallengeInProgress.errorDescription)
         let reading = TrackerReading(status: .stale, lastError: message, consecutiveFailureCount: 0)

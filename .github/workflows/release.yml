@@ -262,6 +262,12 @@ jobs:
       - name: Install XcodeGen
         run: brew install xcodegen
 
+      - name: Set up browser smoke-check runtime
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          package-manager-cache: false
+
       - name: Generate Xcode project
         run: xcodegen generate
 
@@ -376,6 +382,9 @@ jobs:
           EXPECTED_VERSION=$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' "$DEST/Contents/Info.plist")
           CLI_HELP=$("$CLI")
           grep -F "CLI v$EXPECTED_VERSION" <<< "$CLI_HELP"
+          # A valid signature and working CLI cannot detect a crashing
+          # Chromium renderer. Exercise the real signed browser too.
+          python3 scripts/check-bundled-browser.py "$DEST"
           # Re-verify signature after the copy — ditto preserves the
           # signature but the renamed wrapper has a different parent path,
           # so the seal check has to pass on the final filesystem path.
