@@ -5,6 +5,12 @@ Release-by-release notes for the Stats Widget from Website project.
 Format: each entry is dated, lists the user-visible changes first, then the
 under-the-hood / signing / packaging changes. Newest first.
 
+## v0.21.92 — 2026-11-15
+
+- Include the command-line helper in public downloads, matching local builds.
+  Release CI now builds it before signing and checks its version after copying.
+- Keep the widget, browser-memory and saved-Keychain-approval fixes from 0.21.91.
+
 ## v0.21.91 — 2026-11-15
 
 - Run background checks through one Chromium account at a time by default,

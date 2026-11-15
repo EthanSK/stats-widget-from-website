@@ -24,6 +24,15 @@ Each entry looks like:
 (newest first)
 
 ---
+**Date:** 2026-11-15T18:20:00Z
+**Trigger:** Verifying the actual 0.21.91 public download after local installation and successful release CI.
+**Symptom:** The ZIP contained the GUI executable but no standalone macos-widgets-stats-from-website helper. Local builds included it, so local token-access checks passed while the public package was incomplete.
+**Root cause:** The GUI archive scheme does not build/embed the separate CLI scheme. sign-release.sh's optional CLI branch and deep signature verification cannot detect a missing executable.
+**Fix:** Release CI builds the CLI without signing, embeds it in the archive before the existing inside-out Developer ID signing pass, and requires it to exist and report the app's version after distribution copy. The existing archive, notarization, Sparkle signing and appcast flow remain intact.
+**Guard:** Inspect the actual public ZIP for helper presence, group entitlements, version and native startup; a successful CI run or valid GUI signature alone does not prove package completeness. Use lightweight canonical tags with the current SHA-based duplicate-run guard; annotated tag objects do not compare directly with the commit SHA.
+---
+
+---
 **Date:** 2026-11-15T17:55:00Z
 **Trigger:** Ethan reported repeated password prompts after the signing-key approval was saved.
 **Symptom:** securityd recorded four prompts for the installed command-line helper reading the mcp-secret item. The codesign key was a different item. A process snapshot missed the prompts because SecurityAgent had already exited after Ethan answered.
