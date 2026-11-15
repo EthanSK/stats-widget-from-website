@@ -25,6 +25,15 @@ Each entry looks like:
 
 
 ---
+**Date:** 2026-11-15T22:12:00Z
+**Trigger:** Live qualification of all configured trackers after the 0.21.93 install.
+**Symptom:** A provider's usage page had multiple limits, changed period names, and a loading shell that matched Identify's short positional CSS. A successful scrape could therefore contain a different period's percentage or a loading message.
+**Fix:** Re-identify each account's actual limit, preserve tracker/widget UUIDs, and constrain positional percentage selectors to the rendered progress-bar container. Use the matching reset span from the same container. Match each label to the period the account actually exposes; different accounts can show weekly or monthly limits.
+**Guard:** Require fresh timestamps, a numeric value, correct account/period/remaining transform, healthy reset lines, and actual widget consumption. status=ok and nonempty text alone are insufficient. The live progress-anchored selector excluded the loading shell and returned the intended percentage and reset text. Normal disk execution passed the public browser smoke check after the removable-disk attempt timed out; retain that distinction when diagnosing a slow probe.
+---
+
+
+---
 **Date:** 2026-11-15T21:33:00Z
 **Trigger:** Installing and force-refreshing the public 0.21.92 build.
 **Symptom:** Signed/notarized app and CLI started, but the bundled Chromium 160 renderer crashed on Page.enable. Local 0.21.91 had used a cached Chromium 153.
