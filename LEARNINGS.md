@@ -23,6 +23,14 @@ Each entry looks like:
 
 (newest first)
 
+---
+**Date:** 2026-11-21
+**Trigger:** The 0% Gemini widget returned to a long clipped sentence; the weekly card showed the same short reset.
+**Root cause:** At exhaustion Google adds a second sentence about credits, and the weekly card explicitly substitutes the blocked 5-hour window. The original formatter rejected the extra sentence, while the weekly caption lost the window's identity. A line limit alone also does not reserve vertical room in a small widget.
+**Fix:** Parse the reset's first sentence, label the substituted 5-hour reset, and give secondary text up to three lines with its full vertical height and layout priority.
+**Guard:** The two observed exhausted-state sentences are covered by ValueDisplayOptionsTests. Verify the installed 0% caption, weekly window label and a real three-line caption in the small desktop widget.
+---
+
 
 ---
 **Date:** 2026-11-21

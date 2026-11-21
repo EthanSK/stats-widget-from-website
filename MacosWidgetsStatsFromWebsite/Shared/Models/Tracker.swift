@@ -445,7 +445,8 @@ struct TrackerElement: Codable, Identifiable, Equatable {
                 options: [.regularExpression, .caseInsensitive]
               ) else { return value }
 
-        let duration = String(value[prefix.upperBound...])
+        // At 0%, Google adds a separate sentence about AI credits after the duration. — GPT-6.1 Sol
+        let duration = String(value[prefix.upperBound...]).components(separatedBy: ". ").first ?? ""
         guard let units = try? NSRegularExpression(
             pattern: #"(\d+)\s*(days?|hours?|minutes?|seconds?)\b"#,
             options: .caseInsensitive
@@ -467,7 +468,11 @@ struct TrackerElement: Codable, Identifiable, Equatable {
                   let shortUnit = duration[unitRange].lowercased().first else { return value }
             components.append("\(duration[amountRange])\(shortUnit)")
         }
-        return "Resets in \(components.joined(separator: " "))"
+        // When the 5-hour quota is exhausted, Google's weekly card shows that
+        // shorter window's reset instead. Keep its identity clear in the caption. — GPT-6.1 Sol
+        let label = value.localizedCaseInsensitiveContains("weekly limit does not currently apply")
+            ? "5-hour reset in" : "Resets in"
+        return "\(label) \(components.joined(separator: " "))"
     }
 
     init(

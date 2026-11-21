@@ -30,6 +30,16 @@ final class ValueDisplayOptionsTests: XCTestCase {
         XCTAssertNil(element.displayValue(for: TrackerSecondaryValue(lastError: "Selector did not match")))
     }
 
+    func testExhaustedGeminiCaptionsKeepTheCorrectResetWindow() {
+        let element = TrackerElement(name: "Resets")
+        XCTAssertEqual(element.displayValue(for: TrackerSecondaryValue(value:
+            "You have hit your 5-hour limit, it will refresh in 2 hours, 52 minutes. If on a supported paid plan, you can use AI credits in the interim."
+        )), "Resets in 2h 52m")
+        XCTAssertEqual(element.displayValue(for: TrackerSecondaryValue(value:
+            "You have hit your 5-hour limit, so the weekly limit does not currently apply. Your 5-hour limit will refresh in 2 hours, 50 minutes."
+        )), "5-hour reset in 2h 50m")
+    }
+
     func testUnrelatedSecondaryCaptionsRemainVerbatim() {
         let value = "The service will fully refresh in 3 hours, 44 minutes."
         let element = TrackerElement(name: "Status")

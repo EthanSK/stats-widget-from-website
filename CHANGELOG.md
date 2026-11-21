@@ -5,6 +5,12 @@ Release-by-release notes for the Stats Widget from Website project.
 Format: each entry is dated, lists the user-visible changes first, then the
 under-the-hood / signing / packaging changes. Newest first.
 
+## v0.21.95 — 2026-11-21
+
+- Allow three lines beneath a small widget's main value and reserve space for them.
+- Keep Gemini's exhausted-quota caption compact when Google adds credit information.
+- Label the 5-hour reset explicitly when Google's weekly card temporarily shows that window.
+
 ## v0.21.94 — 2026-11-21
 
 - Show reset captions such as “Resets in 3h 44m” instead of truncating a
