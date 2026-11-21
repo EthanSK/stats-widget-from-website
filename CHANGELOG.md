@@ -5,6 +5,14 @@ Release-by-release notes for the Stats Widget from Website project.
 Format: each entry is dated, lists the user-visible changes first, then the
 under-the-hood / signing / packaging changes. Newest first.
 
+## v0.21.94 — 2026-11-21
+
+- Show reset captions such as “Resets in 3h 44m” instead of truncating a
+  website's explanatory sentence before the reset time.
+- Keep existing date-style reset captions, unrelated secondary text and the
+  original scraped readings unchanged.
+- Let longer reset dates fit in small widgets by scaling the caption modestly.
+
 ## v0.21.93 — 2026-11-15
 
 - Keep the tested Chromium snapshot in local builds and public downloads.

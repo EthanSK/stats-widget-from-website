@@ -25,6 +25,13 @@ Each entry looks like:
 
 
 ---
+**Date:** 2026-11-21
+**Trigger:** Gemini's reset description was selected correctly, but the small desktop widget showed only “You have used so…”.
+**Fix:** Format reset-labelled secondary values at display time, extracting the full English duration into “Resets in 3h 44m”. Keep readings.json verbatim and pass existing date captions and unrecognised wording through unchanged. Binding a valid selector alone does not prove the useful part fits in a widget.
+**Guard:** ValueDisplayOptionsTests covers both observed Gemini sentences, singular units, minutes/seconds, Claude's date caption, missing values and non-reset captions. Check the actual placed widget after installation.
+---
+
+---
 **Date:** 2026-11-15T22:12:00Z
 **Trigger:** Live qualification of all configured trackers after the 0.21.93 install.
 **Symptom:** A provider's usage page had multiple limits, changed period names, and a loading shell that matched Identify's short positional CSS. A successful scrape could therefore contain a different period's percentage or a loading message.

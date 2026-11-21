@@ -37,6 +37,7 @@ struct SingleBigNumberTemplate: View {
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
+                    .minimumScaleFactor(0.75)
                     .multilineTextAlignment(.center)
                     .frame(maxWidth: .infinity, alignment: .center)
             }

@@ -609,10 +609,10 @@ struct WidgetTrackerItem: Identifiable {
         guard !secondaryElementIDs.isEmpty else { return [] }
         let secondaryByID = reading?.secondaryValues ?? [:]
         return secondaryElementIDs.compactMap { elementID in
-            guard tracker.secondaryElements.contains(where: { $0.id == elementID }) else {
+            guard let element = tracker.secondaryElements.first(where: { $0.id == elementID }) else {
                 return nil
             }
-            return secondaryByID[elementID.uuidString]?.value
+            return element.displayValue(for: secondaryByID[elementID.uuidString])
         }
         .filter { !$0.isEmpty }
     }

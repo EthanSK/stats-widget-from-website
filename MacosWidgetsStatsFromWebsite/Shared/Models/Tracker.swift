@@ -434,6 +434,42 @@ struct TrackerElement: Codable, Identifiable, Equatable {
     var valueParser: ValueParser
     var hideElements: [String]
 
+    /// Keep the scraped original intact, but fit reset captions into small widgets.
+    /// Ethan's “resets in xx” means the duration, without the website's explanatory
+    /// sentence. Other captions and unrecognised reset wording stay verbatim. — GPT-6.1 Sol
+    func displayValue(for reading: TrackerSecondaryValue?) -> String? {
+        guard let value = reading?.value else { return nil }
+        guard name.localizedCaseInsensitiveContains("reset"),
+              let prefix = value.range(
+                of: #"\b(?:fully\s+)?(?:refresh(?:es)?|resets?)\s+in\s+"#,
+                options: [.regularExpression, .caseInsensitive]
+              ) else { return value }
+
+        let duration = String(value[prefix.upperBound...])
+        guard let units = try? NSRegularExpression(
+            pattern: #"(\d+)\s*(days?|hours?|minutes?|seconds?)\b"#,
+            options: .caseInsensitive
+        ) else { return value }
+        let fullRange = NSRange(duration.startIndex..., in: duration)
+        let matches = units.matches(in: duration, range: fullRange)
+        guard !matches.isEmpty else { return value }
+
+        // Reject unknown qualifiers instead of silently changing “about” or a range.
+        let remainder = units.stringByReplacingMatches(in: duration, range: fullRange, withTemplate: "")
+            .replacingOccurrences(of: #"\band\b"#, with: "", options: [.regularExpression, .caseInsensitive])
+            .trimmingCharacters(in: .whitespacesAndNewlines.union(CharacterSet(charactersIn: ",.")))
+        guard remainder.isEmpty else { return value }
+
+        var components: [String] = []
+        for match in matches {
+            guard let amountRange = Range(match.range(at: 1), in: duration),
+                  let unitRange = Range(match.range(at: 2), in: duration),
+                  let shortUnit = duration[unitRange].lowercased().first else { return value }
+            components.append("\(duration[amountRange])\(shortUnit)")
+        }
+        return "Resets in \(components.joined(separator: " "))"
+    }
+
     init(
         id: UUID = UUID(),
         name: String = "",

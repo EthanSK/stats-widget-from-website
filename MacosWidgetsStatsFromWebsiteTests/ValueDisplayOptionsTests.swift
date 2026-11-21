@@ -8,6 +8,34 @@
 import XCTest
 
 final class ValueDisplayOptionsTests: XCTestCase {
+    func testResetCaptionsExtractTheFullGeminiDuration() {
+        let element = TrackerElement(name: "Resets")
+        let examples = [
+            ("You have used some of your 5-hour limit, it will fully refresh in 3 hours, 44 minutes.", "Resets in 3h 44m"),
+            ("You have used some of your weekly limit, it will fully refresh in 6 days, 22 hours.", "Resets in 6d 22h"),
+            ("Resets in 1 day and 1 hour.", "Resets in 1d 1h"),
+            ("Fully refreshes in 2 minutes, 5 seconds", "Resets in 2m 5s")
+        ]
+        for (source, expected) in examples {
+            XCTAssertEqual(element.displayValue(for: TrackerSecondaryValue(value: source)), expected)
+        }
+    }
+
+    func testResetCaptionsPreserveDatesQualifiersAndUnknownText() {
+        let element = TrackerElement(name: "Resets")
+        for value in ["Resets Thursday 1:00 AM", "Refresh in about 2 hours", "Refresh in 1–2 hours", "Resets in 3h 44m", "Available now"] {
+            XCTAssertEqual(element.displayValue(for: TrackerSecondaryValue(value: value)), value)
+        }
+        XCTAssertNil(element.displayValue(for: nil))
+        XCTAssertNil(element.displayValue(for: TrackerSecondaryValue(lastError: "Selector did not match")))
+    }
+
+    func testUnrelatedSecondaryCaptionsRemainVerbatim() {
+        let value = "The service will fully refresh in 3 hours, 44 minutes."
+        let element = TrackerElement(name: "Status")
+        XCTAssertEqual(element.displayValue(for: TrackerSecondaryValue(value: value)), value)
+    }
+
     func testDefaultFormattingRemovesLettersButKeepsPercentSymbol() {
         XCTAssertEqual(ValueDisplayOptions().formatted("100% remaining"), "100%")
         XCTAssertEqual(ValueDisplayOptions().formatted("0% used"), "0%")
